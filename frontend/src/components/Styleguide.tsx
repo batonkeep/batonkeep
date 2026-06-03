@@ -1,8 +1,9 @@
 // Styleguide.tsx — living reference for the Batonkeep design system (D-track).
 // Open via #styleguide. Shows brand, tokens, and every ui/ primitive so new
 // surfaces (M1–M6) compose from a known palette instead of inventing one.
+import { useState } from "react";
 import { Plus } from "lucide-react";
-import { Badge, Button, Card, Logo, LogoMark, StatusDot, type Tone } from "../ui";
+import { Badge, Button, Card, Field, Input, Logo, LogoMark, Modal, Select, StatusDot, Tabs, type Tone } from "../ui";
 
 const SWATCHES: { name: string; cls: string; note: string }[] = [
   { name: "base", cls: "bg-base", note: "page background" },
@@ -29,7 +30,16 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
+const RUN_TABS = [
+  { id: "report", label: "Report" },
+  { id: "json", label: "JSON" },
+  { id: "raw", label: "Raw" },
+] as const;
+
 export default function Styleguide() {
+  const [tab, setTab] = useState<(typeof RUN_TABS)[number]["id"]>("report");
+  const [modalOpen, setModalOpen] = useState(false);
+
   return (
     <div className="mx-auto max-w-4xl px-5 py-8">
       <header className="mb-10 flex items-center justify-between">
@@ -101,6 +111,53 @@ export default function Styleguide() {
           <Card className="p-5"><div className="text-sm text-ink">Default card</div><div className="text-xs text-muted">raised surface over the textured base</div></Card>
           <Card active className="p-5"><div className="text-sm text-ink">Active card</div><div className="text-xs text-muted">amber hairline + glow</div></Card>
         </div>
+      </Section>
+
+      <Section title="Form controls">
+        <Card className="grid gap-4 p-5 sm:grid-cols-2">
+          <Field label="Task name" hint="shown in the task list">
+            <Input placeholder="daily competitor watch" />
+          </Field>
+          <Field label="Strategy">
+            <Select defaultValue="capability">
+              <option value="capability">capability</option>
+              <option value="fixed">fixed</option>
+              <option value="round_robin">round_robin</option>
+            </Select>
+          </Field>
+          <Field label="API key" hint="stored encrypted at rest">
+            <Input type="password" placeholder="sk-…" className="font-mono" />
+          </Field>
+          <Field label="Disabled">
+            <Input placeholder="read-only" disabled />
+          </Field>
+        </Card>
+      </Section>
+
+      <Section title="Tabs">
+        <Card className="p-5">
+          <Tabs tabs={RUN_TABS} active={tab} onChange={setTab} />
+          <div className="mt-3 font-mono text-xs text-muted">active: {tab}</div>
+        </Card>
+      </Section>
+
+      <Section title="Overlay">
+        <Card className="p-5">
+          <Button variant="outline" onClick={() => setModalOpen(true)}>Open modal</Button>
+          <Modal
+            open={modalOpen}
+            onClose={() => setModalOpen(false)}
+            title="Modal primitive"
+            footer={
+              <>
+                <Button variant="ghost" onClick={() => setModalOpen(false)}>Cancel</Button>
+                <Button variant="primary" onClick={() => setModalOpen(false)}>Confirm</Button>
+              </>
+            }
+          >
+            <p className="text-sm text-ink">Backdrop click + Esc close; body scroll-locks; rises from the bottom on mobile.</p>
+          </Modal>
+        </Card>
       </Section>
 
       <footer className="mt-12 border-t border-edge pt-4 font-mono text-[11px] text-muted">

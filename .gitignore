@@ -19,3 +19,7 @@ outputs/
 .DS_Store
 .antigravitycli/
 .grok/
+# Local dev
+backend/.venv/
+backend/.env
+.env

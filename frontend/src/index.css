@@ -1,0 +1,134 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Theme tokens as RGB channels. Light is the DEFAULT; `.dark` on <html> overrides. */
+:root {
+  --c-base: 244 242 235;   /* warm paper */
+  --c-panel: 255 255 255;  /* raised surface */
+  --c-edge: 214 209 196;   /* hairline borders */
+  --c-ink: 26 28 32;       /* primary text (near-black) */
+  --c-muted: 106 102 86;   /* dimmed warm grey */
+  --c-amber: 168 111 0;    /* signal accent (deep gold — readable on light) */
+  --c-live: 14 116 144;    /* cyan, darkened for light bg */
+  --c-ok: 21 128 61;
+  --c-bad: 190 40 45;
+  --c-defer: 168 110 40;
+  --c-warn: 168 111 0;
+  color-scheme: light;
+}
+
+.dark {
+  --c-base: 10 11 13;      /* near-black */
+  --c-panel: 16 18 22;
+  --c-edge: 28 31 38;
+  --c-ink: 236 231 218;    /* warm off-white */
+  --c-muted: 138 134 120;
+  --c-amber: 245 183 0;    /* bright signal amber */
+  --c-live: 34 211 238;    /* bright cyan */
+  --c-ok: 92 200 138;
+  --c-bad: 229 72 77;
+  --c-defer: 201 138 58;
+  --c-warn: 245 183 0;
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: rgb(var(--c-base));
+  color: rgb(var(--c-ink));
+  font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  /* Faint blueprint grid + subtle radial glow — themes with the palette. */
+  background-image:
+    linear-gradient(rgb(var(--c-amber) / 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(var(--c-amber) / 0.05) 1px, transparent 1px),
+    radial-gradient(circle at 50% 0%, rgb(var(--c-live) / 0.05), transparent 60%);
+  background-size: 32px 32px, 32px 32px, 100% 100%;
+  background-attachment: fixed;
+}
+
+/* Subtle film grain overlay (cheap, GPU-friendly). */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.025;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+#root {
+  position: relative;
+  z-index: 1;
+}
+
+/* Mono everywhere we show identifiers, metrics, code. */
+.font-mono,
+code,
+pre {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+/* Thin, on-theme scrollbars. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--c-edge)) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgb(var(--c-edge));
+  border-radius: 4px;
+}
+
+/* One orchestrated, staggered load-in: children rise in sequence. */
+.stagger > * {
+  animation: rise-in 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.stagger > *:nth-child(1) { animation-delay: 0.02s; }
+.stagger > *:nth-child(2) { animation-delay: 0.07s; }
+.stagger > *:nth-child(3) { animation-delay: 0.12s; }
+.stagger > *:nth-child(4) { animation-delay: 0.17s; }
+.stagger > *:nth-child(5) { animation-delay: 0.22s; }
+.stagger > *:nth-child(6) { animation-delay: 0.27s; }
+.stagger > *:nth-child(n + 7) { animation-delay: 0.3s; }
+
+@keyframes rise-in {
+  0% { opacity: 0; transform: translateY(8px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+/* Rendered Markdown (RunViewer report tab). */
+.markdown {
+  line-height: 1.65;
+  font-size: 0.92rem;
+}
+.markdown h1 { font-family: "IBM Plex Mono", monospace; font-size: 1.4rem; font-weight: 600; margin: 0.2rem 0 0.8rem; color: rgb(var(--c-ink)); }
+.markdown h2 { font-family: "IBM Plex Mono", monospace; font-size: 1.1rem; font-weight: 600; margin: 1.2rem 0 0.5rem; color: rgb(var(--c-amber)); }
+.markdown h3 { font-family: "IBM Plex Mono", monospace; font-size: 0.98rem; margin: 1rem 0 0.4rem; color: rgb(var(--c-ink)); }
+.markdown p { margin: 0.5rem 0; color: rgb(var(--c-ink) / 0.88); }
+.markdown a { color: rgb(var(--c-live)); text-decoration: underline; text-underline-offset: 2px; }
+.markdown ul, .markdown ol { margin: 0.5rem 0; padding-left: 1.4rem; color: rgb(var(--c-ink) / 0.88); }
+.markdown li { margin: 0.25rem 0; }
+.markdown code { background: rgb(var(--c-edge) / 0.6); padding: 0.1rem 0.35rem; border-radius: 4px; font-size: 0.85em; color: rgb(var(--c-amber)); }
+.markdown pre { background: rgb(var(--c-base)); border: 1px solid rgb(var(--c-edge)); padding: 0.8rem; border-radius: 8px; overflow-x: auto; }
+.markdown pre code { background: none; color: rgb(var(--c-ink) / 0.85); padding: 0; }
+.markdown table { border-collapse: collapse; width: 100%; margin: 0.8rem 0; font-size: 0.85rem; }
+.markdown th, .markdown td { border: 1px solid rgb(var(--c-edge)); padding: 0.4rem 0.6rem; text-align: left; }
+.markdown th { background: rgb(var(--c-base)); color: rgb(var(--c-amber)); font-family: "IBM Plex Mono", monospace; }
+.markdown blockquote { border-left: 2px solid rgb(var(--c-amber)); padding-left: 0.8rem; margin: 0.6rem 0; color: rgb(var(--c-muted)); }
+
+/* Range input (drag-to-reorder uses buttons; this styles any sliders). */
+@media (max-width: 768px) {
+  .desktop-only { display: none; }
+}

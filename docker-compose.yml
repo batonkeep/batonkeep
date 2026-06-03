@@ -1,0 +1,56 @@
+services:
+  backend:
+    build:
+      context: backend
+      dockerfile: Dockerfile
+      args:
+        REGISTRY_PREFIX: ${REGISTRY_PREFIX:-}
+        TAG: ${TAG:-latest}
+    image: batonkeep-backend
+    env_file: .env
+    environment:
+      - HOME=/home/agent
+    volumes:
+      - appdata:/data
+      - agent_home:/home/agent
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: frontend
+      dockerfile: Dockerfile
+    image: batonkeep-frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  # Optional self-hosted open-weight inference — activate with: make selfhost
+  # or: docker compose --profile selfhost up
+  inference:
+    profiles: [selfhost]
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+
+  # ── Build-only: base image for the registry ──────────────────────────────────
+  # Contains OS packages, Node 20, CLI agents, uv, and the frozen Python venv.
+  # Never run directly; used by `make push` / push_to_registry.sh.
+  #   docker compose --profile build-base build backend-base
+  backend-base:
+    profiles: [build-base]
+    build:
+      context: backend
+      dockerfile: Dockerfile.base
+    image: batonkeep-backend-base
+
+volumes:
+  appdata:
+  agent_home:
+  ollama_data:

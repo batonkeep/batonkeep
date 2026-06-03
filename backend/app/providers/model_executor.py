@@ -1,0 +1,324 @@
+"""
+providers/model_executor.py — OpenAI-compatible + Anthropic model executor (§6).
+
+Our own agent loop:
+  system prompt → model → if tool_calls → dispatch tools → feed results → repeat
+  Cap rounds with max_rounds / max cost with budget_usd.
+
+Emits the same ExecEvent sequence as MockExecutor so the orchestrator
+and WS pipeline are backend-agnostic.
+"""
+from __future__ import annotations
+
+import json
+import logging
+from typing import Any, AsyncIterator, Optional
+
+from app.providers.base import (
+    EventKind,
+    ExecEvent,
+    ExecResult,
+    Executor,
+    Usage,
+)
+from app.providers.registry import ProviderDef, ProviderInstance
+
+logger = logging.getLogger(__name__)
+
+# ── Tool registry ─────────────────────────────────────────────────────────────
+
+from app.providers.tools import web_search, web_fetch, flights, file_write
+
+_TOOLS = {
+    "web_search": web_search,
+    "web_fetch": web_fetch,
+    "flights": flights,
+    "file_write": file_write,
+}
+
+TOOL_SCHEMAS = [t.TOOL_SCHEMA for t in _TOOLS.values()]
+
+_SYSTEM_PROMPT = (
+    "You are an autonomous research agent. "
+    "Use available tools (web_search/web_fetch for research; flights for fare queries) "
+    "to gather and verify information. "
+    "Produce one polished **Markdown** report: `#` title, 2–3 sentence executive summary, "
+    "then organised sections with inline source links."
+)
+
+
+class ModelExecutor(Executor):
+    """OpenAI-compatible or Anthropic model backend with our own agent loop."""
+
+    def __init__(self, provider_def: ProviderDef, instance: Optional["ProviderInstance"] = None) -> None:
+        self._def = provider_def
+        self._instance = instance
+        # name is the instance id so run records / cooldown key per-account.
+        self.name = instance.id if instance else provider_def.name
+        self.tier = provider_def.tier
+        # Per-account overrides (Phase B): which model + which stored credential.
+        # Runtime model override (set from the UI console) wins over the declared
+        # instance/template default.
+        from app.providers.registry import get_model_override
+        runtime_model = get_model_override(instance.id) if instance else None
+        self._model = (
+            runtime_model
+            or (instance.model_override if instance and instance.model_override else None)
+            or provider_def.model
+        )
+        self._cred_provider = (instance.credential_provider if instance and instance.credential_provider
+                               else provider_def.name)
+
+    @property
+    def kind(self) -> str:
+        return self._def.kind
+
+    def is_healthy(self) -> bool:
+        import os
+        if self._def.env_key:
+            return bool(os.environ.get(self._def.env_key))
+        return True
+
+    def _compute_cost(self, usage: Usage) -> float:
+        return (
+            usage.tokens_in * self._def.cost_in_per_mtok / 1_000_000
+            + usage.tokens_out * self._def.cost_out_per_mtok / 1_000_000
+        )
+
+    async def run_stream(
+        self,
+        prompt: str,
+        *,
+        workdir: str,
+        tools_enabled: bool = True,
+        max_rounds: int = 10,
+        budget_usd: float = 1.0,
+        extra: Optional[dict[str, Any]] = None,
+    ) -> AsyncIterator[ExecEvent]:
+        if self._def.kind == "anthropic":
+            async for ev in self._run_anthropic(prompt, workdir=workdir, tools_enabled=tools_enabled,
+                                                max_rounds=max_rounds, budget_usd=budget_usd):
+                yield ev
+        else:
+            async for ev in self._run_openai_compat(prompt, workdir=workdir, tools_enabled=tools_enabled,
+                                                    max_rounds=max_rounds, budget_usd=budget_usd):
+                yield ev
+
+    # ── OpenAI-compatible ─────────────────────────────────────────────────────
+
+    async def _run_openai_compat(
+        self, prompt: str, *, workdir: str, tools_enabled: bool,
+        max_rounds: int, budget_usd: float,
+    ) -> AsyncIterator[ExecEvent]:
+        import os
+        from openai import AsyncOpenAI
+        from app.credentials import resolve_api_key
+
+        api_key = await resolve_api_key(self._cred_provider, self._def.env_key)
+        base_url = self._def.base_url or os.environ.get("OPENAI_BASE_URL") or None
+        if not api_key:
+            yield ExecEvent(
+                kind=EventKind.error,
+                message=f"no credentials for {self.name}: set {self._def.env_key} or store a key via /api/credentials",
+            )
+            return
+
+        client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        messages = [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ]
+        tools = TOOL_SCHEMAS if tools_enabled else []
+        total_usage = Usage()
+        full_text = ""
+
+        yield ExecEvent(kind=EventKind.log, message=f"[{self.name}] starting (openai-compat)")
+        yield ExecEvent(kind=EventKind.phase, phase="running")
+
+        for round_num in range(max_rounds):
+            if total_usage.cost_usd > budget_usd:
+                yield ExecEvent(kind=EventKind.log, message=f"[{self.name}] budget exceeded ${budget_usd:.4f}")
+                break
+
+            try:
+                stream = await client.chat.completions.create(
+                    model=self._model or "gpt-4o-mini",
+                    messages=messages,
+                    tools=[{"type": "function", "function": t} for t in tools] if tools else None,
+                    stream=True,
+                    stream_options={"include_usage": True},
+                )
+            except Exception as exc:
+                err_msg = str(exc)
+                if any(kw in err_msg.lower() for kw in ("rate", "limit", "quota", "429")):
+                    yield ExecEvent(
+                        kind=EventKind.error,
+                        message=f"rate_limit_reached: {err_msg}",
+                        data={"rate_limit": True},
+                    )
+                else:
+                    yield ExecEvent(kind=EventKind.error, message=err_msg)
+                return
+
+            # Collect streamed response
+            assistant_text = ""
+            tool_calls_acc: dict[int, dict] = {}
+            usage_delta = Usage()
+
+            async for chunk in stream:
+                if chunk.usage:
+                    usage_delta = Usage(
+                        tokens_in=chunk.usage.prompt_tokens or 0,
+                        tokens_out=chunk.usage.completion_tokens or 0,
+                    )
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                if delta.content:
+                    assistant_text += delta.content
+                    full_text += delta.content
+                    yield ExecEvent(kind=EventKind.token, text=delta.content)
+                if delta.tool_calls:
+                    for tc in delta.tool_calls:
+                        idx = tc.index
+                        if idx not in tool_calls_acc:
+                            tool_calls_acc[idx] = {"id": tc.id or "", "name": "", "args": ""}
+                        if tc.function:
+                            if tc.function.name:
+                                tool_calls_acc[idx]["name"] += tc.function.name
+                            if tc.function.arguments:
+                                tool_calls_acc[idx]["args"] += tc.function.arguments
+
+            usage_delta.cost_usd = self._compute_cost(usage_delta)
+            total_usage = total_usage + usage_delta
+
+            if not tool_calls_acc:
+                # No tool calls — final answer
+                break
+
+            # Run tools
+            messages.append({"role": "assistant", "content": assistant_text,
+                             "tool_calls": [
+                                 {"id": v["id"], "type": "function",
+                                  "function": {"name": v["name"], "arguments": v["args"]}}
+                                 for v in tool_calls_acc.values()
+                             ]})
+            for v in tool_calls_acc.values():
+                result = await self._call_tool(v["name"], v["args"], workdir=workdir)
+                yield ExecEvent(kind=EventKind.tool, message=f"[{v['name']}] called",
+                                data={"tool": v["name"], "result_chars": len(result)})
+                messages.append({"role": "tool", "content": result, "tool_call_id": v["id"]})
+
+        total_usage.cost_usd = self._compute_cost(total_usage)
+        exec_result = ExecResult(text=full_text, usage=total_usage, provider=self.name,
+                                 model=self._model or "unknown")
+        yield ExecEvent(kind=EventKind.result, message=f"[{self.name}] done",
+                        data={"result": exec_result, "usage": total_usage.__dict__})
+
+    # ── Anthropic ─────────────────────────────────────────────────────────────
+
+    async def _run_anthropic(
+        self, prompt: str, *, workdir: str, tools_enabled: bool,
+        max_rounds: int, budget_usd: float,
+    ) -> AsyncIterator[ExecEvent]:
+        import anthropic
+        from app.credentials import resolve_api_key
+
+        api_key = await resolve_api_key(self._cred_provider, self._def.env_key or "ANTHROPIC_API_KEY")
+        if not api_key:
+            yield ExecEvent(
+                kind=EventKind.error,
+                message=f"no credentials for {self.name}: set {self._def.env_key or 'ANTHROPIC_API_KEY'} or store a key via /api/credentials",
+            )
+            return
+        client = anthropic.AsyncAnthropic(api_key=api_key)
+
+        messages = [{"role": "user", "content": prompt}]
+        anth_tools = [
+            {"name": t["name"], "description": t["description"], "input_schema": t["parameters"]}
+            for t in TOOL_SCHEMAS
+        ] if tools_enabled else []
+
+        total_usage = Usage()
+        full_text = ""
+
+        yield ExecEvent(kind=EventKind.log, message=f"[{self.name}] starting (anthropic)")
+        yield ExecEvent(kind=EventKind.phase, phase="running")
+
+        for round_num in range(max_rounds):
+            if total_usage.cost_usd > budget_usd:
+                break
+
+            try:
+                async with client.messages.stream(
+                    model=self._model or "claude-opus-4-5",
+                    max_tokens=4096,
+                    system=_SYSTEM_PROMPT,
+                    messages=messages,
+                    tools=anth_tools or None,
+                ) as stream:
+                    tool_uses = []
+                    async for event in stream:
+                        if hasattr(event, "type"):
+                            if event.type == "content_block_delta":
+                                if hasattr(event.delta, "text"):
+                                    chunk = event.delta.text
+                                    full_text += chunk
+                                    yield ExecEvent(kind=EventKind.token, text=chunk)
+                            elif event.type == "message_stop":
+                                pass
+
+                    final_msg = await stream.get_final_message()
+                    in_tok = final_msg.usage.input_tokens
+                    out_tok = final_msg.usage.output_tokens
+                    delta = Usage(tokens_in=in_tok, tokens_out=out_tok,
+                                  cost_usd=self._compute_cost(Usage(in_tok, out_tok)))
+                    total_usage = total_usage + delta
+
+                    # Extract tool uses
+                    for block in final_msg.content:
+                        if block.type == "tool_use":
+                            tool_uses.append(block)
+                        elif block.type == "text":
+                            full_text = block.text  # use complete text from final message
+
+                    if final_msg.stop_reason != "tool_use" or not tool_uses:
+                        break
+
+                    # Run tool calls
+                    messages.append({"role": "assistant", "content": final_msg.content})
+                    tool_results = []
+                    for tu in tool_uses:
+                        result = await self._call_tool(tu.name, json.dumps(tu.input), workdir=workdir)
+                        yield ExecEvent(kind=EventKind.tool, message=f"[{tu.name}] called",
+                                        data={"tool": tu.name, "result_chars": len(result)})
+                        tool_results.append({"type": "tool_result", "tool_use_id": tu.id, "content": result})
+                    messages.append({"role": "user", "content": tool_results})
+
+            except Exception as exc:
+                err = str(exc)
+                if any(kw in err.lower() for kw in ("rate", "limit", "quota", "429", "overloaded")):
+                    yield ExecEvent(kind=EventKind.error, message=f"rate_limit_reached: {err}",
+                                    data={"rate_limit": True})
+                else:
+                    yield ExecEvent(kind=EventKind.error, message=err)
+                return
+
+        exec_result = ExecResult(text=full_text, usage=total_usage, provider=self.name,
+                                 model=self._model or "unknown")
+        yield ExecEvent(kind=EventKind.result, message=f"[{self.name}] done",
+                        data={"result": exec_result, "usage": total_usage.__dict__})
+
+    # ── Tool dispatch ─────────────────────────────────────────────────────────
+
+    async def _call_tool(self, name: str, args_json: str, *, workdir: str) -> str:
+        module = _TOOLS.get(name)
+        if module is None:
+            return f"[unknown tool: {name}]"
+        try:
+            args = json.loads(args_json) if args_json else {}
+            if name == "file_write":
+                return await module.run(**args, workdir=workdir)
+            return await module.run(**args)
+        except Exception as exc:
+            return f"[{name} error] {exc}"

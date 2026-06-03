@@ -1,0 +1,24 @@
+{
+  "_comment": "Phase B — extra provider instances (multiple subscriptions per provider). Point PROVIDER_INSTANCES_CONFIG at a copy of this file. Each entry adds an account ALONGSIDE the implicit default instance (whose id == the template name). Use the instance ids ('claude:work') as routing candidates. For CLI accounts, put cli_config_dir under $HOME (/home/agent) so it persists on the agent_home volume; then log in with: make auth p=claude:work",
+  "instances": [
+    {
+      "id": "claude:work",
+      "template": "claude",
+      "label": "Claude Max (work)",
+      "cli_config_dir": "/home/agent/.claude-work"
+    },
+    {
+      "id": "claude:personal",
+      "template": "claude",
+      "label": "Claude Max (personal)",
+      "cli_config_dir": "/home/agent/.claude-personal"
+    },
+    {
+      "id": "openai-api:team",
+      "template": "openai-api",
+      "label": "OpenAI (team key)",
+      "credential_provider": "openai-api:team",
+      "model_override": "o3"
+    }
+  ]
+}

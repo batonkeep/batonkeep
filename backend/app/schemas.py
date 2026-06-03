@@ -1,0 +1,190 @@
+"""
+schemas.py — Pydantic request/response schemas for the REST API (§10).
+"""
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any, Optional
+
+from pydantic import BaseModel, ConfigDict
+
+
+# ── Routing policy (§4.3) ────────────────────────────────────────────────────
+
+class RoutingPolicy(BaseModel):
+    strategy: str = "capability"  # capability | fixed | round_robin | cost_optimized
+    candidates: list[str] = ["mock"]
+    capability_tags: list[str] = []
+    failover: bool = True
+    overflow_to: Optional[str] = None
+    max_attempts: int = 3
+
+
+# ── Task ─────────────────────────────────────────────────────────────────────
+
+class TaskCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    category: Optional[str] = None
+    prompt_template: str = ""
+    params: Optional[dict[str, Any]] = None
+    schedule_kind: str = "none"
+    schedule_expr: Optional[str] = None
+    timezone: str = "UTC"  # IANA tz for cron interpretation
+    want_markdown: bool = True
+    want_json: bool = False
+    enabled: bool = True
+    routing: Optional[RoutingPolicy] = None
+
+
+class TaskUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    category: Optional[str] = None
+    prompt_template: Optional[str] = None
+    params: Optional[dict[str, Any]] = None
+    schedule_kind: Optional[str] = None
+    schedule_expr: Optional[str] = None
+    timezone: Optional[str] = None
+    want_markdown: Optional[bool] = None
+    want_json: Optional[bool] = None
+    enabled: Optional[bool] = None
+    routing: Optional[RoutingPolicy] = None
+
+
+class TaskOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    owner_id: str
+    name: str
+    description: Optional[str]
+    category: Optional[str]
+    prompt_template: str
+    params: Optional[dict[str, Any]]
+    schedule_kind: str
+    schedule_expr: Optional[str]
+    timezone: str
+    want_markdown: bool
+    want_json: bool
+    enabled: bool
+    routing: Optional[dict[str, Any]]
+    created_at: datetime
+    updated_at: datetime
+
+
+# ── Run ───────────────────────────────────────────────────────────────────────
+
+class RunOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    owner_id: str
+    task_id: int
+    trigger: str
+    status: str
+    summary: Optional[str]
+    error: Optional[str]
+    provider: Optional[str]
+    model: Optional[str]
+    tier: Optional[str]
+    attempts: Optional[list[Any]]
+    overflow_used: bool
+    deferred_until: Optional[datetime]
+    tokens_in: int
+    tokens_out: int
+    cost_usd: float
+    subagents: int
+    tool_calls: int
+    markdown_path: Optional[str]
+    json_path: Optional[str]
+    created_at: datetime
+    started_at: Optional[datetime]
+    finished_at: Optional[datetime]
+    duration_ms: Optional[int]
+
+
+# ── RunEvent ──────────────────────────────────────────────────────────────────
+
+class RunEventOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    run_id: int
+    seq: int
+    ts: datetime
+    kind: str
+    phase: Optional[str]
+    message: Optional[str]
+    data: Optional[dict[str, Any]]
+
+
+# ── Provider health (§4.4) ────────────────────────────────────────────────────
+
+class ProviderHealth(BaseModel):
+    name: str          # instance id ("claude" or "claude:work")
+    template: str      # provider template ("claude") — UI groups instances under this
+    label: str         # human display label for the account
+    model: Optional[str] = None  # active model for API instances (None for CLI)
+    kind: str
+    tier: str
+    healthy: bool
+    cooldown_until: Optional[datetime]
+    last_reset_seen: Optional[datetime]
+    est_used_pct: Optional[float]
+    mode: str  # plan | api | open | mock
+
+
+class ProviderLimitsUpdate(BaseModel):
+    """Operator-declared limit windows (§4.4)."""
+    window_seconds: int
+    window_limit: int  # estimated cap within the window
+
+
+class ProviderModelUpdate(BaseModel):
+    """Set (or clear, when null/empty) an instance's runtime model override."""
+    model: Optional[str] = None
+
+
+class ConsoleConfig(BaseModel):
+    """Whether the scoped in-UI console is available (does not reveal the token)."""
+    available: bool
+
+
+# ── Stats ─────────────────────────────────────────────────────────────────────
+
+class StatsOut(BaseModel):
+    runs_today: int
+    success_rate: float
+    avg_duration_ms: Optional[float]
+    runs_by_provider: dict[str, int]
+    failover_rate: float
+    deferred_now: int
+    cost_today_usd: float
+    active_runs: int
+
+
+# ── Credentials (BYO-key) ─────────────────────────────────────────────────────
+
+class CredentialCreate(BaseModel):
+    provider: str  # template name or instance id ("openai-api" / "openai-api:team")
+    api_key: str  # plaintext; encrypted before storage
+    label: Optional[str] = None
+
+
+class CredentialOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    owner_id: str
+    provider: str
+    label: Optional[str] = None
+    created_at: datetime
+
+
+# ── Mode ─────────────────────────────────────────────────────────────────────
+
+class ModeOut(BaseModel):
+    mode: str  # plan | byo_key | hosted
+    deployment_mode: str
+    plan_cli_allowed: bool

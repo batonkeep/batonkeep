@@ -1,0 +1,57 @@
+[project]
+name = "batonkeep-backend"
+version = "0.1.0"
+description = "Cross-provider plan orchestrator backend"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi==0.115.6",
+    "uvicorn[standard]==0.32.1",
+    "sqlalchemy==2.0.36",
+    "aiosqlite==0.20.0",
+    "alembic==1.14.0",
+    "apscheduler==3.10.4",
+    "openai==1.58.1",
+    "anthropic==0.40.0",
+    "httpx==0.28.1",
+    "pydantic==2.10.3",
+    "pydantic-settings==2.7.0",
+    "cryptography==44.0.0",
+    "python-multipart==0.0.20",
+    "websockets==14.1",
+    "aiofiles==24.1.0",
+    "greenlet==3.1.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.4",
+    "pytest-asyncio==0.24.0",
+    "anyio==4.7.0",
+    "ruff==0.8.6",
+    "mypy==1.14.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==8.3.4",
+    "pytest-asyncio==0.24.0",
+    "anyio==4.7.0",
+    "ruff==0.8.6",
+    "mypy==1.14.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = false
+ignore_missing_imports = true

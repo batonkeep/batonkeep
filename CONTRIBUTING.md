@@ -15,12 +15,6 @@ git commit -s -m "your commit message"
 This certifies that you wrote the code or have the right to submit it under the AGPLv3
 license. See https://developercertificate.org/ for the full text.
 
-## Open-core boundary
-
-This repo (`batonkeep`) is the [OSS] engine. It must never import or reference
-`batonkeep-cloud` (the proprietary control plane). A CI check enforces this. See
-`AGENTS.md` in the ops repo for the full constitution.
-
 ## Getting started
 
 See `README.md` for setup. Build on the `mock` provider first; wire real providers only

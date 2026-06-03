@@ -11,6 +11,7 @@ import TaskForm from "./components/TaskForm";
 import RunViewer from "./components/RunViewer";
 import ProvidersPanel from "./components/ProvidersPanel";
 import Onboarding from "./components/Onboarding";
+import Styleguide from "./components/Styleguide";
 import { STATUS_META, fmtTime } from "./format";
 
 function runsPerDay(runs: Run[], days = 14): number[] {
@@ -25,6 +26,20 @@ function runsPerDay(runs: Run[], days = 14): number[] {
 }
 
 export default function App() {
+  // Design-system reference (D-track). Reachable at #styleguide; re-renders on
+  // hash change so it works without a router.
+  const [hash, setHash] = useState(() => window.location.hash);
+  useEffect(() => {
+    const onHash = () => setHash(window.location.hash);
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+  if (hash === "#styleguide") return <Styleguide />;
+
+  return <AppShell />;
+}
+
+function AppShell() {
   const { status: wsStatus, liveRuns } = useLiveFeed();
   const [view, setView] = useState<View>("tasks");
   const [tasks, setTasks] = useState<Task[]>([]);

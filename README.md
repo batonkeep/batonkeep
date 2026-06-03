@@ -6,9 +6,6 @@ Batonkeep is the device-independent control plane for your own subscription-back
 agents. Schedule tasks, run interactive build sessions, switch providers mid-task when
 rate-limited, and publish work to shareable URLs — all on a backend you control.
 
-> This is the `[OSS]` engine. The proprietary multi-user control plane lives in
-> `batonkeep-cloud`. The ops knowledgebase and build specs live in `batonkeep-ops`.
-
 ## What it does
 
 - **Task scheduler** — run prompts against your own Claude / Grok / Antigravity / Codex

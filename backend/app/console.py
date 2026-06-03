@@ -87,25 +87,32 @@ class PtyAuthSession:
 
     async def read(self) -> Optional[bytes]:
         """Await the next chunk of output; None when the process has exited."""
-        if self._master_fd is None:
+        # Capture the fd in a local: close() may null self._master_fd while this
+        # read is in flight (cancellation race). Using the captured integer keeps
+        # add_reader/remove_reader symmetric so the reader is always unregistered —
+        # dereferencing self._master_fd here would pass None to remove_reader after
+        # close(), raising ValueError and leaving a dangling reader on the closed
+        # fd that uvloop re-fires forever.
+        fd = self._master_fd
+        if fd is None:
             return None
         fut: asyncio.Future = self._loop.create_future()
 
         def _on_readable() -> None:
-            self._loop.remove_reader(self._master_fd)
+            self._loop.remove_reader(fd)
             try:
-                data = os.read(self._master_fd, 4096)
+                data = os.read(fd, 4096)
             except OSError:
                 data = b""
             if not fut.done():
                 fut.set_result(data)
 
-        self._loop.add_reader(self._master_fd, _on_readable)
+        self._loop.add_reader(fd, _on_readable)
         try:
             data = await fut
         finally:
             try:
-                self._loop.remove_reader(self._master_fd)
+                self._loop.remove_reader(fd)
             except Exception:
                 pass
         return data or None
@@ -140,11 +147,20 @@ class PtyAuthSession:
             except (ProcessLookupError, subprocess.TimeoutExpired):
                 pass
         if self._master_fd is not None:
+            fd = self._master_fd
+            self._master_fd = None
+            # Unregister before closing: a reader left on a closed fd is re-fired
+            # by uvloop indefinitely. Guard for close() being called before start().
+            loop = getattr(self, "_loop", None)
+            if loop is not None:
+                try:
+                    loop.remove_reader(fd)
+                except Exception:
+                    pass
             try:
-                os.close(self._master_fd)
+                os.close(fd)
             except OSError:
                 pass
-            self._master_fd = None
 
 
 def _pids_on_pts(pts_minor: int) -> list[int]:

@@ -181,3 +181,55 @@ class TestSessionTurns:
         orch.get_executor = lambda name: None  # nothing available
         with pytest.raises(orch.SessionError):
             await orch.run_turn("s1", "hello", provider="nope", owner_id="local")
+
+
+# ── Rename endpoint (HTTP) ────────────────────────────────────────────────────
+
+class TestSessionRename:
+    """PATCH /api/sessions/{id} renames the session; empty/whitespace is rejected."""
+
+    def test_patch_renames_and_validates(self, tmp_path):
+        import asyncio
+        from fastapi.testclient import TestClient
+        from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+        from app.db import Base, get_db
+        from app.models import Owner, Session as SessionModel
+        from app.main import app, _owner_id
+
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/r.db", echo=False)
+
+        async def _setup():
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+
+        asyncio.get_event_loop().run_until_complete(_setup())
+        Maker = async_sessionmaker(engine, expire_on_commit=False)
+
+        async def _seed():
+            async with Maker() as db:
+                db.add(Owner(id="local", label="Test"))
+                db.add(SessionModel(
+                    id="s1", owner_id="local", title="Untitled session", provider="mock",
+                    workspace_path=str(tmp_path), preview_token="tok", status="active",
+                ))
+                await db.commit()
+
+        asyncio.get_event_loop().run_until_complete(_seed())
+
+        async def _override_db():
+            async with Maker() as db:
+                yield db
+
+        app.dependency_overrides[get_db] = _override_db
+        app.dependency_overrides[_owner_id] = lambda: "local"
+        try:
+            c = TestClient(app)
+            ok = c.patch("/api/sessions/s1", json={"title": "  Catering landing page  "})
+            assert ok.status_code == 200
+            assert ok.json()["title"] == "Catering landing page"  # trimmed
+
+            assert c.patch("/api/sessions/s1", json={"title": "   "}).status_code == 400
+            assert c.patch("/api/sessions/nope", json={"title": "x"}).status_code == 404
+        finally:
+            app.dependency_overrides.clear()
+            asyncio.get_event_loop().run_until_complete(engine.dispose())

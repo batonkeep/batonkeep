@@ -128,6 +128,11 @@ class SessionCreate(BaseModel):
     provider: Optional[str] = None
 
 
+class SessionUpdate(BaseModel):
+    # rename a session (other fields like provider are switched via turns)
+    title: Optional[str] = None
+
+
 class TurnCreate(BaseModel):
     message: str
     # optional provider switch for this and subsequent turns

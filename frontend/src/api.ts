@@ -12,6 +12,7 @@ import type {
   Session,
   SessionInput,
   SessionTurn,
+  SessionUpdate,
   Stats,
   Task,
   TaskInput,
@@ -81,13 +82,18 @@ export const api = {
   getSession: (id: string) => req<Session>(`/sessions/${id}`),
   createSession: (body: SessionInput) =>
     req<Session>("/sessions", { method: "POST", body: JSON.stringify(body) }),
+  updateSession: (id: string, body: SessionUpdate) =>
+    req<Session>(`/sessions/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   listTurns: (id: string) => req<SessionTurn[]>(`/sessions/${id}/turns`),
   createTurn: (id: string, body: TurnInput) =>
     req<SessionTurn>(`/sessions/${id}/turns`, { method: "POST", body: JSON.stringify(body) }),
-  // Authenticated live-preview URL for an iframe; token gates every request (M1.2).
+  // Authenticated live-preview URL for an iframe. The token is a path segment (not a
+  // query param) and the base ends in a slash, so the agent's relative asset links
+  // (href="style.css") resolve under the same authenticated base and load (M1.2).
   previewUrl: (id: string, token: string, path = "") => {
     const rel = path.replace(/^\/+/, "");
-    return `${BASE}/sessions/${id}/preview${rel ? `/${rel}` : ""}?t=${encodeURIComponent(token)}`;
+    const base = `${BASE}/sessions/${id}/preview/${encodeURIComponent(token)}`;
+    return rel ? `${base}/${rel}` : `${base}/`;
   },
 
   // ── Providers ──────────────────────────────────────────────────────────

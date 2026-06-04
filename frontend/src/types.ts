@@ -198,6 +198,11 @@ export interface SessionTurn {
   finished_at: string | null;
 }
 
+// Payload accepted by PATCH /sessions/{id}.
+export interface SessionUpdate {
+  title?: string | null;
+}
+
 // Payload accepted by POST /sessions/{id}/turns.
 export interface TurnInput {
   message: string;

@@ -37,6 +37,7 @@ from app.schemas import (
     SessionCreate,
     SessionOut,
     SessionTurnOut,
+    SessionUpdate,
     StatsOut,
     TaskCreate,
     TaskOut,
@@ -405,6 +406,27 @@ async def get_session(
     return SessionOut.model_validate(session)
 
 
+@app.patch("/api/sessions/{session_id}", response_model=SessionOut, tags=["sessions"])
+async def update_session(
+    session_id: str,
+    body: SessionUpdate,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """Rename a build session (the only mutable field; provider switches via turns)."""
+    session = await db.get(Session, session_id)
+    if session is None or session.owner_id != owner_id:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if body.title is not None:
+        title = body.title.strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="title must not be empty")
+        session.title = title[:256]
+    await db.commit()
+    await db.refresh(session)
+    return SessionOut.model_validate(session)
+
+
 @app.get("/api/sessions/{session_id}/turns", response_model=list[SessionTurnOut], tags=["sessions"])
 async def list_session_turns(
     session_id: str,
@@ -449,21 +471,23 @@ async def create_session_turn(
     return SessionTurnOut.model_validate(turn)
 
 
-@app.get("/api/sessions/{session_id}/preview/{path:path}", tags=["sessions"])
-@app.get("/api/sessions/{session_id}/preview", tags=["sessions"])
+@app.get("/api/sessions/{session_id}/preview/{token}/{path:path}", tags=["sessions"])
+@app.get("/api/sessions/{session_id}/preview/{token}", tags=["sessions"])
 async def session_preview(
     session_id: str,
+    token: str,
     path: str = "",
-    t: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
     owner_id: str = Depends(_owner_id),
 ):
     """
     Serve a file from the session workspace for the in-UI live preview (M1.2).
 
-    Gated by the session's preview token (`?t=`) on every request — the workspace
-    is never reachable without session auth, and paths are confined to the
-    session's own workspace.
+    The preview token is a **path segment** (not a query param) so that the agent's
+    relative asset links (`href="style.css"`) resolve under the same authenticated
+    base and carry the token automatically — sub-assets load without cookies or
+    HTML rewriting. The workspace is never reachable without session auth, and
+    paths are confined to the session's own workspace.
     """
     from app.sessions.preview import resolve_preview_file, check_token, PreviewError
 
@@ -472,7 +496,7 @@ async def session_preview(
         raise HTTPException(status_code=404, detail="Session not found")
 
     try:
-        check_token(session.preview_token, t)
+        check_token(session.preview_token, token)
         file_path, media = resolve_preview_file(session.workspace_path, path)
     except PreviewError as exc:
         raise HTTPException(status_code=exc.status, detail=exc.detail)

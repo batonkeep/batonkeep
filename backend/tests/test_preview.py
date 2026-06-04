@@ -132,14 +132,22 @@ class TestPreviewEndpoint:
         try:
             c = TestClient(app)  # no lifespan context → module engine untouched
 
-            ok = c.get("/api/sessions/s1/preview?t=tok-123")
+            # Token is a path segment so relative assets resolve under the same base.
+            ok = c.get("/api/sessions/s1/preview/tok-123")
             assert ok.status_code == 200
             assert "built by the agent" in ok.text
             assert ok.headers.get("cache-control") == "no-store"
 
-            assert c.get("/api/sessions/s1/preview").status_code == 403          # no token
-            assert c.get("/api/sessions/s1/preview?t=wrong").status_code == 403  # wrong token
-            assert c.get("/api/sessions/nope/preview?t=tok-123").status_code == 404
+            # A relative sub-asset request (as a browser would issue it) is authed too.
+            with open(os.path.join(root, "style.css"), "w") as f:
+                f.write("body{color:red}")
+            asset = c.get("/api/sessions/s1/preview/tok-123/style.css")
+            assert asset.status_code == 200
+            assert "color:red" in asset.text
+
+            assert c.get("/api/sessions/s1/preview/wrong").status_code == 403       # wrong token
+            assert c.get("/api/sessions/s1/preview/wrong/style.css").status_code == 403
+            assert c.get("/api/sessions/nope/preview/tok-123").status_code == 404
         finally:
             app.dependency_overrides.clear()
             asyncio.get_event_loop().run_until_complete(engine.dispose())

@@ -4,12 +4,26 @@
 // session's token-authenticated workspace, refreshed when a turn completes.
 // D-track: composed from ui/ primitives (Button, Badge, Card, StatusDot, Select).
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Plus, RefreshCw, Send } from "lucide-react";
+import { marked } from "marked";
+import { Check, ChevronRight, Pencil, Plus, RefreshCw, Send, X } from "lucide-react";
 import type { ProviderHealth, Session, SessionTurn } from "../types";
 import { api } from "../api";
-import { useSessionEvents } from "../useLiveFeed";
+import { useSessionEvents, type SessionEvent } from "../useLiveFeed";
 import { fmtTime } from "../format";
 import { Badge, Button, Card, Select, StatusDot, type Tone } from "../ui";
+
+function renderMarkdown(src: string): string {
+  return marked.parse(src, { async: false }) as string;
+}
+
+// The live feed shows a curated set of meaningful events by default. `log` frames
+// carry internal scaffolding (the assembled turn-context prompt, CLI launch flags
+// like --dangerously-skip-permissions, raw end-of-stream markers) that would read
+// as unsafe/noisy to the user — those are only shown when "raw" is expanded.
+const CURATED_KINDS = new Set(["phase", "tool", "subagent", "result", "route", "error"]);
+function isCurated(ev: SessionEvent): boolean {
+  return CURATED_KINDS.has(ev.kind);
+}
 
 interface Props {
   sessions: Session[];
@@ -49,6 +63,8 @@ export default function SessionView({
   const [sending, setSending] = useState(false);
   const [creating, setCreating] = useState(false);
   const [previewNonce, setPreviewNonce] = useState(0);
+  const [rawOpen, setRawOpen] = useState(false);
+  const [titleDraft, setTitleDraft] = useState<string | null>(null); // non-null = editing
 
   const { events, streamingText, lastTurn } = useSessionEvents(selectedId);
   const streamRef = useRef<HTMLDivElement>(null);
@@ -70,6 +86,8 @@ export default function SessionView({
     setTurns([]);
     setProviderSwitch("");
     setPreviewNonce(0);
+    setRawOpen(false);
+    setTitleDraft(null);
     if (!selectedId) return;
     api.getSession(selectedId).then(setDetail).catch(() => {});
     loadTurns();
@@ -100,6 +118,18 @@ export default function SessionView({
     }
   };
 
+  const handleRename = async () => {
+    const next = (titleDraft ?? "").trim();
+    if (!selectedId || !next || next === detail?.title) {
+      setTitleDraft(null);
+      return;
+    }
+    const updated = await api.updateSession(selectedId, { title: next });
+    setDetail(updated);
+    setTitleDraft(null);
+    onSessionsChanged();
+  };
+
   const handleSend = async () => {
     if (!selectedId || !message.trim() || sending) return;
     setSending(true);
@@ -116,14 +146,19 @@ export default function SessionView({
     }
   };
 
+  // Cache-bust with a query param so relative asset links in the page still resolve
+  // against the token base; the backend ignores it (Cache-Control: no-store anyway).
   const previewSrc =
     detail && detail.preview_token
       ? `${api.previewUrl(detail.id, detail.preview_token)}${
-          previewNonce ? `&_=${previewNonce}` : ""
+          previewNonce ? `?_=${previewNonce}` : ""
         }`
       : null;
 
   const turnRunning = lastTurn?.status === "running" || sending;
+  const curatedEvents = useMemo(() => events.filter(isCurated), [events]);
+  const hiddenCount = events.length - curatedEvents.length;
+  const shownEvents = rawOpen ? events : curatedEvents;
 
   return (
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-[15rem_minmax(0,1fr)_minmax(0,1fr)]">
@@ -173,6 +208,43 @@ export default function SessionView({
           </div>
         ) : (
           <>
+            {/* Editable session title */}
+            <div className="flex items-center gap-2 border-b border-edge px-4 py-2.5">
+              {titleDraft !== null ? (
+                <>
+                  <input
+                    autoFocus
+                    value={titleDraft}
+                    onChange={(e) => setTitleDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleRename();
+                      if (e.key === "Escape") setTitleDraft(null);
+                    }}
+                    className="flex-1 rounded-md border border-edge bg-base px-2 py-1 font-mono text-sm text-ink focus-visible:border-amber/60 focus-visible:outline-none"
+                  />
+                  <Button variant="ghost" size="sm" className="px-1.5" icon={<Check size={15} />}
+                    onClick={handleRename} title="Save" />
+                  <Button variant="ghost" size="sm" className="px-1.5" icon={<X size={15} />}
+                    onClick={() => setTitleDraft(null)} title="Cancel" />
+                </>
+              ) : (
+                <>
+                  <span className="flex-1 truncate font-mono text-sm text-ink">
+                    {detail?.title ?? "…"}
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="px-1.5"
+                    icon={<Pencil size={13} />}
+                    onClick={() => setTitleDraft(detail?.title ?? "")}
+                    disabled={!detail}
+                    title="Rename session"
+                  />
+                </>
+              )}
+            </div>
+
             <div
               ref={streamRef}
               className="flex-1 space-y-3 overflow-y-auto p-4"
@@ -194,16 +266,19 @@ export default function SessionView({
                     )}
                   </div>
                   {t.response && (
-                    <div className="whitespace-pre-wrap px-1 text-sm text-ink/80">{t.response}</div>
+                    <div
+                      className="markdown px-1 text-sm text-ink/80"
+                      dangerouslySetInnerHTML={{ __html: renderMarkdown(t.response) }}
+                    />
                   )}
                   {t.error && <div className="px-1 text-sm text-bad">{t.error}</div>}
                 </div>
               ))}
 
-              {/* Live event stream for the in-flight turn. */}
+              {/* Live event stream for the in-flight turn (curated by default). */}
               {(events.length > 0 || streamingText) && (
                 <div className="space-y-1 rounded-lg border border-edge bg-base/60 p-3 font-mono text-xs">
-                  {events.map((ev, i) => (
+                  {shownEvents.map((ev, i) => (
                     <div key={i} className="flex gap-2">
                       <span className={`w-16 shrink-0 ${KIND_COLOR[ev.kind] || "text-muted"}`}>
                         {ev.kind}
@@ -218,6 +293,18 @@ export default function SessionView({
                       {streamingText.slice(-800)}
                       <span className="ml-0.5 inline-block h-3 w-1.5 animate-pulse-live bg-live align-middle" />
                     </div>
+                  )}
+                  {hiddenCount > 0 && (
+                    <button
+                      onClick={() => setRawOpen((o) => !o)}
+                      className="flex items-center gap-1 pt-1 text-[11px] text-muted hover:text-ink"
+                    >
+                      <ChevronRight
+                        size={12}
+                        className={`transition-transform ${rawOpen ? "rotate-90" : ""}`}
+                      />
+                      {rawOpen ? "hide raw log" : `show raw log (${hiddenCount} internal)`}
+                    </button>
                   )}
                 </div>
               )}

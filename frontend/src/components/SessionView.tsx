@@ -5,7 +5,7 @@
 // D-track: composed from ui/ primitives (Button, Badge, Card, StatusDot, Select).
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
-import { Check, ChevronRight, Pencil, Plus, RefreshCw, Send, X } from "lucide-react";
+import { Activity, Check, ChevronRight, Loader2, Pencil, Plus, RefreshCw, Send, X } from "lucide-react";
 import type { ProviderHealth, Session, SessionTurn } from "../types";
 import { api } from "../api";
 import { useSessionEvents, type SessionEvent } from "../useLiveFeed";
@@ -23,6 +23,18 @@ function renderMarkdown(src: string): string {
 const CURATED_KINDS = new Set(["phase", "tool", "subagent", "result", "route", "error"]);
 function isCurated(ev: SessionEvent): boolean {
   return CURATED_KINDS.has(ev.kind);
+}
+
+// Animated "generating…" line shown while a turn is in flight. Surfaces the most
+// recent curated step so the user sees forward progress, not a frozen spinner.
+function GeneratingIndicator({ latest }: { latest?: string }) {
+  return (
+    <div className="flex items-center gap-2 px-1 text-sm text-live">
+      <Loader2 size={14} className="animate-spin" />
+      <span>Generating…</span>
+      {latest && <span className="truncate font-mono text-[11px] text-muted">{latest}</span>}
+    </div>
+  );
 }
 
 interface Props {
@@ -64,7 +76,10 @@ export default function SessionView({
   const [creating, setCreating] = useState(false);
   const [previewNonce, setPreviewNonce] = useState(0);
   const [rawOpen, setRawOpen] = useState(false);
+  const [activityOpen, setActivityOpen] = useState(false);
   const [titleDraft, setTitleDraft] = useState<string | null>(null); // non-null = editing
+  const [pendingMessage, setPendingMessage] = useState<string | null>(null); // optimistic turn
+  const [sendError, setSendError] = useState<string | null>(null);
 
   const { events, streamingText, lastTurn } = useSessionEvents(selectedId);
   const streamRef = useRef<HTMLDivElement>(null);
@@ -87,7 +102,10 @@ export default function SessionView({
     setProviderSwitch("");
     setPreviewNonce(0);
     setRawOpen(false);
+    setActivityOpen(false);
     setTitleDraft(null);
+    setPendingMessage(null);
+    setSendError(null);
     if (!selectedId) return;
     api.getSession(selectedId).then(setDetail).catch(() => {});
     loadTurns();
@@ -102,10 +120,10 @@ export default function SessionView({
     }
   }, [lastTurn, loadTurns]);
 
-  // Auto-scroll the live event stream.
+  // Auto-scroll the chat to the latest content.
   useEffect(() => {
     if (streamRef.current) streamRef.current.scrollTop = streamRef.current.scrollHeight;
-  }, [events, streamingText]);
+  }, [events, streamingText, turns, pendingMessage]);
 
   const handleCreate = async () => {
     setCreating(true);
@@ -131,17 +149,27 @@ export default function SessionView({
   };
 
   const handleSend = async () => {
-    if (!selectedId || !message.trim() || sending) return;
+    const text = message.trim();
+    if (!selectedId || !text || sending) return;
+    // Optimistic: show the user's message and clear the input immediately, rather
+    // than waiting for the (potentially long) turn to complete server-side.
+    setMessage("");
+    setSendError(null);
+    setPendingMessage(text);
     setSending(true);
     try {
       await api.createTurn(selectedId, {
-        message: message.trim(),
+        message: text,
         provider: providerSwitch || undefined,
       });
-      setMessage("");
       loadTurns();
       onSessionsChanged(); // session.provider may have switched
+    } catch (err) {
+      // Surface the failure and restore the message so it isn't lost.
+      setSendError(err instanceof Error ? err.message : "Failed to send message");
+      setMessage(text);
     } finally {
+      setPendingMessage(null);
       setSending(false);
     }
   };
@@ -241,6 +269,16 @@ export default function SessionView({
                     disabled={!detail}
                     title="Rename session"
                   />
+                  <Button
+                    variant={activityOpen ? "outline" : "ghost"}
+                    size="sm"
+                    className="gap-1.5 px-2"
+                    icon={turnRunning ? <Loader2 size={13} className="animate-spin" /> : <Activity size={13} />}
+                    onClick={() => setActivityOpen((o) => !o)}
+                    title="Toggle activity log"
+                  >
+                    <span className="text-[11px]">{events.length > 0 ? events.length : "Log"}</span>
+                  </Button>
                 </>
               )}
             </div>
@@ -249,7 +287,7 @@ export default function SessionView({
               ref={streamRef}
               className="flex-1 space-y-3 overflow-y-auto p-4"
             >
-              {turns.length === 0 && events.length === 0 && (
+              {turns.length === 0 && !pendingMessage && (
                 <div className="text-sm text-muted">
                   Describe what you want to build — e.g. “spin up a landing page”.
                 </div>
@@ -275,8 +313,26 @@ export default function SessionView({
                 </div>
               ))}
 
-              {/* Live event stream for the in-flight turn (curated by default). */}
-              {(events.length > 0 || streamingText) && (
+              {/* Optimistic in-flight turn: the user's message shows immediately. */}
+              {pendingMessage && (
+                <div className="space-y-1">
+                  <div className="rounded-lg border border-edge bg-base px-3 py-2 text-sm text-ink">
+                    {pendingMessage}
+                  </div>
+                  <GeneratingIndicator
+                    latest={curatedEvents[curatedEvents.length - 1]?.message ?? undefined}
+                  />
+                </div>
+              )}
+
+              {sendError && (
+                <div className="rounded-lg border border-bad/40 bg-bad/10 px-3 py-2 text-sm text-bad">
+                  {sendError}
+                </div>
+              )}
+
+              {/* Detailed activity log — off by default (toggled from the header). */}
+              {activityOpen && (events.length > 0 || streamingText) && (
                 <div className="space-y-1 rounded-lg border border-edge bg-base/60 p-3 font-mono text-xs">
                   {shownEvents.map((ev, i) => (
                     <div key={i} className="flex gap-2">

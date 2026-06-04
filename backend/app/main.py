@@ -359,6 +359,7 @@ async def create_session(
     owner_id: str = Depends(_owner_id),
 ):
     """Create a build session with a sandboxed, git-init'd workspace (M1.1)."""
+    import secrets
     import uuid
     from app.sessions import workspace as ws
 
@@ -372,6 +373,7 @@ async def create_session(
         title=title,
         provider=body.provider,
         workspace_path=workspace_path,
+        preview_token=secrets.token_urlsafe(24),
         status="active",
     )
     db.add(session)
@@ -445,6 +447,38 @@ async def create_session_turn(
 
     turn = await db.get(SessionTurn, turn_id)
     return SessionTurnOut.model_validate(turn)
+
+
+@app.get("/api/sessions/{session_id}/preview/{path:path}", tags=["sessions"])
+@app.get("/api/sessions/{session_id}/preview", tags=["sessions"])
+async def session_preview(
+    session_id: str,
+    path: str = "",
+    t: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """
+    Serve a file from the session workspace for the in-UI live preview (M1.2).
+
+    Gated by the session's preview token (`?t=`) on every request — the workspace
+    is never reachable without session auth, and paths are confined to the
+    session's own workspace.
+    """
+    from app.sessions.preview import resolve_preview_file, check_token, PreviewError
+
+    session = await db.get(Session, session_id)
+    if session is None or session.owner_id != owner_id:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    try:
+        check_token(session.preview_token, t)
+        file_path, media = resolve_preview_file(session.workspace_path, path)
+    except PreviewError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail)
+
+    # no-store: preview reflects the latest turn's edits, never a cached version.
+    return FileResponse(file_path, media_type=media, headers={"Cache-Control": "no-store"})
 
 
 # ── /api/stats ──────────────────────────────────────────────────────────────────

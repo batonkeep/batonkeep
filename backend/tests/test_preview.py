@@ -1,0 +1,145 @@
+"""
+tests/test_preview.py — M1.2 gate: live preview serving + session auth.
+
+Verify gate (PLAN §M1.2):
+  a built static page renders in the in-UI preview pane; the preview is not
+  reachable without session auth.
+"""
+from __future__ import annotations
+
+import os
+
+import pytest
+
+from app.sessions.preview import resolve_preview_file, check_token, PreviewError
+
+
+class TestPreviewResolution:
+    def _make_site(self, tmp_path):
+        root = str(tmp_path / "ws")
+        os.makedirs(os.path.join(root, "assets"))
+        with open(os.path.join(root, "index.html"), "w") as f:
+            f.write("<h1>hello</h1>")
+        with open(os.path.join(root, "assets", "logo.svg"), "w") as f:
+            f.write("<svg/>")
+        return root
+
+    def test_root_serves_index(self, tmp_path):
+        root = self._make_site(tmp_path)
+        path, media = resolve_preview_file(root, "")
+        assert path.endswith("index.html")
+        assert media == "text/html"
+
+    def test_nested_asset_served_with_mime(self, tmp_path):
+        root = self._make_site(tmp_path)
+        path, media = resolve_preview_file(root, "assets/logo.svg")
+        assert path.endswith("logo.svg")
+        assert media in ("image/svg+xml", "application/octet-stream")
+
+    def test_missing_file_404(self, tmp_path):
+        root = self._make_site(tmp_path)
+        with pytest.raises(PreviewError) as ei:
+            resolve_preview_file(root, "nope.html")
+        assert ei.value.status == 404
+
+    def test_path_traversal_blocked(self, tmp_path):
+        root = self._make_site(tmp_path)
+        # would escape to a sibling secret file
+        with open(os.path.join(str(tmp_path), "secret.txt"), "w") as f:
+            f.write("topsecret")
+        with pytest.raises(PreviewError) as ei:
+            resolve_preview_file(root, "../secret.txt")
+        assert ei.value.status == 404
+
+    def test_directory_without_index_404(self, tmp_path):
+        root = str(tmp_path / "empty")
+        os.makedirs(root)
+        with pytest.raises(PreviewError) as ei:
+            resolve_preview_file(root, "")
+        assert ei.value.status == 404
+
+
+class TestPreviewAuth:
+    def test_correct_token_passes(self):
+        check_token("secret", "secret")  # no raise
+
+    def test_missing_token_403(self):
+        with pytest.raises(PreviewError) as ei:
+            check_token("secret", None)
+        assert ei.value.status == 403
+
+    def test_wrong_token_403(self):
+        with pytest.raises(PreviewError) as ei:
+            check_token("secret", "guess")
+        assert ei.value.status == 403
+
+    def test_empty_expected_never_authorizes(self):
+        # A session with no token set must never be previewable.
+        with pytest.raises(PreviewError):
+            check_token("", "")
+
+
+# ── End-to-end through the app (renders + auth) ───────────────────────────────
+
+class TestPreviewEndpoint:
+    """
+    Exercises the real route with dependency-overridden DB (the module engine
+    points at a container path), proving: renders a built page WITH the token,
+    refuses WITHOUT it.
+    """
+
+    def test_preview_renders_built_page_with_token_and_blocks_without(self, tmp_path):
+        from fastapi.testclient import TestClient
+        from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+        from app.db import Base, get_db
+        from app.models import Owner, Session as SessionModel
+        from app.main import app, _owner_id
+
+        # Fresh in-process DB.
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/t.db", echo=False)
+        import asyncio
+
+        async def _setup():
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+
+        asyncio.get_event_loop().run_until_complete(_setup())
+        Maker = async_sessionmaker(engine, expire_on_commit=False)
+
+        # Build a session workspace with an agent-built page.
+        root = str(tmp_path / "ws")
+        os.makedirs(root)
+        with open(os.path.join(root, "index.html"), "w") as f:
+            f.write("<h1>built by the agent</h1>")
+
+        async def _seed():
+            async with Maker() as db:
+                db.add(Owner(id="local", label="Test"))
+                db.add(SessionModel(
+                    id="s1", owner_id="local", title="Landing", provider="mock",
+                    workspace_path=root, preview_token="tok-123", status="active",
+                ))
+                await db.commit()
+
+        asyncio.get_event_loop().run_until_complete(_seed())
+
+        async def _override_db():
+            async with Maker() as db:
+                yield db
+
+        app.dependency_overrides[get_db] = _override_db
+        app.dependency_overrides[_owner_id] = lambda: "local"
+        try:
+            c = TestClient(app)  # no lifespan context → module engine untouched
+
+            ok = c.get("/api/sessions/s1/preview?t=tok-123")
+            assert ok.status_code == 200
+            assert "built by the agent" in ok.text
+            assert ok.headers.get("cache-control") == "no-store"
+
+            assert c.get("/api/sessions/s1/preview").status_code == 403          # no token
+            assert c.get("/api/sessions/s1/preview?t=wrong").status_code == 403  # wrong token
+            assert c.get("/api/sessions/nope/preview?t=tok-123").status_code == 404
+        finally:
+            app.dependency_overrides.clear()
+            asyncio.get_event_loop().run_until_complete(engine.dispose())

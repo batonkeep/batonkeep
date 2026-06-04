@@ -157,6 +157,7 @@ class SessionOut(BaseModel):
     title: str
     provider: Optional[str]
     workspace_path: str
+    preview_token: str
     status: str
     created_at: datetime
     updated_at: datetime

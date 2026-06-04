@@ -1,0 +1,306 @@
+// SessionView.tsx — the build-session work surface (M1.2). Left: session list +
+// new-session form. Center: chat input with a provider switcher + turn history
+// with the live event stream. Right: the live preview <iframe> pointed at the
+// session's token-authenticated workspace, refreshed when a turn completes.
+// D-track: composed from ui/ primitives (Button, Badge, Card, StatusDot, Select).
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Plus, RefreshCw, Send } from "lucide-react";
+import type { ProviderHealth, Session, SessionTurn } from "../types";
+import { api } from "../api";
+import { useSessionEvents } from "../useLiveFeed";
+import { fmtTime } from "../format";
+import { Badge, Button, Card, Select, StatusDot, type Tone } from "../ui";
+
+interface Props {
+  sessions: Session[];
+  selectedId: string | null;
+  onSelect: (id: string | null) => void;
+  onSessionsChanged: () => void; // reload the session list in the parent
+  providers: ProviderHealth[];
+}
+
+const TURN_TONE: Record<SessionTurn["status"], Tone> = {
+  running: "live",
+  succeeded: "ok",
+  failed: "bad",
+};
+
+const KIND_COLOR: Record<string, string> = {
+  log: "text-muted",
+  phase: "text-ink",
+  tool: "text-amber",
+  subagent: "text-amber",
+  result: "text-ok",
+  error: "text-bad",
+  route: "text-live",
+};
+
+export default function SessionView({
+  sessions,
+  selectedId,
+  onSelect,
+  onSessionsChanged,
+  providers,
+}: Props) {
+  const [detail, setDetail] = useState<Session | null>(null);
+  const [turns, setTurns] = useState<SessionTurn[]>([]);
+  const [message, setMessage] = useState("");
+  const [providerSwitch, setProviderSwitch] = useState("");
+  const [sending, setSending] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [previewNonce, setPreviewNonce] = useState(0);
+
+  const { events, streamingText, lastTurn } = useSessionEvents(selectedId);
+  const streamRef = useRef<HTMLDivElement>(null);
+
+  // Distinct provider instance ids for the switcher (grouped by what's healthy).
+  const providerIds = useMemo(
+    () => Array.from(new Set(providers.map((p) => p.name))),
+    [providers]
+  );
+
+  const loadTurns = useCallback(() => {
+    if (!selectedId) return;
+    api.listTurns(selectedId).then(setTurns).catch(() => {});
+  }, [selectedId]);
+
+  // Load the selected session detail (for the preview token) + its turn history.
+  useEffect(() => {
+    setDetail(null);
+    setTurns([]);
+    setProviderSwitch("");
+    setPreviewNonce(0);
+    if (!selectedId) return;
+    api.getSession(selectedId).then(setDetail).catch(() => {});
+    loadTurns();
+  }, [selectedId, loadTurns]);
+
+  // When a turn finishes, refresh the turn list and bust the preview iframe so it
+  // reflects the latest workspace edits (Cache-Control: no-store on the backend).
+  useEffect(() => {
+    if (lastTurn && lastTurn.status !== "running") {
+      loadTurns();
+      setPreviewNonce((n) => n + 1);
+    }
+  }, [lastTurn, loadTurns]);
+
+  // Auto-scroll the live event stream.
+  useEffect(() => {
+    if (streamRef.current) streamRef.current.scrollTop = streamRef.current.scrollHeight;
+  }, [events, streamingText]);
+
+  const handleCreate = async () => {
+    setCreating(true);
+    try {
+      const s = await api.createSession({ title: "Untitled session" });
+      onSessionsChanged();
+      onSelect(s.id);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const handleSend = async () => {
+    if (!selectedId || !message.trim() || sending) return;
+    setSending(true);
+    try {
+      await api.createTurn(selectedId, {
+        message: message.trim(),
+        provider: providerSwitch || undefined,
+      });
+      setMessage("");
+      loadTurns();
+      onSessionsChanged(); // session.provider may have switched
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const previewSrc =
+    detail && detail.preview_token
+      ? `${api.previewUrl(detail.id, detail.preview_token)}${
+          previewNonce ? `&_=${previewNonce}` : ""
+        }`
+      : null;
+
+  const turnRunning = lastTurn?.status === "running" || sending;
+
+  return (
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-[15rem_minmax(0,1fr)_minmax(0,1fr)]">
+      {/* ── Session list ───────────────────────────────────────────────── */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <span className="font-mono text-xs uppercase tracking-widest text-muted">Sessions</span>
+          <Button
+            variant="outline"
+            size="sm"
+            className="px-2"
+            icon={<Plus size={13} />}
+            onClick={handleCreate}
+            disabled={creating}
+            title="New build session"
+          />
+        </div>
+        {sessions.length === 0 && (
+          <div className="rounded-lg border border-dashed border-edge p-4 text-center text-xs text-muted">
+            No sessions yet.
+          </div>
+        )}
+        {sessions.map((s) => {
+          const active = s.id === selectedId;
+          return (
+            <button
+              key={s.id}
+              onClick={() => onSelect(s.id)}
+              className={`block w-full rounded-lg border px-3 py-2 text-left transition-colors ${
+                active ? "border-amber/50 bg-amber/10" : "border-edge bg-panel/60 hover:border-amber/30"
+              }`}
+            >
+              <span className="block truncate font-mono text-sm text-ink">{s.title}</span>
+              <span className="font-mono text-[11px] text-muted">
+                {s.provider ?? "—"} · {fmtTime(s.updated_at)}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* ── Chat: provider switcher, input, turn history + live events ──── */}
+      <Card className="flex h-[70vh] flex-col p-0">
+        {!selectedId ? (
+          <div className="flex flex-1 items-center justify-center p-6 text-center text-sm text-muted">
+            Select a session, or create one to start building.
+          </div>
+        ) : (
+          <>
+            <div
+              ref={streamRef}
+              className="flex-1 space-y-3 overflow-y-auto p-4"
+            >
+              {turns.length === 0 && events.length === 0 && (
+                <div className="text-sm text-muted">
+                  Describe what you want to build — e.g. “spin up a landing page”.
+                </div>
+              )}
+              {turns.map((t) => (
+                <div key={t.id} className="space-y-1">
+                  <div className="rounded-lg border border-edge bg-base px-3 py-2 text-sm text-ink">
+                    {t.prompt}
+                  </div>
+                  <div className="flex items-center gap-2 px-1">
+                    <Badge tone={TURN_TONE[t.status]}>{t.status}</Badge>
+                    {t.provider && (
+                      <span className="font-mono text-[11px] text-muted">{t.provider}</span>
+                    )}
+                  </div>
+                  {t.response && (
+                    <div className="whitespace-pre-wrap px-1 text-sm text-ink/80">{t.response}</div>
+                  )}
+                  {t.error && <div className="px-1 text-sm text-bad">{t.error}</div>}
+                </div>
+              ))}
+
+              {/* Live event stream for the in-flight turn. */}
+              {(events.length > 0 || streamingText) && (
+                <div className="space-y-1 rounded-lg border border-edge bg-base/60 p-3 font-mono text-xs">
+                  {events.map((ev, i) => (
+                    <div key={i} className="flex gap-2">
+                      <span className={`w-16 shrink-0 ${KIND_COLOR[ev.kind] || "text-muted"}`}>
+                        {ev.kind}
+                      </span>
+                      <span className="flex-1 break-words text-ink/90">
+                        {ev.message || ev.phase || ""}
+                      </span>
+                    </div>
+                  ))}
+                  {streamingText && (
+                    <div className="whitespace-pre-wrap text-ink/70">
+                      {streamingText.slice(-800)}
+                      <span className="ml-0.5 inline-block h-3 w-1.5 animate-pulse-live bg-live align-middle" />
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Composer */}
+            <div className="space-y-2 border-t border-edge p-3">
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-[11px] text-muted">agent</span>
+                <Select
+                  value={providerSwitch}
+                  onChange={(e) => setProviderSwitch(e.target.value)}
+                  className="h-8 text-xs"
+                >
+                  <option value="">
+                    {detail?.provider ? `current (${detail.provider})` : "default"}
+                  </option>
+                  {providerIds.map((id) => (
+                    <option key={id} value={id}>
+                      {id}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+              <div className="flex items-end gap-2">
+                <textarea
+                  value={message}
+                  onChange={(e) => setMessage(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                      e.preventDefault();
+                      handleSend();
+                    }
+                  }}
+                  rows={2}
+                  placeholder="Describe the next change…  (⌘/Ctrl+Enter to send)"
+                  className="flex-1 resize-none rounded-md border border-edge bg-base px-3 py-2 text-sm text-ink placeholder:text-muted focus-visible:border-amber/60 focus-visible:outline-none"
+                />
+                <Button
+                  variant="primary"
+                  icon={<Send size={14} />}
+                  onClick={handleSend}
+                  disabled={!message.trim() || sending}
+                >
+                  Send
+                </Button>
+              </div>
+            </div>
+          </>
+        )}
+      </Card>
+
+      {/* ── Live preview ─────────────────────────────────────────────────── */}
+      <Card className="flex h-[70vh] flex-col p-0">
+        <div className="flex items-center justify-between border-b border-edge px-3 py-2">
+          <div className="flex items-center gap-2">
+            <StatusDot tone={turnRunning ? "live" : "ok"} pulse={turnRunning} />
+            <span className="font-mono text-xs uppercase tracking-widest text-muted">Preview</span>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="px-1.5"
+            icon={<RefreshCw size={13} />}
+            onClick={() => setPreviewNonce((n) => n + 1)}
+            disabled={!previewSrc}
+            title="Refresh preview"
+          />
+        </div>
+        {previewSrc ? (
+          <iframe
+            key={previewSrc}
+            src={previewSrc}
+            title="Session live preview"
+            className="flex-1 w-full bg-white"
+            sandbox="allow-scripts allow-same-origin"
+          />
+        ) : (
+          <div className="flex flex-1 items-center justify-center p-6 text-center text-sm text-muted">
+            {selectedId ? "Nothing built yet — send a turn to generate a page." : "No session selected."}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}

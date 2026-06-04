@@ -3,12 +3,13 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Moon, Plus, Settings2, Sun } from "lucide-react";
 import { api } from "./api";
 import { useLiveFeed } from "./useLiveFeed";
-import type { Credential, Mode, ProviderHealth, Run, Stats, Task, TaskInput } from "./types";
+import type { Credential, Mode, ProviderHealth, Run, Session, Stats, Task, TaskInput } from "./types";
 import Sidebar, { View } from "./components/Sidebar";
 import StatsBar from "./components/StatsBar";
 import TaskList from "./components/TaskList";
 import TaskForm from "./components/TaskForm";
 import RunViewer from "./components/RunViewer";
+import SessionView from "./components/SessionView";
 import ProvidersPanel from "./components/ProvidersPanel";
 import Onboarding from "./components/Onboarding";
 import Styleguide from "./components/Styleguide";
@@ -49,6 +50,8 @@ function AppShell() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [mode, setMode] = useState<Mode | null>(null);
   const [credentials, setCredentials] = useState<Credential[]>([]);
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
   // Scoped console: available only when the backend enables it; token is entered
   // by the operator and kept in React state (never persisted).
@@ -84,6 +87,7 @@ function AppShell() {
   const loadProviders = useCallback(() => api.listProviders().then(setProviders).catch(() => { }), []);
   const loadStats = useCallback(() => api.getStats().then(setStats).catch(() => { }), []);
   const loadCreds = useCallback(() => api.listCredentials().then(setCredentials).catch(() => { }), []);
+  const loadSessions = useCallback(() => api.listSessions().then(setSessions).catch(() => { }), []);
 
   useEffect(() => {
     loadTasks();
@@ -91,9 +95,10 @@ function AppShell() {
     loadProviders();
     loadStats();
     loadCreds();
+    loadSessions();
     api.getMode().then(setMode).catch(() => { });
     api.getConsoleConfig().then((c) => setConsoleAvailable(c.available)).catch(() => { });
-  }, [loadTasks, loadRuns, loadProviders, loadStats, loadCreds]);
+  }, [loadTasks, loadRuns, loadProviders, loadStats, loadCreds, loadSessions]);
 
   // Poll the slowly-changing aggregates; live run state comes over the WS.
   useEffect(() => {
@@ -266,6 +271,16 @@ function AppShell() {
               );
             })}
           </div>
+        )}
+
+        {view === "build" && (
+          <SessionView
+            sessions={sessions}
+            selectedId={selectedSessionId}
+            onSelect={setSelectedSessionId}
+            onSessionsChanged={loadSessions}
+            providers={providers}
+          />
         )}
 
         {view === "providers" && (

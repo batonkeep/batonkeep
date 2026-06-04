@@ -158,6 +158,53 @@ export interface Mode {
   plan_cli_allowed: boolean;
 }
 
+// ── Sessions (M1: build sessions + live preview) ─────────────────────────────
+// Mirrors SessionOut / SessionTurnOut in backend/app/schemas.py.
+
+export type SessionStatus = "active" | "archived";
+export type TurnStatus = "running" | "succeeded" | "failed";
+
+export interface Session {
+  id: string;
+  owner_id: string;
+  title: string;
+  // currently-selected provider instance id (e.g. "grok", "agy", "mock")
+  provider: string | null;
+  workspace_path: string;
+  // unguessable token that gates the live preview (M1.2).
+  preview_token: string;
+  status: SessionStatus;
+  created_at: string;
+  updated_at: string;
+}
+
+// Payload accepted by POST /sessions.
+export interface SessionInput {
+  title?: string | null;
+  goal?: string | null;
+  provider?: string | null;
+}
+
+export interface SessionTurn {
+  id: number;
+  session_id: string;
+  seq: number;
+  provider: string | null;
+  prompt: string;
+  response: string | null;
+  status: TurnStatus;
+  error: string | null;
+  created_at: string;
+  finished_at: string | null;
+}
+
+// Payload accepted by POST /sessions/{id}/turns.
+export interface TurnInput {
+  message: string;
+  // optional provider switch for this and subsequent turns
+  provider?: string | null;
+}
+
 // ── WebSocket frames (ws.py / §10) ──────────────────────────────────────────
 
 export interface WsRunUpdate {
@@ -171,4 +218,35 @@ export interface WsRunEvent {
   event: RunEvent;
 }
 
-export type WsMessage = WsRunUpdate | WsRunEvent;
+// Session live frames (orchestrator._broadcast_turn / _broadcast_event).
+export interface WsSessionTurnUpdate {
+  type: "session.turn.update";
+  session_id: string;
+  turn: {
+    id: number;
+    seq: number;
+    provider: string | null;
+    status: TurnStatus;
+    switched?: boolean;
+  };
+}
+
+export interface WsSessionEvent {
+  type: "session.event";
+  session_id: string;
+  turn_id: number;
+  turn_seq: number;
+  event: {
+    kind: EventKind;
+    message: string | null;
+    text: string | null;
+    phase: string | null;
+    data: Record<string, any> | null;
+  };
+}
+
+export type WsMessage =
+  | WsRunUpdate
+  | WsRunEvent
+  | WsSessionTurnUpdate
+  | WsSessionEvent;

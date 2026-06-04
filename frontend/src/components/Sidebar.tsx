@@ -1,9 +1,9 @@
 // Sidebar.tsx — primary nav. Left rail on desktop, bottom tab bar on mobile.
-import { ListChecks, Radio, Server } from "lucide-react";
+import { Hammer, ListChecks, Radio, Server } from "lucide-react";
 import Logo from "../ui/Logo";
 import type { WsStatus } from "../useLiveFeed";
 
-export type View = "tasks" | "live" | "providers";
+export type View = "tasks" | "live" | "build" | "providers";
 
 interface Props {
   view: View;
@@ -15,6 +15,7 @@ interface Props {
 const ITEMS: { id: View; label: string; icon: typeof ListChecks }[] = [
   { id: "tasks", label: "Tasks", icon: ListChecks },
   { id: "live", label: "Live", icon: Radio },
+  { id: "build", label: "Build", icon: Hammer },
   { id: "providers", label: "Providers", icon: Server },
 ];
 

@@ -11,6 +11,8 @@ import TaskForm from "./components/TaskForm";
 import RunViewer from "./components/RunViewer";
 import ProvidersPanel from "./components/ProvidersPanel";
 import Onboarding from "./components/Onboarding";
+import Styleguide from "./components/Styleguide";
+import { Button, Logo } from "./ui";
 import { STATUS_META, fmtTime } from "./format";
 
 function runsPerDay(runs: Run[], days = 14): number[] {
@@ -25,6 +27,20 @@ function runsPerDay(runs: Run[], days = 14): number[] {
 }
 
 export default function App() {
+  // Design-system reference (D-track). Reachable at #styleguide; re-renders on
+  // hash change so it works without a router.
+  const [hash, setHash] = useState(() => window.location.hash);
+  useEffect(() => {
+    const onHash = () => setHash(window.location.hash);
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+  if (hash === "#styleguide") return <Styleguide />;
+
+  return <AppShell />;
+}
+
+function AppShell() {
   const { status: wsStatus, liveRuns } = useLiveFeed();
   const [view, setView] = useState<View>("tasks");
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -168,32 +184,37 @@ export default function App() {
         {/* Header */}
         <div className="mb-5 flex items-center justify-between gap-2">
           <div>
-            <h1 className="font-mono text-lg font-semibold tracking-tight text-ink md:hidden">batonkeep</h1>
+            <span className="md:hidden"><Logo size={20} /></span>
             <p className="hidden font-mono text-xs uppercase tracking-widest text-muted md:block">
-              mission control · {view}
+              control plane · {view}
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <button
+            <Button
+              variant="outline"
+              size="sm"
               onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
               title={theme === "dark" ? "Switch to light" : "Switch to dark"}
               aria-label="Toggle theme"
-              className="rounded-lg border border-edge p-2 text-muted hover:text-amber"
-            >
-              {theme === "dark" ? <Sun size={14} /> : <Moon size={14} />}
-            </button>
-            <button
+              className="px-2.5"
+              icon={theme === "dark" ? <Sun size={14} /> : <Moon size={14} />}
+            />
+            <Button
+              variant="outline"
+              size="sm"
               onClick={() => setShowOnboarding(true)}
-              className="flex items-center gap-1.5 rounded-lg border border-edge px-3 py-2 text-xs text-muted hover:text-ink"
+              icon={<Settings2 size={14} />}
             >
-              <Settings2 size={14} /> <span className="hidden sm:inline">Providers</span>
-            </button>
-            <button
+              <span className="hidden sm:inline">Providers</span>
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
               onClick={() => { setEditingTask(null); setShowForm(true); }}
-              className="flex items-center gap-1.5 rounded-lg bg-amber/70 px-3 py-2 text-xs font-semibold text-white hover:opacity-90"
+              icon={<Plus size={14} />}
             >
-              <Plus size={14} /> New task
-            </button>
+              New task
+            </Button>
           </div>
         </div>
 

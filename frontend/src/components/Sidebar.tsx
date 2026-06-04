@@ -1,5 +1,6 @@
 // Sidebar.tsx — primary nav. Left rail on desktop, bottom tab bar on mobile.
-import { Activity, ListChecks, Radio, Server } from "lucide-react";
+import { ListChecks, Radio, Server } from "lucide-react";
+import Logo from "../ui/Logo";
 import type { WsStatus } from "../useLiveFeed";
 
 export type View = "tasks" | "live" | "providers";
@@ -26,9 +27,8 @@ export default function Sidebar({ view, onChange, wsStatus, activeRuns }: Props)
       "
     >
       {/* Brand — desktop only */}
-      <div className="hidden md:mb-5 md:flex md:items-center md:gap-2 md:px-2 md:pt-1">
-        <Activity size={18} className="text-amber" />
-        <span className="font-mono text-sm font-semibold tracking-tight text-ink">batonkeep</span>
+      <div className="hidden md:mb-5 md:flex md:items-center md:px-2 md:pt-1">
+        <Logo size={20} />
       </div>
 
       {ITEMS.map(({ id, label, icon: Icon }) => {

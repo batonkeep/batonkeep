@@ -1,7 +1,7 @@
 {
-  "name": "ai-cadence — mission control",
-  "short_name": "ai-cadence",
-  "description": "Cross-provider plan orchestrator. Define, schedule, route and monitor tasks across your provider plans from any device.",
+  "name": "batonkeep — control plane",
+  "short_name": "batonkeep",
+  "description": "Your plans, your keys, your machine — coordinated. Direct your own subscription-backed AI agents across providers from any device.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

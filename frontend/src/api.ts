@@ -17,6 +17,8 @@ import type {
   Task,
   TaskInput,
   TurnInput,
+  Version,
+  VersionDiff,
 } from "./types";
 
 const BASE = "/api";
@@ -95,6 +97,16 @@ export const api = {
     const base = `${BASE}/sessions/${id}/preview/${encodeURIComponent(token)}`;
     return rel ? `${base}/${rel}` : `${base}/`;
   },
+  // Versioning / Undo-History (M1.3): per-turn workspace commits, their diffs, and
+  // a checkout-restore that lands the rollback as a new, itself-undoable version.
+  listVersions: (id: string) => req<Version[]>(`/sessions/${id}/versions`),
+  versionDiff: (id: string, commit: string) =>
+    req<VersionDiff>(`/sessions/${id}/versions/${commit}/diff`),
+  restoreVersion: (id: string, commit: string) =>
+    req<{ commit: string; message: string; restored_from: string }>(
+      `/sessions/${id}/restore`,
+      { method: "POST", body: JSON.stringify({ commit }) }
+    ),
 
   // ── Providers ──────────────────────────────────────────────────────────
   listProviders: () => req<ProviderHealth[]>("/providers"),

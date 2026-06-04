@@ -44,7 +44,37 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 
+# Lightweight additive migrations for SQLite (this project has no alembic).
+# create_all() creates *missing tables* but never alters *existing* ones, so a
+# column added to a model after a DB already exists on a persisted volume must be
+# backfilled here — otherwise queries over that table fail with "no such column"
+# against the stale schema (e.g. M1.3 added session_turns.commit_sha/diffstat).
+# Additive + idempotent only: add columns, never drop/alter. Non-SQLite engines
+# are left to their own migration tooling.
+_ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
+    # table -> {column: column_type_ddl}
+    "session_turns": {
+        "commit_sha": "VARCHAR(40)",
+        "diffstat": "TEXT",
+    },
+}
+
+
+async def _backfill_additive_columns(conn) -> None:
+    """Add any model columns missing from an existing SQLite table (idempotent)."""
+    for table, columns in _ADDITIVE_COLUMNS.items():
+        rows = (await conn.exec_driver_sql(f"PRAGMA table_info({table})")).fetchall()
+        if not rows:
+            continue  # table doesn't exist yet (create_all handles fresh DBs)
+        existing = {row[1] for row in rows}  # row[1] = column name
+        for col, ddl in columns.items():
+            if col not in existing:
+                await conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+
+
 async def init_db() -> None:
-    """Create all tables on startup."""
+    """Create missing tables, then backfill additive columns on existing ones."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        if engine.dialect.name == "sqlite":
+            await _backfill_additive_columns(conn)

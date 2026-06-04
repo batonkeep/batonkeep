@@ -150,8 +150,39 @@ class SessionTurnOut(BaseModel):
     response: Optional[str]
     status: str
     error: Optional[str]
+    # M1.3 versioning: the workspace commit this turn produced (if any) + summary.
+    commit_sha: Optional[str] = None
+    diffstat: Optional[str] = None
     created_at: datetime
     finished_at: Optional[datetime]
+
+
+class VersionOut(BaseModel):
+    """One workspace version (commit) — the Undo/History list entry (M1.3)."""
+
+    commit: str
+    short: str
+    ts: str
+    message: str
+
+
+class VersionDiffOut(BaseModel):
+    """The diff a single version introduced (M1.3)."""
+
+    commit: str
+    diffstat: str
+    diff: str
+
+
+class RestoreRequest(BaseModel):
+    # the version (commit sha) to restore the workspace to
+    commit: str
+
+
+class RestoreOut(BaseModel):
+    commit: str
+    message: str
+    restored_from: str
 
 
 class SessionOut(BaseModel):

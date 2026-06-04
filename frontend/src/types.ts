@@ -194,8 +194,26 @@ export interface SessionTurn {
   response: string | null;
   status: TurnStatus;
   error: string | null;
+  // M1.3 versioning: the workspace commit this turn produced (if any) + summary.
+  commit_sha: string | null;
+  diffstat: string | null;
   created_at: string;
   finished_at: string | null;
+}
+
+// One workspace version (commit) — the Undo/History list (M1.3).
+export interface Version {
+  commit: string;
+  short: string;
+  ts: string;
+  message: string;
+}
+
+// The diff a single version introduced (M1.3).
+export interface VersionDiff {
+  commit: string;
+  diffstat: string;
+  diff: string;
 }
 
 // Payload accepted by PATCH /sessions/{id}.

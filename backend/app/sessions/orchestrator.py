@@ -10,8 +10,10 @@ run_turn(session_id, message, provider?):
   4. Stream executor events live over WS (reusing the run-event stream shape).
   5. On result: persist response, refresh the SESSION.md brief; status=succeeded.
 
-Per-turn git auto-commit + diff/rollback are M1.3; this phase establishes turns,
-workspace continuity, live streaming, and the provider switch.
+After the turn's edits land, the orchestrator commits the workspace as a
+**version** (M1.3, engine-owned commit boundary) and broadcasts the per-turn
+diff to the live event view. Restore/diff of versions is served by the sessions
+API (see main.py /versions, /diff, /restore).
 """
 from __future__ import annotations
 
@@ -112,10 +114,26 @@ async def run_turn(
         error_msg = str(exc)
 
     response_text = final_result.text if final_result else ""
+    version: Optional[dict] = None
     if final_result is not None:
         ws.append_progress(
             workspace,
             f"turn {seq} ({chosen}): {(response_text.splitlines() or [''])[0][:120]}",
+        )
+        # Engine owns the commit boundary (D-0008): commit the workspace as a
+        # version once the turn's edits have landed. None if nothing changed.
+        version = await ws.commit_turn(
+            workspace, seq=seq, provider=chosen, summary=response_text
+        )
+
+    if version is not None:
+        # Surface the per-turn diff in the live event view (M1.3 Verify gate).
+        await _broadcast_event(
+            session_id, turn_id, seq, EventKind.result,
+            message=f"version {version['short']} committed",
+            phase="version",
+            data={"commit": version["commit"], "short": version["short"],
+                  "diffstat": version["diffstat"], "diff": version["diff"]},
         )
 
     async with AsyncSessionLocal() as db:
@@ -128,6 +146,9 @@ async def run_turn(
             else:
                 turn.status = "failed"
                 turn.error = error_msg or "no result produced"
+            if version is not None:
+                turn.commit_sha = version["commit"]
+                turn.diffstat = version["diffstat"]
             await db.commit()
         session = await db.get(Session, session_id)
         if session is not None:

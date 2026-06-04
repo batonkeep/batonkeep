@@ -1,4 +1,4 @@
-// Logo.tsx — the Batonkeep brand mark + wordmark.
+// Logo.tsx — the batonkeep brand mark + wordmark.
 //
 // Concept: a relay baton mid-hand-off. The diagonal capsule is the baton; the
 // two station nodes are the passing agent (faded, bottom-left) and the receiving
@@ -117,7 +117,7 @@ export function ShieldSolid({ size = 24, className = "", title }: MarkProps) {
 const LOGO_RED = "#ff4f4f";
 
 /**
- * The real Batonkeep mark — the Inkscape-authored SVG. Fill is the logo red
+ * The real batonkeep mark — the Inkscape-authored SVG. Fill is the logo red
  * (#ff4f4f), NOT the UI accent token, so the mark stays red regardless of
  * which teal variant is active on interactive elements.
  */
@@ -151,15 +151,15 @@ interface LogoProps {
 }
 
 /**
- * Full lockup: BatonMark (logo red) + "Batonkeep" wordmark.
+ * Full lockup: BatonMark (logo red) + "batonkeep" wordmark.
  */
 export default function Logo({ wordmark = true, size = 22, className = "" }: LogoProps) {
   return (
     <span className={`inline-flex items-center gap-2 ${className}`}>
-      <BatonMark size={size} title="Batonkeep" />
+      <BatonMark size={size} title="batonkeep" />
       {wordmark ? (
         <span className="font-mono font-semibold tracking-tight text-ink">
-          Baton<span className="text-muted">keep</span>
+          baton<span className="text-muted">keep</span>
         </span>
       ) : null}
     </span>

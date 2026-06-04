@@ -1,6 +1,6 @@
 {
-  "name": "Batonkeep — control plane",
-  "short_name": "Batonkeep",
+  "name": "batonkeep — control plane",
+  "short_name": "batonkeep",
   "description": "Your plans, your keys, your machine — coordinated. Direct your own subscription-backed AI agents across providers from any device.",
   "start_url": "/",
   "scope": "/",

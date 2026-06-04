@@ -1,4 +1,4 @@
-// Styleguide.tsx — living reference for the Batonkeep design system (D-track).
+// Styleguide.tsx — living reference for the batonkeep design system (D-track).
 // Open via #styleguide. Shows brand, tokens, and every ui/ primitive so new
 // surfaces (M1–M6) compose from a known palette instead of inventing one.
 import { useEffect, useState } from "react";
@@ -124,7 +124,7 @@ export default function Styleguide() {
           <span className="inline-flex items-center gap-2.5">
             <BatonMark size={32} className="text-amber" />
             <span className="font-mono text-lg font-semibold tracking-tight text-ink">
-              Baton<span className="text-muted">keep</span>
+              baton<span className="text-muted">keep</span>
             </span>
           </span>
           <Button variant="primary" size="sm">Primary</Button>
@@ -237,7 +237,7 @@ export default function Styleguide() {
       </Section>
 
       <footer className="mt-12 border-t border-edge pt-4 font-mono text-[11px] text-muted">
-        Batonkeep design system — D-0006. Compose new surfaces from <code className="text-amber">src/ui/</code>.
+        batonkeep design system — D-0006. Compose new surfaces from <code className="text-amber">src/ui/</code>.
       </footer>
     </div>
   );

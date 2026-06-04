@@ -1,33 +1,27 @@
 // StatsBar.tsx — top metrics strip (§12): runs today, success rate, avg duration,
 // runs by provider, failover rate, # deferred, active-runs pulse + runs/day sparkline.
+// D-track: Tile is now a thin wrapper over Card + StatusDot.
 import { Stats } from "../types";
 import { fmtCost, fmtDuration, fmtPct } from "../format";
 import Sparkline from "./Sparkline";
+import { Card, StatusDot } from "../ui";
 
 interface Props {
   stats: Stats | null;
   sparkData: number[];
 }
 
-function Tile({
-  label,
-  value,
-  accent,
-  children,
-}: {
-  label: string;
-  value?: string;
-  accent?: string;
-  children?: React.ReactNode;
+function Tile({ label, value, accent, children }: {
+  label: string; value?: string; accent?: string; children?: React.ReactNode;
 }) {
   return (
-    <div className="min-w-[7.5rem] flex-1 rounded-lg border border-edge bg-panel/60 px-3 py-2">
+    <Card className="min-w-[7.5rem] flex-1 px-3 py-2">
       <div className="text-[10px] uppercase tracking-wider text-muted">{label}</div>
       {value != null && (
         <div className={`font-mono text-lg font-semibold leading-tight ${accent || "text-ink"}`}>{value}</div>
       )}
       {children}
-    </div>
+    </Card>
   );
 }
 
@@ -38,36 +32,26 @@ export default function StatsBar({ stats, sparkData }: Props) {
   return (
     <div className="stagger flex flex-wrap gap-2">
       <Tile label="Runs today" value={String(stats?.runs_today ?? 0)} />
-      <Tile
-        label="Success rate"
-        value={fmtPct(stats?.success_rate)}
-        accent={stats && stats.success_rate >= 0.8 ? "text-ok" : "text-ink"}
-      />
+      <Tile label="Success rate" value={fmtPct(stats?.success_rate)}
+        accent={stats && stats.success_rate >= 0.8 ? "text-ok" : "text-ink"} />
       <Tile label="Avg duration" value={fmtDuration(stats?.avg_duration_ms ?? null)} />
-      <Tile
-        label="Failover rate"
-        value={fmtPct(stats?.failover_rate)}
-        accent={stats && stats.failover_rate > 0.3 ? "text-defer" : "text-ink"}
-      />
-      <Tile
-        label="Deferred"
-        value={String(stats?.deferred_now ?? 0)}
-        accent={stats && stats.deferred_now > 0 ? "text-defer" : "text-ink"}
-      />
+      <Tile label="Failover rate" value={fmtPct(stats?.failover_rate)}
+        accent={stats && stats.failover_rate > 0.3 ? "text-defer" : "text-ink"} />
+      <Tile label="Deferred" value={String(stats?.deferred_now ?? 0)}
+        accent={stats && stats.deferred_now > 0 ? "text-defer" : "text-ink"} />
       <Tile label="Cost today" value={fmtCost(stats?.cost_today_usd)} />
+
       <Tile label="Active">
         <div className="flex items-center gap-2">
           <span className="font-mono text-lg font-semibold leading-tight text-live">
             {stats?.active_runs ?? 0}
           </span>
-          {!!stats?.active_runs && <span className="h-2 w-2 rounded-full bg-live animate-pulse-live" />}
+          {!!stats?.active_runs && <StatusDot tone="live" pulse size={8} />}
         </div>
       </Tile>
 
       <Tile label="Runs / day">
-        <div className="pt-1">
-          <Sparkline data={sparkData} />
-        </div>
+        <div className="pt-1"><Sparkline data={sparkData} /></div>
       </Tile>
 
       {providerEntries.length > 0 && (

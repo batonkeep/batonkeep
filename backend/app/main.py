@@ -15,7 +15,9 @@ from typing import Any, Optional
 
 from datetime import datetime, timezone
 
-from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import (
+    Depends, FastAPI, File, Header, HTTPException, UploadFile, WebSocket, WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from sqlalchemy import select, func
@@ -46,6 +48,7 @@ from app.schemas import (
     TaskOut,
     TaskUpdate,
     TurnCreate,
+    UploadOut,
     VersionDiffOut,
     VersionOut,
 )
@@ -474,6 +477,45 @@ async def create_session_turn(
 
     turn = await db.get(SessionTurn, turn_id)
     return SessionTurnOut.model_validate(turn)
+
+
+@app.post("/api/sessions/{session_id}/uploads", response_model=UploadOut,
+          status_code=201, tags=["sessions"])
+async def upload_session_assets(
+    session_id: str,
+    files: list[UploadFile] = File(...),
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """
+    Drop files into a session (M1.5, D-0010). Files land as real workspace files
+    (images → assets/, data → data/) so the agent can reference them by name on the
+    next turn (filesystem-as-context). The whole upload is committed as one version
+    (Undo/History). Enforces the env-configurable size + extension allowlist;
+    nothing leaves the backend.
+    """
+    from app.sessions import uploads, workspace as ws
+
+    session = await _owned_session(session_id, owner_id, db)
+    if not files:
+        raise HTTPException(status_code=400, detail="no files provided")
+
+    saved: list[str] = []
+    try:
+        for f in files:
+            relpath = uploads.save_upload(session.workspace_path, f.filename or "", f.file)
+            saved.append(relpath)
+    except uploads.UploadError as exc:
+        # Roll back any files written before the failure so the upload is atomic.
+        for relpath in saved:
+            uploads._remove_quiet(ws.safe_join(session.workspace_path, relpath))
+        raise HTTPException(status_code=exc.status, detail=exc.detail)
+
+    names = ", ".join(saved)
+    commit_sha = await ws.commit_paths(session.workspace_path, message=f"upload: {names}")
+    session.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    return UploadOut(paths=saved, commit_sha=commit_sha)
 
 
 @app.get("/api/sessions/{session_id}/preview/{token}/{path:path}", tags=["sessions"])

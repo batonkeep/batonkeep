@@ -5,7 +5,7 @@
 // D-track: composed from ui/ primitives (Button, Badge, Card, StatusDot, Select).
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
-import { Activity, Check, ChevronRight, Copy, Download, Globe, History, Link2, Loader2, Pencil, Plus, RefreshCw, RotateCcw, Send, X } from "lucide-react";
+import { Activity, Check, ChevronRight, Copy, Download, Globe, History, Link2, Loader2, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Send, X } from "lucide-react";
 import type { ProviderHealth, Publish, Session, SessionTurn, Version } from "../types";
 import { api } from "../api";
 import { useSessionEvents, type SessionEvent } from "../useLiveFeed";
@@ -88,9 +88,12 @@ export default function SessionView({
   const [publish, setPublish] = useState<Publish | null>(null);
   const [publishing, setPublishing] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploaded, setUploaded] = useState<string[]>([]); // paths dropped this session, for chips
 
   const { events, streamingText, lastTurn } = useSessionEvents(selectedId);
   const streamRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Distinct provider instance ids for the switcher (grouped by what's healthy).
   const providerIds = useMemo(
@@ -130,6 +133,8 @@ export default function SessionView({
     setDiffText("");
     setPublish(null);
     setCopied(false);
+    setUploaded([]);
+    setMessage("");
     if (!selectedId) return;
     api.getSession(selectedId).then(setDetail).catch(() => {});
     loadTurns();
@@ -205,6 +210,25 @@ export default function SessionView({
     } finally {
       setPendingMessage(null);
       setSending(false);
+    }
+  };
+
+  const handleUpload = async (files: FileList | null) => {
+    if (!selectedId || !files || files.length === 0 || uploading) return;
+    setSendError(null);
+    setUploading(true);
+    try {
+      const res = await api.uploadAssets(selectedId, Array.from(files));
+      // Append references so the user can talk about the files by name in the chat.
+      const refs = res.paths.join(", ");
+      setMessage((m) => (m.trim() ? `${m} ${refs}` : `Use ${refs}`));
+      setUploaded((prev) => [...prev, ...res.paths]);
+      onSessionsChanged(); // the upload landed as a new version
+    } catch (err) {
+      setSendError(err instanceof Error ? err.message : "Could not upload file(s)");
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = ""; // allow re-selecting the same file
     }
   };
 
@@ -587,7 +611,37 @@ export default function SessionView({
                   ))}
                 </Select>
               </div>
+              {uploaded.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {uploaded.map((p) => (
+                    <span
+                      key={p}
+                      className="inline-flex items-center gap-1 rounded border border-edge bg-base px-1.5 py-0.5 font-mono text-[10px] text-muted"
+                      title="In your workspace — reference it by name"
+                    >
+                      <Paperclip size={10} /> {p}
+                    </span>
+                  ))}
+                </div>
+              )}
               <div className="flex items-end gap-2">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  accept=".png,.jpg,.jpeg,.svg,.webp,.csv,.pdf,.txt,.md,image/*"
+                  className="hidden"
+                  onChange={(e) => handleUpload(e.target.files)}
+                />
+                <Button
+                  variant="ghost"
+                  icon={uploading ? <Loader2 size={14} className="animate-spin" /> : <Paperclip size={14} />}
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={uploading || sending}
+                  title="Attach a file (image, CSV, PDF…) — drop into the box too"
+                >
+                  Attach
+                </Button>
                 <textarea
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
@@ -597,8 +651,13 @@ export default function SessionView({
                       handleSend();
                     }
                   }}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    handleUpload(e.dataTransfer.files);
+                  }}
                   rows={2}
-                  placeholder="Describe the next change…  (⌘/Ctrl+Enter to send)"
+                  placeholder="Describe the next change…  (drop files here · ⌘/Ctrl+Enter to send)"
                   className="flex-1 resize-none rounded-md border border-edge bg-base px-3 py-2 text-sm text-ink placeholder:text-muted focus-visible:border-brand/60 focus-visible:outline-none"
                 />
                 <Button

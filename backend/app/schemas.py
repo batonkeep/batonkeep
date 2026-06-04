@@ -185,6 +185,15 @@ class RestoreOut(BaseModel):
     restored_from: str
 
 
+class UploadOut(BaseModel):
+    """Result of dropping files into a session (M1.5). Paths are workspace-relative
+    so the user/agent can reference them by name in the conversation."""
+
+    paths: list[str]
+    # the workspace commit the upload produced (a version), if anything changed
+    commit_sha: Optional[str] = None
+
+
 class PublishOut(BaseModel):
     """Publish/share state of a session's build (M1.4)."""
 

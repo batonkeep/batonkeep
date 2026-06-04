@@ -214,6 +214,46 @@ class SessionTurn(Base):
     session: Mapped["Session"] = relationship(back_populates="turns")
 
 
+class Artifact(Base):
+    """
+    A published build artifact (M1.4): a static snapshot of a session's workspace,
+    served publicly at a revocable share URL.
+
+    Publish materializes the workspace's static assets (excluding .git and the
+    internal SESSION.md brief) into a bundle dir and mints a `share_token`; the
+    public route `/api/share/{token}` serves that bundle. Revoke clears the token
+    (→ 404) and removes the bundle. One artifact per session: re-publishing updates
+    this row and rotates the token. `version` records the workspace commit that was
+    snapshotted, so the live site is stable until the next publish.
+    """
+
+    __tablename__ = "artifacts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("sessions.id"), nullable=False, unique=True, index=True
+    )
+    owner_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("owners.id"), nullable=False, default="local", index=True
+    )
+    kind: Mapped[str] = mapped_column(String(32), default="site")
+    # the workspace commit snapshotted at publish time
+    version: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    # public, unguessable share token; NULL when revoked/never published
+    share_token: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True, unique=True, index=True
+    )
+    published: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # absolute path to the materialized publish bundle dir (NULL when revoked)
+    path: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class Credential(Base):
     """BYO-key encrypted at rest with APP_SECRET (§4.1 / §8)."""
 

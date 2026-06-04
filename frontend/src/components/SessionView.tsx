@@ -5,8 +5,8 @@
 // D-track: composed from ui/ primitives (Button, Badge, Card, StatusDot, Select).
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
-import { Activity, Check, ChevronRight, History, Loader2, Pencil, Plus, RefreshCw, RotateCcw, Send, X } from "lucide-react";
-import type { ProviderHealth, Session, SessionTurn, Version } from "../types";
+import { Activity, Check, ChevronRight, Copy, Download, Globe, History, Link2, Loader2, Pencil, Plus, RefreshCw, RotateCcw, Send, X } from "lucide-react";
+import type { ProviderHealth, Publish, Session, SessionTurn, Version } from "../types";
 import { api } from "../api";
 import { useSessionEvents, type SessionEvent } from "../useLiveFeed";
 import { fmtTime } from "../format";
@@ -85,6 +85,9 @@ export default function SessionView({
   const [diffFor, setDiffFor] = useState<string | null>(null); // commit whose diff is shown
   const [diffText, setDiffText] = useState<string>("");
   const [restoring, setRestoring] = useState<string | null>(null); // commit being restored
+  const [publish, setPublish] = useState<Publish | null>(null);
+  const [publishing, setPublishing] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   const { events, streamingText, lastTurn } = useSessionEvents(selectedId);
   const streamRef = useRef<HTMLDivElement>(null);
@@ -105,6 +108,11 @@ export default function SessionView({
     api.listVersions(selectedId).then(setVersions).catch(() => {});
   }, [selectedId]);
 
+  const loadPublish = useCallback(() => {
+    if (!selectedId) return;
+    api.getPublish(selectedId).then(setPublish).catch(() => {});
+  }, [selectedId]);
+
   // Load the selected session detail (for the preview token) + its turn history.
   useEffect(() => {
     setDetail(null);
@@ -120,10 +128,13 @@ export default function SessionView({
     setVersions([]);
     setDiffFor(null);
     setDiffText("");
+    setPublish(null);
+    setCopied(false);
     if (!selectedId) return;
     api.getSession(selectedId).then(setDetail).catch(() => {});
     loadTurns();
-  }, [selectedId, loadTurns]);
+    loadPublish();
+  }, [selectedId, loadTurns, loadPublish]);
 
   // When a turn finishes, refresh the turn list + version history and bust the
   // preview iframe so it reflects the latest workspace edits (Cache-Control:
@@ -236,6 +247,45 @@ export default function SessionView({
       setSendError(err instanceof Error ? err.message : "Could not restore version");
     } finally {
       setRestoring(null);
+    }
+  };
+
+  // Publish the current build to a public share link, or refresh/revoke it (M1.4).
+  const handlePublish = async () => {
+    if (!selectedId || publishing) return;
+    setPublishing(true);
+    try {
+      setPublish(await api.publish(selectedId));
+      setCopied(false);
+    } catch (err) {
+      setSendError(err instanceof Error ? err.message : "Could not publish");
+    } finally {
+      setPublishing(false);
+    }
+  };
+
+  const handleRevoke = async () => {
+    if (!selectedId || publishing) return;
+    setPublishing(true);
+    try {
+      setPublish(await api.revokePublish(selectedId));
+    } catch (err) {
+      setSendError(err instanceof Error ? err.message : "Could not revoke");
+    } finally {
+      setPublishing(false);
+    }
+  };
+
+  const shareUrl = publish?.share_path ? api.shareUrl(publish.share_path) : null;
+
+  const handleCopyShare = async () => {
+    if (!shareUrl) return;
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* clipboard unavailable */
     }
   };
 
@@ -572,16 +622,73 @@ export default function SessionView({
             <StatusDot tone={turnRunning ? "live" : "ok"} pulse={turnRunning} />
             <span className="font-mono text-xs uppercase tracking-widest text-muted">Preview</span>
           </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="px-1.5"
-            icon={<RefreshCw size={13} />}
-            onClick={() => setPreviewNonce((n) => n + 1)}
-            disabled={!previewSrc}
-            title="Refresh preview"
-          />
+          <div className="flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="px-1.5"
+              icon={<RefreshCw size={13} />}
+              onClick={() => setPreviewNonce((n) => n + 1)}
+              disabled={!previewSrc}
+              title="Refresh preview"
+            />
+            {selectedId && (
+              <a
+                href={api.downloadUrl(selectedId)}
+                title="Download a zip of the site’s files"
+                className="inline-flex"
+              >
+                <Button variant="ghost" size="sm" className="gap-1 px-2" icon={<Download size={13} />}>
+                  <span className="text-[11px]">Download</span>
+                </Button>
+              </a>
+            )}
+            <Button
+              variant={publish?.published ? "outline" : "primary"}
+              size="sm"
+              className="gap-1.5 px-2"
+              icon={publishing ? <Loader2 size={13} className="animate-spin" /> : <Globe size={13} />}
+              onClick={handlePublish}
+              disabled={!selectedId || publishing}
+              title={publish?.published ? "Re-publish — refresh the live site to the latest build" : "Publish to a public share link"}
+            >
+              <span className="text-[11px]">{publish?.published ? "Update" : "Publish"}</span>
+            </Button>
+          </div>
         </div>
+
+        {/* Share-link bar — shown once published. */}
+        {publish?.published && shareUrl && (
+          <div className="flex items-center gap-2 border-b border-edge bg-base/60 px-3 py-1.5">
+            <Link2 size={13} className="shrink-0 text-ok" />
+            <a
+              href={shareUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex-1 truncate font-mono text-[11px] text-brand hover:underline"
+              title={shareUrl}
+            >
+              {shareUrl}
+            </a>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="px-1.5"
+              icon={copied ? <Check size={13} className="text-ok" /> : <Copy size={13} />}
+              onClick={handleCopyShare}
+              title="Copy share link"
+            />
+            <Button
+              variant="ghost"
+              size="sm"
+              className="px-1.5 text-bad"
+              icon={<X size={13} />}
+              onClick={handleRevoke}
+              disabled={publishing}
+              title="Revoke — take the share link offline (404)"
+            />
+          </div>
+        )}
         {previewSrc ? (
           <iframe
             key={previewSrc}

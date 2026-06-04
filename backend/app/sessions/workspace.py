@@ -257,6 +257,13 @@ async def list_versions(workspace: str) -> list[dict]:
     return versions
 
 
+async def head_commit(workspace: str) -> Optional[str]:
+    """The current HEAD commit sha, or None if the workspace has no commits."""
+    code, out = await _git_out(workspace, "rev-parse", "HEAD")
+    sha = out.strip()
+    return sha if code == 0 and sha else None
+
+
 async def version_diff(workspace: str, commit: str) -> Optional[dict]:
     """Diff + diffstat introduced by a specific version, or None if unknown."""
     if not _is_valid_sha(commit):

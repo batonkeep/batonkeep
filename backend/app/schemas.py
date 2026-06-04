@@ -185,6 +185,20 @@ class RestoreOut(BaseModel):
     restored_from: str
 
 
+class PublishOut(BaseModel):
+    """Publish/share state of a session's build (M1.4)."""
+
+    published: bool
+    # public share token + relative URL path; None when revoked/never published
+    share_token: Optional[str] = None
+    share_path: Optional[str] = None  # e.g. "/api/share/<token>/"
+    # the workspace commit snapshotted into the live bundle
+    version: Optional[str] = None
+    kind: str = "site"
+    file_count: Optional[int] = None
+    updated_at: Optional[datetime] = None
+
+
 class SessionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

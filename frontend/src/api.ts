@@ -17,6 +17,7 @@ import type {
   Task,
   TaskInput,
   TurnInput,
+  Publish,
   Version,
   VersionDiff,
 } from "./types";
@@ -107,6 +108,14 @@ export const api = {
       `/sessions/${id}/restore`,
       { method: "POST", body: JSON.stringify({ commit }) }
     ),
+  // Publish + share (M1.4): snapshot the static assets to a revocable public share
+  // link (#2), or download them as a zip (#1). getPublish reads current state.
+  getPublish: (id: string) => req<Publish>(`/sessions/${id}/publish`),
+  publish: (id: string) => req<Publish>(`/sessions/${id}/publish`, { method: "POST" }),
+  revokePublish: (id: string) => req<Publish>(`/sessions/${id}/publish`, { method: "DELETE" }),
+  // Absolute URL for the public share link / the download zip (anchor hrefs).
+  shareUrl: (sharePath: string) => `${window.location.origin}${sharePath}`,
+  downloadUrl: (id: string) => `${BASE}/sessions/${id}/download`,
 
   // ── Providers ──────────────────────────────────────────────────────────
   listProviders: () => req<ProviderHealth[]>("/providers"),

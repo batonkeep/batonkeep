@@ -79,6 +79,9 @@ class Settings(BaseSettings):
     # ── Build sessions (M1) ─────────────────────────────────────────────────────
     # Base dir for sandboxed, git-init'd per-session workspaces (one subdir each).
     sessions_dir: str = "/data/sessions"
+    # Base dir for published static bundles (M1.4). One subdir per published
+    # artifact (named by its share token); served publicly at /api/share/{token}.
+    publish_dir: str = "/data/publish"
 
     # ── Optional API keys (metered / BYO-key providers) ──────────────────────
     openai_api_key: Optional[str] = None

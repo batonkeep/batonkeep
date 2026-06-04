@@ -119,6 +119,49 @@ class RunEventOut(BaseModel):
     data: Optional[dict[str, Any]]
 
 
+# ── Build sessions (M1.1) ───────────────────────────────────────────────────
+
+class SessionCreate(BaseModel):
+    title: Optional[str] = None
+    goal: Optional[str] = None
+    # initial provider instance id (e.g. "grok", "agy", "mock")
+    provider: Optional[str] = None
+
+
+class TurnCreate(BaseModel):
+    message: str
+    # optional provider switch for this and subsequent turns
+    provider: Optional[str] = None
+
+
+class SessionTurnOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    session_id: str
+    seq: int
+    provider: Optional[str]
+    prompt: str
+    response: Optional[str]
+    status: str
+    error: Optional[str]
+    created_at: datetime
+    finished_at: Optional[datetime]
+
+
+class SessionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    owner_id: str
+    title: str
+    provider: Optional[str]
+    workspace_path: str
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
 # ── Provider health (§4.4) ────────────────────────────────────────────────────
 
 class ProviderHealth(BaseModel):

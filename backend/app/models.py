@@ -143,6 +143,70 @@ class RunEvent(Base):
     run: Mapped["Run"] = relationship(back_populates="events")
 
 
+class Session(Base):
+    """
+    A build session (M1.1): an interactive, multi-turn conversation with a chosen
+    CLI-plan agent against a sandboxed, git-init'd per-session workspace.
+
+    The workspace filesystem — not the chat transcript — is the source of truth
+    (D-0008). `provider` holds the currently-selected agent instance id; switching
+    it routes the *next* turn to a different executor, which continues from the
+    workspace + SESSION.md brief rather than a replayed transcript.
+    """
+
+    __tablename__ = "sessions"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # uuid hex
+    owner_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("owners.id"), nullable=False, default="local", index=True
+    )
+    title: Mapped[str] = mapped_column(String(256), nullable=False, default="Untitled session")
+    # currently-selected provider instance id (e.g. "grok", "agy", "mock")
+    provider: Mapped[Optional[str]] = mapped_column(String(96), nullable=True)
+    # absolute path to the sandboxed workspace directory
+    workspace_path: Mapped[str] = mapped_column(String(512), nullable=False)
+    # "active" | "archived"
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    turns: Mapped[list["SessionTurn"]] = relationship(
+        back_populates="session", cascade="all, delete-orphan", order_by="SessionTurn.seq"
+    )
+
+
+class SessionTurn(Base):
+    """One user→agent exchange within a Session. Records which provider handled it."""
+
+    __tablename__ = "session_turns"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("sessions.id"), nullable=False, index=True
+    )
+    owner_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("owners.id"), nullable=False, default="local", index=True
+    )
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    # the provider instance id that handled this turn (records the agent switch)
+    provider: Mapped[Optional[str]] = mapped_column(String(96), nullable=True)
+    prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    response: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # "running" | "succeeded" | "failed"
+    status: Mapped[str] = mapped_column(String(16), default="running", index=True)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    session: Mapped["Session"] = relationship(back_populates="turns")
+
+
 class Credential(Base):
     """BYO-key encrypted at rest with APP_SECRET (§4.1 / §8)."""
 

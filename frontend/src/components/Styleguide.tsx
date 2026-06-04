@@ -3,17 +3,19 @@
 // surfaces (M1–M6) compose from a known palette instead of inventing one.
 import { useEffect, useState } from "react";
 import { Plus } from "lucide-react";
-import { Badge, Button, Card, Field, Input, Logo, LogoMark, Modal, Select, ShieldMark, ShieldSolid, StatusDot, Tabs, type Tone } from "../ui";
+import { Badge, BatonMark, Button, Card, Field, Input, Logo, LogoMark, Modal, Select, ShieldMark, ShieldSolid, StatusDot, Tabs, type Tone } from "../ui";
 
 const ACCENTS = [
-  { id: "amber", label: "Amber", note: "current · mission-control" },
-  { id: "indigo", label: "Indigo", note: "professional · distinct from live-cyan" },
-  { id: "blue", label: "Blue", note: "trust · close to live-cyan" },
-  { id: "red", label: "Red", note: "#E74C3C · warning: ≈ the error token" },
+  { id: "",       label: "Teal #006d77",   note: "locked UI primary (base CSS)" },
+  { id: "navy",   label: "Navy #1e3a8a",   note: "alternative" },
+  { id: "indigo", label: "Indigo",          note: "alternative" },
+  { id: "blue",   label: "Blue",            note: "alternative" },
+  { id: "amber",  label: "Amber",           note: "original mission-control" },
+  { id: "red",    label: "Red #c8102e",    note: "logo colour (not UI)" },
 ] as const;
 
 function setAccent(id: string) {
-  if (id === "amber") document.documentElement.removeAttribute("data-accent");
+  if (!id) document.documentElement.removeAttribute("data-accent");
   else document.documentElement.setAttribute("data-accent", id);
 }
 
@@ -51,12 +53,12 @@ const RUN_TABS = [
 export default function Styleguide() {
   const [tab, setTab] = useState<(typeof RUN_TABS)[number]["id"]>("report");
   const [modalOpen, setModalOpen] = useState(false);
-  const [accent, setAccentId] = useState("indigo");
-  // Open the lab on indigo (recommended) so the solid-shield brand shows in context;
-  // restore amber on unmount so the rest of the app is unaffected.
+  const [accent, setAccentId] = useState("teal");
+  // Teal is the default (set in base CSS); mount/unmount cleanup just ensures
+  // no stale data-accent from a previous lab session.
   useEffect(() => {
-    setAccent("indigo");
-    return () => setAccent("amber");
+    document.documentElement.removeAttribute("data-accent");
+    return () => document.documentElement.removeAttribute("data-accent");
   }, []);
 
   return (
@@ -87,16 +89,16 @@ export default function Styleguide() {
         {/* Mark candidates — all use the accent token, so they follow the switch. */}
         <div className="grid gap-3 sm:grid-cols-4">
           <Card active className="flex flex-col items-center gap-3 p-6">
+            <BatonMark size={72} className="text-amber" />
+            <div className="text-center font-mono text-[11px] text-muted">baton mark<br />(final SVG)</div>
+          </Card>
+          <Card className="flex flex-col items-center gap-3 p-6">
             <ShieldSolid size={52} />
-            <div className="text-center font-mono text-[11px] text-muted">solid shield<br />(brand = primary)</div>
+            <div className="text-center font-mono text-[11px] text-muted">solid shield<br />(geometric)</div>
           </Card>
           <Card className="flex flex-col items-center gap-3 p-6">
             <ShieldMark size={52} className="text-ink" />
-            <div className="text-center font-mono text-[11px] text-muted">outline shield<br />(baton + keep)</div>
-          </Card>
-          <Card className="flex flex-col items-center gap-3 p-6">
-            <ShieldMark size={52} relay className="text-ink" />
-            <div className="text-center font-mono text-[11px] text-muted">relay + shield<br />(both, busier)</div>
+            <div className="text-center font-mono text-[11px] text-muted">outline shield</div>
           </Card>
           <Card className="flex flex-col items-center gap-3 p-6">
             <LogoMark size={52} className="text-amber" />
@@ -104,19 +106,23 @@ export default function Styleguide() {
           </Card>
         </div>
 
-        {/* Favicon-scale legibility check for the solid shield. */}
+        {/* Favicon scale */}
         <Card className="mt-3 flex items-center gap-5 p-5">
           <span className="font-mono text-[11px] uppercase tracking-wider text-muted">favicon scale</span>
+          <BatonMark size={16} className="text-amber" />
+          <BatonMark size={20} className="text-amber" />
+          <BatonMark size={28} className="text-amber" />
+          <span className="mx-3 text-muted">|</span>
           <ShieldSolid size={16} />
           <ShieldSolid size={20} />
           <ShieldSolid size={28} />
-          <span className="text-[11px] text-muted">solid shapes stay legible where outlines collapse</span>
+          <span className="text-[11px] text-muted ml-2">baton mark vs solid shield</span>
         </Card>
 
         {/* Wordmark lockups + a few accent surfaces so the switch is visible. */}
         <Card className="mt-3 flex flex-wrap items-center gap-6 p-6">
           <span className="inline-flex items-center gap-2.5">
-            <ShieldSolid size={28} />
+            <BatonMark size={32} className="text-amber" />
             <span className="font-mono text-lg font-semibold tracking-tight text-ink">
               Baton<span className="text-muted">keep</span>
             </span>

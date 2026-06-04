@@ -1,4 +1,4 @@
-// Button.tsx — the one button primitive. Variants encode intent; the amber
+// Button.tsx — the one button primitive. Variants encode intent; the teal
 // `primary` is the single signal action per view (mission-control restraint).
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 
@@ -18,7 +18,7 @@ const BASE =
   "disabled:cursor-not-allowed disabled:opacity-45";
 
 const VARIANTS: Record<Variant, string> = {
-  primary: "bg-amber text-coal hover:bg-amber/90 active:bg-amber/80",
+  primary: "bg-amber text-white hover:bg-amber/90 active:bg-amber/80",
   outline: "border border-edge text-ink hover:border-amber/60 hover:text-amber",
   ghost: "text-muted hover:bg-ink/5 hover:text-ink",
   danger: "border border-bad/40 text-bad hover:bg-bad/10",

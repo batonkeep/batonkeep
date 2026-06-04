@@ -2,19 +2,22 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Theme tokens as RGB channels. Light is the DEFAULT; `.dark` on <html> overrides. */
+/* Theme tokens as RGB channels. Light is the DEFAULT; `.dark` on <html> overrides.
+   UI accent = teal #006d77 (0 109 119). Logo mark = #ff4f4f (hardcoded in BatonMark,
+   separate from the UI accent). `--c-amber` is the Tailwind alias for the UI accent;
+   button text is white on teal. Error token is orange-red, distinct from both. */
 :root {
   --c-base: 244 242 235;   /* warm paper */
   --c-panel: 255 255 255;  /* raised surface */
   --c-edge: 214 209 196;   /* hairline borders */
   --c-ink: 26 28 32;       /* primary text (near-black) */
   --c-muted: 106 102 86;   /* dimmed warm grey */
-  --c-amber: 168 111 0;    /* signal accent (deep gold — readable on light) */
-  --c-live: 14 116 144;    /* cyan, darkened for light bg */
+  --c-amber: 0 109 119;    /* UI accent: teal #006d77 */
+  --c-live: 14 116 144;    /* cyan, darkened for light bg — live/streaming ONLY */
   --c-ok: 21 128 61;
-  --c-bad: 190 40 45;
+  --c-bad: 194 65 12;      /* orange-red — distinct from both teal + live */
   --c-defer: 168 110 40;
-  --c-warn: 168 111 0;
+  --c-warn: 161 100 0;     /* amber-gold for warnings */
   color-scheme: light;
 }
 
@@ -24,10 +27,10 @@
   --c-edge: 28 31 38;
   --c-ink: 236 231 218;    /* warm off-white */
   --c-muted: 138 134 120;
-  --c-amber: 245 183 0;    /* bright signal amber */
-  --c-live: 34 211 238;    /* bright cyan */
+  --c-amber: 0 168 180;    /* teal brightened for dark bg */
+  --c-live: 34 211 238;    /* bright cyan — live/streaming ONLY */
   --c-ok: 92 200 138;
-  --c-bad: 229 72 77;
+  --c-bad: 234 88 12;      /* orange-red */
   --c-defer: 201 138 58;
   --c-warn: 245 183 0;
   color-scheme: dark;
@@ -44,8 +47,14 @@
 [data-accent="blue"] { --c-amber: 37 99 235; }     /* light · blue-600 */
 .dark[data-accent="blue"] { --c-amber: 96 165 250; }  /* dark · blue-400 */
 
-[data-accent="red"] { --c-amber: 231 76 60; }      /* #E74C3C — note: ~= the bad/error token */
-.dark[data-accent="red"] { --c-amber: 231 76 60; }
+[data-accent="red"] { --c-amber: 200 16 46; }         /* #c8102e — deep brand red */
+.dark[data-accent="red"] { --c-amber: 220 50 75; }   /* lightened for dark bg */
+
+[data-accent="teal"] { --c-amber: 0 109 119; }        /* #006d77 — deep teal */
+.dark[data-accent="teal"] { --c-amber: 0 148 161; }   /* brightened for dark bg */
+
+[data-accent="navy"] { --c-amber: 30 58 138; }         /* #1e3a8a — deep navy */
+.dark[data-accent="navy"] { --c-amber: 59 97 200; }   /* brightened for dark bg */
 
 html,
 body,

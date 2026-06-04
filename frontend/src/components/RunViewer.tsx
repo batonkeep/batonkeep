@@ -1,6 +1,7 @@
 // RunViewer.tsx — live run inspector (§12): colour-coded event stream with candidate
 // order + failover hops, elapsed timer, live token/cost counters, Markdown report via
 // marked, Report/JSON/Raw tabs, downloads, and a deferred banner with requeue.
+// D-track: composed from ui/ primitives (Button, Badge, Card, StatusDot, Tabs).
 import { useEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
 import { Ban, Download, RotateCw, X } from "lucide-react";
@@ -8,6 +9,7 @@ import type { Run, RunEvent } from "../types";
 import { api } from "../api";
 import { useRunEvents } from "../useLiveFeed";
 import { STATUS_META, fmtCost, fmtDuration, fmtTime } from "../format";
+import { Badge, Button, StatusDot, Tabs } from "../ui";
 
 // Parse naive ISO backend timestamps as UTC before formatting.
 function asUTC(iso: string): Date {
@@ -25,6 +27,11 @@ interface Props {
 }
 
 type Tab = "report" | "json" | "raw";
+const RUN_TABS = [
+  { id: "report" as Tab, label: "Report" },
+  { id: "json"   as Tab, label: "JSON" },
+  { id: "raw"    as Tab, label: "Raw" },
+] as const;
 
 const KIND_COLOR: Record<string, string> = {
   log: "text-muted",
@@ -61,13 +68,11 @@ export default function RunViewer({ run, taskName, now, onRequeue, onCancel, onC
   const meta = STATUS_META[run.status];
   const active = ["queued", "planning", "running"].includes(run.status);
 
-  // Seed historical (non-token) events when opening a run.
   useEffect(() => {
     api.getRunEvents(run.id).then(seedEvents).catch(() => { });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [run.id]);
 
-  // Fetch rendered outputs once the run has artifacts.
   useEffect(() => {
     if (run.markdown_path) {
       fetch(api.outputUrl(run.id, "md")).then((r) => (r.ok ? r.text() : null)).then(setReportMd).catch(() => { });
@@ -77,7 +82,6 @@ export default function RunViewer({ run, taskName, now, onRequeue, onCancel, onC
     }
   }, [run.id, run.markdown_path, run.json_path]);
 
-  // Auto-scroll the raw stream as events arrive.
   useEffect(() => {
     if (tab === "raw" && streamRef.current) streamRef.current.scrollTop = streamRef.current.scrollHeight;
   }, [events, streamingText, tab]);
@@ -100,11 +104,18 @@ export default function RunViewer({ run, taskName, now, onRequeue, onCancel, onC
       <div className="flex items-start justify-between gap-2 border-b border-edge px-4 py-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <span className={`h-2.5 w-2.5 rounded-full ${meta.dot}`} />
+            <StatusDot
+              tone={meta.dot?.includes("ok") ? "ok" : meta.dot?.includes("bad") ? "bad" : meta.dot?.includes("live") ? "live" : meta.dot?.includes("defer") ? "defer" : "neutral"}
+              pulse={active}
+            />
             <h2 className="truncate font-mono text-sm font-semibold text-ink">
               {taskName || `Run #${run.id}`}
             </h2>
-            <span className={`font-mono text-xs ${meta.text}`}>{meta.label}</span>
+            <Badge
+              tone={meta.dot?.includes("ok") ? "ok" : meta.dot?.includes("bad") ? "bad" : meta.dot?.includes("live") ? "live" : meta.dot?.includes("defer") ? "defer" : "neutral"}
+            >
+              {meta.label}
+            </Badge>
           </div>
           <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 font-mono text-[11px] text-muted">
             <span>run #{run.id}</span>
@@ -113,16 +124,18 @@ export default function RunViewer({ run, taskName, now, onRequeue, onCancel, onC
             <span>elapsed {fmtDuration(run.finished_at ? run.duration_ms : elapsedMs)}</span>
             <span className="text-amber">{run.tokens_in + run.tokens_out} tok</span>
             <span className="text-amber">{fmtCost(run.cost_usd)}</span>
-            {run.overflow_used && <span className="text-defer">overflow used</span>}
+            {run.overflow_used && <Badge tone="defer">overflow</Badge>}
           </div>
         </div>
         <div className="flex items-center gap-1">
           {active && (
-            <button onClick={() => onCancel(run)} className="flex items-center gap-1 rounded-lg border border-edge px-2 py-1 text-xs text-muted hover:text-bad">
-              <Ban size={13} /> Cancel
-            </button>
+            <Button variant="ghost" size="sm" icon={<Ban size={13} />} onClick={() => onCancel(run)}
+              className="text-muted hover:text-bad">
+              Cancel
+            </Button>
           )}
-          <button onClick={onClose} className="rounded-lg p-1.5 text-muted hover:text-ink"><X size={18} /></button>
+          <Button variant="ghost" size="sm" className="px-1.5" onClick={onClose}
+            icon={<X size={18} />} />
         </div>
       </div>
 
@@ -133,51 +146,45 @@ export default function RunViewer({ run, taskName, now, onRequeue, onCancel, onC
             {run.error || "All candidates were cooling down."}
             {run.deferred_until && <span> · resumes {asUTC(run.deferred_until).toLocaleString()}</span>}
           </div>
-          <button onClick={() => onRequeue(run)} className="flex shrink-0 items-center gap-1 rounded-lg bg-defer/80 px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90">
-            <RotateCw size={13} /> Run now
-          </button>
+          <Button variant="outline" size="sm" icon={<RotateCw size={13} />}
+            onClick={() => onRequeue(run)}
+            className="border-defer/50 text-defer hover:bg-defer/10">
+            Run now
+          </Button>
         </div>
       )}
 
-      {/* Candidate order + failover hops (from route + attempts) */}
+      {/* Candidate order + failover hops */}
       {run.attempts && run.attempts.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5 border-b border-edge px-4 py-2 font-mono text-[11px]">
           <span className="text-muted">hops:</span>
           {run.attempts.map((a, i) => {
-            const color =
-              a.outcome === "success" ? "border-ok/50 text-ok" :
-                a.outcome === "rate_limited" ? "border-defer/50 text-defer" :
-                  a.outcome === "error" || a.outcome === "unavailable" ? "border-bad/50 text-bad" :
-                    "border-edge text-muted";
+            const tone =
+              a.outcome === "success" ? "ok" :
+              a.outcome === "rate_limited" ? "defer" :
+              a.outcome === "error" || a.outcome === "unavailable" ? "bad" : "neutral";
             return (
-              <span key={i} className={`rounded border px-1.5 py-0.5 ${color}`} title={a.outcome}>
+              <Badge key={i} tone={tone as "ok" | "defer" | "bad" | "neutral"}>
                 {a.provider} · {a.outcome}
-              </span>
+              </Badge>
             );
           })}
         </div>
       )}
 
-      {/* Tabs */}
-      <div className="flex items-center gap-1 border-b border-edge px-3 pt-2">
-        {(["report", "json", "raw"] as Tab[]).map((t) => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
-            className={`rounded-t-lg px-3 py-1.5 font-mono text-xs ${tab === t ? "border-b-2 border-amber text-amber" : "text-muted hover:text-ink"
-              }`}
-          >
-            {t}
-          </button>
-        ))}
+      {/* Tabs + downloads */}
+      <div className="flex items-center gap-2 border-b border-edge px-3 pt-2">
+        <Tabs tabs={RUN_TABS} active={tab} onChange={setTab} />
         <div className="ml-auto flex items-center gap-2 pb-1">
           {run.markdown_path && (
-            <a href={api.outputUrl(run.id, "md")} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-xs text-muted hover:text-ink">
+            <a href={api.outputUrl(run.id, "md")} target="_blank" rel="noopener noreferrer"
+              className="flex items-center gap-1 text-xs text-muted hover:text-ink">
               <Download size={13} /> md
             </a>
           )}
           {run.json_path && (
-            <a href={api.outputUrl(run.id, "json")} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-xs text-muted hover:text-ink">
+            <a href={api.outputUrl(run.id, "json")} target="_blank" rel="noopener noreferrer"
+              className="flex items-center gap-1 text-xs text-muted hover:text-ink">
               <Download size={13} /> json
             </a>
           )}

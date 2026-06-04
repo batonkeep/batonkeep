@@ -17,7 +17,7 @@ export default function Tabs<T extends string>({ tabs, active, onChange, classNa
             onClick={() => onChange(t.id)}
             className={
               "rounded px-3 py-1 font-mono text-xs font-medium transition-colors " +
-              (on ? "bg-amber text-coal" : "text-muted hover:text-ink")
+              (on ? "bg-amber text-white" : "text-muted hover:text-ink")
             }
           >
             {t.label}

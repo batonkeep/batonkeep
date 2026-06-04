@@ -1,9 +1,11 @@
 // Sidebar.tsx — primary nav. Left rail on desktop, bottom tab bar on mobile.
-import { Hammer, ListChecks, Radio, Server } from "lucide-react";
+import { Hammer, ListChecks, Server } from "lucide-react";
 import Logo from "../ui/Logo";
 import type { WsStatus } from "../useLiveFeed";
 
-export type View = "tasks" | "live" | "build" | "providers";
+// "Live" (runs) is folded into the Tasks pane as a sub-tab, keeping the bottom
+// nav to three items on mobile.
+export type View = "tasks" | "build" | "providers";
 
 interface Props {
   view: View;
@@ -14,7 +16,6 @@ interface Props {
 
 const ITEMS: { id: View; label: string; icon: typeof ListChecks }[] = [
   { id: "tasks", label: "Tasks", icon: ListChecks },
-  { id: "live", label: "Live", icon: Radio },
   { id: "build", label: "Build", icon: Hammer },
   { id: "providers", label: "Providers", icon: Server },
 ];
@@ -47,7 +48,7 @@ export default function Sidebar({ view, onChange, wsStatus, activeRuns }: Props)
           >
             <Icon size={18} className={active ? "text-amber" : ""} />
             <span className="font-mono">{label}</span>
-            {id === "live" && activeRuns > 0 && (
+            {id === "tasks" && activeRuns > 0 && (
               <span className="absolute right-1/4 top-1 h-1.5 w-1.5 rounded-full bg-live animate-pulse-live md:static md:ml-auto md:h-auto md:w-auto md:rounded-none md:bg-transparent md:text-xs md:text-live">
                 <span className="hidden md:inline">{activeRuns}</span>
               </span>

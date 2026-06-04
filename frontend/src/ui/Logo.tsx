@@ -102,11 +102,12 @@ export function ShieldSolid({ size = 24, className = "", title }: MarkProps) {
       {title ? <title>{title}</title> : null}
       {/* shield = brand colour */}
       <path d="M5 4 L19 4 L19 12.6 C19 18 12 21.6 12 21.6 C12 21.6 5 18 5 12.6 Z" className="fill-amber" />
-      {/* baton knockout (node · shaft · node) → page background shows through */}
-      <g className="fill-base">
-        <circle cx="12" cy="8.6" r="1.5" />
-        <rect x="10.8" y="10.7" width="2.4" height="5.6" rx="1.2" />
-        <circle cx="12" cy="18.1" r="1.25" />
+      {/* relay baton, knocked out to the page background: solid disc (origin) →
+          open channel (shaft) → ring (target). Solid→hollow reads as a hand-off. */}
+      <g className="fill-base stroke-base" strokeWidth="0.95">
+        <circle cx="12" cy="8" r="1.7" stroke="none" />
+        <rect x="11.15" y="9.7" width="1.7" height="5.7" rx="0.85" fill="none" />
+        <circle cx="12" cy="17.5" r="1.55" fill="none" />
       </g>
     </svg>
   );

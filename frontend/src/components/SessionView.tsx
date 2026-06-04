@@ -5,8 +5,8 @@
 // D-track: composed from ui/ primitives (Button, Badge, Card, StatusDot, Select).
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
-import { Activity, Check, ChevronRight, Loader2, Pencil, Plus, RefreshCw, Send, X } from "lucide-react";
-import type { ProviderHealth, Session, SessionTurn } from "../types";
+import { Activity, Check, ChevronRight, History, Loader2, Pencil, Plus, RefreshCw, RotateCcw, Send, X } from "lucide-react";
+import type { ProviderHealth, Session, SessionTurn, Version } from "../types";
 import { api } from "../api";
 import { useSessionEvents, type SessionEvent } from "../useLiveFeed";
 import { fmtTime } from "../format";
@@ -80,6 +80,11 @@ export default function SessionView({
   const [titleDraft, setTitleDraft] = useState<string | null>(null); // non-null = editing
   const [pendingMessage, setPendingMessage] = useState<string | null>(null); // optimistic turn
   const [sendError, setSendError] = useState<string | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [versions, setVersions] = useState<Version[]>([]);
+  const [diffFor, setDiffFor] = useState<string | null>(null); // commit whose diff is shown
+  const [diffText, setDiffText] = useState<string>("");
+  const [restoring, setRestoring] = useState<string | null>(null); // commit being restored
 
   const { events, streamingText, lastTurn } = useSessionEvents(selectedId);
   const streamRef = useRef<HTMLDivElement>(null);
@@ -95,6 +100,11 @@ export default function SessionView({
     api.listTurns(selectedId).then(setTurns).catch(() => {});
   }, [selectedId]);
 
+  const loadVersions = useCallback(() => {
+    if (!selectedId) return;
+    api.listVersions(selectedId).then(setVersions).catch(() => {});
+  }, [selectedId]);
+
   // Load the selected session detail (for the preview token) + its turn history.
   useEffect(() => {
     setDetail(null);
@@ -106,19 +116,25 @@ export default function SessionView({
     setTitleDraft(null);
     setPendingMessage(null);
     setSendError(null);
+    setHistoryOpen(false);
+    setVersions([]);
+    setDiffFor(null);
+    setDiffText("");
     if (!selectedId) return;
     api.getSession(selectedId).then(setDetail).catch(() => {});
     loadTurns();
   }, [selectedId, loadTurns]);
 
-  // When a turn finishes, refresh the turn list and bust the preview iframe so it
-  // reflects the latest workspace edits (Cache-Control: no-store on the backend).
+  // When a turn finishes, refresh the turn list + version history and bust the
+  // preview iframe so it reflects the latest workspace edits (Cache-Control:
+  // no-store on the backend).
   useEffect(() => {
     if (lastTurn && lastTurn.status !== "running") {
       loadTurns();
+      loadVersions();
       setPreviewNonce((n) => n + 1);
     }
-  }, [lastTurn, loadTurns]);
+  }, [lastTurn, loadTurns, loadVersions]);
 
   // Auto-scroll the chat to the latest content.
   useEffect(() => {
@@ -171,6 +187,48 @@ export default function SessionView({
     } finally {
       setPendingMessage(null);
       setSending(false);
+    }
+  };
+
+  const toggleHistory = () => {
+    setHistoryOpen((open) => {
+      if (!open) loadVersions();
+      return !open;
+    });
+  };
+
+  // View the diff a version introduced (toggles open/closed). "git" is never named.
+  const viewDiff = async (commit: string) => {
+    if (diffFor === commit) {
+      setDiffFor(null);
+      return;
+    }
+    setDiffFor(commit);
+    setDiffText("");
+    try {
+      const d = await api.versionDiff(selectedId!, commit);
+      setDiffText(d.diff || "(no changes)");
+    } catch {
+      setDiffText("(could not load changes)");
+    }
+  };
+
+  // Roll back the workspace to an earlier version. The restore lands as a new
+  // version (itself undoable); refresh turns, history, and the preview after.
+  const handleRestore = async (commit: string) => {
+    if (!selectedId || restoring) return;
+    setRestoring(commit);
+    try {
+      await api.restoreVersion(selectedId, commit);
+      loadTurns();
+      loadVersions();
+      setDiffFor(null);
+      setPreviewNonce((n) => n + 1);
+      onSessionsChanged();
+    } catch (err) {
+      setSendError(err instanceof Error ? err.message : "Could not restore version");
+    } finally {
+      setRestoring(null);
     }
   };
 
@@ -270,6 +328,16 @@ export default function SessionView({
                     title="Rename session"
                   />
                   <Button
+                    variant={historyOpen ? "outline" : "ghost"}
+                    size="sm"
+                    className="gap-1.5 px-2"
+                    icon={<History size={13} />}
+                    onClick={toggleHistory}
+                    title="Undo / History — previous versions of this build"
+                  >
+                    <span className="text-[11px]">History</span>
+                  </Button>
+                  <Button
                     variant={activityOpen ? "outline" : "ghost"}
                     size="sm"
                     className="gap-1.5 px-2"
@@ -287,6 +355,62 @@ export default function SessionView({
               ref={streamRef}
               className="flex-1 space-y-3 overflow-y-auto p-4"
             >
+              {/* Undo/History — previous versions of the build, newest first. */}
+              {historyOpen && (
+                <div className="space-y-1 rounded-lg border border-edge bg-base/60 p-3">
+                  <div className="flex items-center gap-1.5 pb-1 font-mono text-[11px] uppercase tracking-widest text-muted">
+                    <History size={12} /> History
+                  </div>
+                  {versions.length === 0 && (
+                    <div className="text-xs text-muted">No versions yet.</div>
+                  )}
+                  {versions.map((v, i) => (
+                    <div key={v.commit} className="rounded-md border border-edge/60 bg-panel/40 px-2 py-1.5">
+                      <div className="flex items-center gap-2">
+                        <span className="flex-1 truncate text-xs text-ink">
+                          {i === 0 && (
+                            <span className="mr-1 font-mono text-[10px] text-ok">current</span>
+                          )}
+                          {v.message}
+                        </span>
+                        <span className="font-mono text-[10px] text-muted">{fmtTime(v.ts)}</span>
+                        <button
+                          onClick={() => viewDiff(v.commit)}
+                          className="font-mono text-[10px] text-muted hover:text-ink"
+                          title="View what changed"
+                        >
+                          {diffFor === v.commit ? "hide" : "changes"}
+                        </button>
+                        {i !== 0 && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="gap-1 px-1.5 py-0.5"
+                            icon={
+                              restoring === v.commit ? (
+                                <Loader2 size={11} className="animate-spin" />
+                              ) : (
+                                <RotateCcw size={11} />
+                              )
+                            }
+                            onClick={() => handleRestore(v.commit)}
+                            disabled={restoring !== null}
+                            title="Restore the build to this version"
+                          >
+                            <span className="text-[10px]">Restore</span>
+                          </Button>
+                        )}
+                      </div>
+                      {diffFor === v.commit && (
+                        <pre className="mt-1.5 max-h-56 overflow-auto rounded bg-base p-2 font-mono text-[10px] leading-snug text-ink/80">
+                          {diffText || "loading…"}
+                        </pre>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
               {turns.length === 0 && !pendingMessage && (
                 <div className="text-sm text-muted">
                   Describe what you want to build — e.g. “spin up a landing page”.
@@ -301,6 +425,19 @@ export default function SessionView({
                     <Badge tone={TURN_TONE[t.status]}>{t.status}</Badge>
                     {t.provider && (
                       <span className="font-mono text-[11px] text-muted">{t.provider}</span>
+                    )}
+                    {t.diffstat && (
+                      <button
+                        onClick={() => {
+                          setHistoryOpen(true);
+                          loadVersions();
+                          if (t.commit_sha) viewDiff(t.commit_sha);
+                        }}
+                        className="font-mono text-[11px] text-brand hover:underline"
+                        title="View this version's changes in History"
+                      >
+                        {(t.diffstat.split("\n").pop() || "changed").trim()}
+                      </button>
                     )}
                   </div>
                   {t.response && (

@@ -32,6 +32,8 @@ from app.schemas import (
     ProviderHealth,
     ProviderLimitsUpdate,
     ProviderModelUpdate,
+    RestoreOut,
+    RestoreRequest,
     RunEventOut,
     RunOut,
     SessionCreate,
@@ -43,6 +45,8 @@ from app.schemas import (
     TaskOut,
     TaskUpdate,
     TurnCreate,
+    VersionDiffOut,
+    VersionOut,
 )
 from app.ws import ws_manager
 
@@ -503,6 +507,74 @@ async def session_preview(
 
     # no-store: preview reflects the latest turn's edits, never a cached version.
     return FileResponse(file_path, media_type=media, headers={"Cache-Control": "no-store"})
+
+
+# ── Versioning: Undo/History (M1.3) ──────────────────────────────────────────
+# Per-turn workspace commits surfaced as versions. "git" is never named to the
+# user — this is the Undo/History of the build. Everything is owner_id-scoped:
+# every route loads the session under the caller's owner_id first.
+
+async def _owned_session(session_id: str, owner_id: str, db: AsyncSession):
+    session = await db.get(Session, session_id)
+    if session is None or session.owner_id != owner_id:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return session
+
+
+@app.get("/api/sessions/{session_id}/versions", response_model=list[VersionOut], tags=["sessions"])
+async def list_session_versions(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """Workspace versions (per-turn commits), newest first — the History list."""
+    from app.sessions import workspace as ws
+
+    session = await _owned_session(session_id, owner_id, db)
+    versions = await ws.list_versions(session.workspace_path)
+    return [VersionOut.model_validate(v) for v in versions]
+
+
+@app.get("/api/sessions/{session_id}/versions/{commit}/diff",
+         response_model=VersionDiffOut, tags=["sessions"])
+async def get_session_version_diff(
+    session_id: str,
+    commit: str,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """The diff a single version introduced (per-turn diff for the event view)."""
+    from app.sessions import workspace as ws
+
+    session = await _owned_session(session_id, owner_id, db)
+    diff = await ws.version_diff(session.workspace_path, commit)
+    if diff is None:
+        raise HTTPException(status_code=404, detail="Version not found")
+    return VersionDiffOut.model_validate(diff)
+
+
+@app.post("/api/sessions/{session_id}/restore", response_model=RestoreOut, tags=["sessions"])
+async def restore_session_version(
+    session_id: str,
+    body: RestoreRequest,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """
+    Restore the workspace to an earlier version (Undo/History). Implemented as a
+    checkout-restore committed as a new version, so the restore is itself undoable.
+    """
+    from app.sessions import workspace as ws
+
+    session = await _owned_session(session_id, owner_id, db)
+    result = await ws.restore_version(session.workspace_path, body.commit)
+    if result is None:
+        raise HTTPException(
+            status_code=400, detail="Unknown version, or workspace already matches it",
+        )
+    session.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    return RestoreOut.model_validate(result)
 
 
 # ── /api/stats ──────────────────────────────────────────────────────────────────

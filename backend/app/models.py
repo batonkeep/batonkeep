@@ -202,6 +202,10 @@ class SessionTurn(Base):
     # "running" | "succeeded" | "failed"
     status: Mapped[str] = mapped_column(String(16), default="running", index=True)
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # M1.3 versioning: the workspace commit this turn produced (None if the turn
+    # changed no files), plus a `git --stat` summary for the History/event view.
+    commit_sha: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    diffstat: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

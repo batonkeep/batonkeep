@@ -233,3 +233,208 @@ class TestSessionRename:
         finally:
             app.dependency_overrides.clear()
             asyncio.get_event_loop().run_until_complete(engine.dispose())
+
+
+# ── M1.3: artifacts + versioning ──────────────────────────────────────────────
+#
+# Verify gate (PLAN §M1.3): successive builds create per-turn commits; diff/
+# rollback (checkout) works; per-turn diffs surface in the event view; artifacts
+# are owner_id-scoped.
+
+class TestWorkspaceVersioning:
+    @pytest.mark.asyncio
+    async def test_commit_turn_creates_version_with_diff(self, tmp_path, monkeypatch):
+        from app.sessions import workspace as ws
+        monkeypatch.setitem(ws._settings.__dict__, "sessions_dir", str(tmp_path))
+        root = await ws.create_workspace("v1", title="T", goal="G")
+
+        with open(os.path.join(root, "index.html"), "w") as f:
+            f.write("<h1>hi</h1>")
+        version = await ws.commit_turn(root, seq=0, provider="mock", summary="built page")
+
+        assert version is not None
+        assert len(version["commit"]) == 40
+        assert "turn 0 (mock)" in version["message"]
+        assert "index.html" in version["diff"]
+        assert "index.html" in version["diffstat"]
+
+    @pytest.mark.asyncio
+    async def test_commit_turn_noop_when_nothing_changed(self, tmp_path, monkeypatch):
+        from app.sessions import workspace as ws
+        monkeypatch.setitem(ws._settings.__dict__, "sessions_dir", str(tmp_path))
+        root = await ws.create_workspace("v2", title="T", goal="G")
+        # No file edits after init → no new version.
+        assert await ws.commit_turn(root, seq=0, provider="mock") is None
+
+    @pytest.mark.asyncio
+    async def test_list_versions_newest_first(self, tmp_path, monkeypatch):
+        from app.sessions import workspace as ws
+        monkeypatch.setitem(ws._settings.__dict__, "sessions_dir", str(tmp_path))
+        root = await ws.create_workspace("v3", title="T", goal="G")
+        for i in range(2):
+            with open(os.path.join(root, "index.html"), "w") as f:
+                f.write(f"<h1>v{i}</h1>")
+            await ws.commit_turn(root, seq=i, provider="mock", summary=f"edit {i}")
+
+        versions = await ws.list_versions(root)
+        # 2 turn commits + the initial workspace commit, newest first.
+        assert len(versions) == 3
+        assert "turn 1 (mock)" in versions[0]["message"]
+        assert "initialise workspace" in versions[-1]["message"]
+
+    @pytest.mark.asyncio
+    async def test_restore_version_checks_out_and_recommits(self, tmp_path, monkeypatch):
+        from app.sessions import workspace as ws
+        monkeypatch.setitem(ws._settings.__dict__, "sessions_dir", str(tmp_path))
+        root = await ws.create_workspace("v4", title="T", goal="G")
+
+        page = os.path.join(root, "index.html")
+        with open(page, "w") as f:
+            f.write("<h1>first</h1>")
+        v0 = await ws.commit_turn(root, seq=0, provider="mock", summary="first")
+        with open(page, "w") as f:
+            f.write("<h1>second</h1>")
+        await ws.commit_turn(root, seq=1, provider="mock", summary="second")
+
+        # Roll back to v0: the file content returns and a new restore version lands.
+        result = await ws.restore_version(root, v0["commit"])
+        assert result is not None
+        assert result["restored_from"] == v0["commit"]
+        with open(page) as f:
+            assert f.read() == "<h1>first</h1>"
+        # History preserved + extended (restore is itself undoable).
+        assert len(await ws.list_versions(root)) == 4
+
+    @pytest.mark.asyncio
+    async def test_restore_removes_files_added_after_target(self, tmp_path, monkeypatch):
+        from app.sessions import workspace as ws
+        monkeypatch.setitem(ws._settings.__dict__, "sessions_dir", str(tmp_path))
+        root = await ws.create_workspace("v5", title="T", goal="G")
+
+        with open(os.path.join(root, "a.html"), "w") as f:
+            f.write("a")
+        v0 = await ws.commit_turn(root, seq=0, provider="mock", summary="a")
+        with open(os.path.join(root, "b.html"), "w") as f:
+            f.write("b")
+        await ws.commit_turn(root, seq=1, provider="mock", summary="b")
+
+        await ws.restore_version(root, v0["commit"])
+        assert not os.path.exists(os.path.join(root, "b.html"))  # clean removed it
+        assert os.path.exists(os.path.join(root, "a.html"))
+
+    @pytest.mark.asyncio
+    async def test_restore_rejects_unknown_or_unsafe_ref(self, tmp_path, monkeypatch):
+        from app.sessions import workspace as ws
+        monkeypatch.setitem(ws._settings.__dict__, "sessions_dir", str(tmp_path))
+        root = await ws.create_workspace("v6", title="T", goal="G")
+        assert await ws.restore_version(root, "HEAD~1") is None        # refspec rejected
+        assert await ws.restore_version(root, "deadbeef" * 5) is None   # unknown sha
+        assert await ws.version_diff(root, "main") is None             # refspec rejected
+
+
+class TestTurnVersioning:
+    @pytest.mark.asyncio
+    async def test_turn_records_commit_and_broadcasts_diff(self, session_env):
+        Maker, ws, orch, broadcasts = session_env
+        root = await _make_session(Maker, ws)
+
+        turn_id = await orch.run_turn("s1", "build a hero section", owner_id="local")
+
+        from app.models import SessionTurn
+        async with Maker() as db:
+            turn = await db.get(SessionTurn, turn_id)
+            assert turn.commit_sha and len(turn.commit_sha) == 40
+            assert turn.diffstat and "index.html" in turn.diffstat
+
+        # Per-turn diff surfaced in the live event stream (event view gate).
+        version_events = [
+            b for b in broadcasts
+            if b["type"] == "session.event" and b["event"].get("phase") == "version"
+        ]
+        assert version_events
+        assert "index.html" in version_events[0]["event"]["data"]["diff"]
+
+        # The commit is a real version in workspace history.
+        versions = await ws.list_versions(root)
+        assert any(v["commit"] == turn.commit_sha for v in versions)
+
+
+class TestVersioningHTTP:
+    """versions / diff / restore endpoints + owner_id isolation (M1.3 gate)."""
+
+    def test_versions_diff_restore_and_owner_isolation(self, tmp_path):
+        import asyncio
+        from fastapi.testclient import TestClient
+        from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+        from app.db import Base, get_db
+        from app.models import Owner, Session as SessionModel
+        from app.main import app, _owner_id
+        from app.sessions import workspace as ws
+
+        ws._settings.__dict__["sessions_dir"] = str(tmp_path / "sessions")
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/v.db", echo=False)
+
+        async def _setup():
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            # Build two workspaces with one committed version each, owned separately.
+            root_a = await ws.create_workspace("sa", title="A", goal="G")
+            with open(os.path.join(root_a, "index.html"), "w") as f:
+                f.write("<h1>alpha</h1>")
+            await ws.commit_turn(root_a, seq=0, provider="mock", summary="alpha")
+            with open(os.path.join(root_a, "index.html"), "w") as f:
+                f.write("<h1>beta</h1>")
+            await ws.commit_turn(root_a, seq=1, provider="mock", summary="beta")
+            root_b = await ws.create_workspace("sb", title="B", goal="G")
+            Maker = async_sessionmaker(engine, expire_on_commit=False)
+            async with Maker() as db:
+                db.add_all([
+                    Owner(id="local", label="Me"),
+                    Owner(id="other", label="Them"),
+                    SessionModel(id="sa", owner_id="local", title="A", provider="mock",
+                                 workspace_path=root_a, preview_token="t", status="active"),
+                    SessionModel(id="sb", owner_id="other", title="B", provider="mock",
+                                 workspace_path=root_b, preview_token="t", status="active"),
+                ])
+                await db.commit()
+            return Maker
+
+        Maker = asyncio.get_event_loop().run_until_complete(_setup())
+
+        async def _override_db():
+            async with Maker() as db:
+                yield db
+
+        app.dependency_overrides[get_db] = _override_db
+        app.dependency_overrides[_owner_id] = lambda: "local"
+        try:
+            c = TestClient(app)
+
+            versions = c.get("/api/sessions/sa/versions")
+            assert versions.status_code == 200
+            vs = versions.json()
+            assert len(vs) == 3  # init + 2 turns
+            assert "turn 1 (mock)" in vs[0]["message"]
+            first_turn_commit = vs[1]["commit"]
+
+            # Per-turn diff.
+            diff = c.get(f"/api/sessions/sa/versions/{first_turn_commit}/diff")
+            assert diff.status_code == 200
+            assert "alpha" in diff.json()["diff"]
+
+            # Rollback to the first turn restores its content as a new version.
+            restored = c.post("/api/sessions/sa/restore", json={"commit": first_turn_commit})
+            assert restored.status_code == 200
+            assert restored.json()["restored_from"] == first_turn_commit
+            assert len(c.get("/api/sessions/sa/versions").json()) == 4
+
+            # owner_id isolation: another owner's session is invisible (404), not
+            # leaked through any of the three routes.
+            assert c.get("/api/sessions/sb/versions").status_code == 404
+            assert c.get(f"/api/sessions/sb/versions/{first_turn_commit}/diff").status_code == 404
+            assert c.post("/api/sessions/sb/restore",
+                          json={"commit": first_turn_commit}).status_code == 404
+        finally:
+            app.dependency_overrides.clear()
+            ws._settings.__dict__.pop("sessions_dir", None)
+            asyncio.get_event_loop().run_until_complete(engine.dispose())

@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings, DeploymentMode
 from app.db import get_db, init_db
-from app.models import Credential, Owner, Task, Run, RunEvent
+from app.models import Credential, Owner, Session, SessionTurn, Task, Run, RunEvent
 from app.schemas import (
     CredentialCreate,
     CredentialOut,
@@ -34,10 +34,14 @@ from app.schemas import (
     ProviderModelUpdate,
     RunEventOut,
     RunOut,
+    SessionCreate,
+    SessionOut,
+    SessionTurnOut,
     StatsOut,
     TaskCreate,
     TaskOut,
     TaskUpdate,
+    TurnCreate,
 )
 from app.ws import ws_manager
 
@@ -344,6 +348,103 @@ async def get_run_output(
 
     filename = f"run_{run_id}.{format}"
     return FileResponse(path, media_type=media, filename=filename)
+
+
+# ── /api/sessions (M1.1: build sessions + workspace) ─────────────────────────
+
+@app.post("/api/sessions", response_model=SessionOut, status_code=201, tags=["sessions"])
+async def create_session(
+    body: SessionCreate,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """Create a build session with a sandboxed, git-init'd workspace (M1.1)."""
+    import uuid
+    from app.sessions import workspace as ws
+
+    session_id = uuid.uuid4().hex
+    title = (body.title or "Untitled session").strip()[:256]
+    workspace_path = await ws.create_workspace(session_id, title=title, goal=body.goal or "")
+
+    session = Session(
+        id=session_id,
+        owner_id=owner_id,
+        title=title,
+        provider=body.provider,
+        workspace_path=workspace_path,
+        status="active",
+    )
+    db.add(session)
+    await db.commit()
+    await db.refresh(session)
+    return SessionOut.model_validate(session)
+
+
+@app.get("/api/sessions", response_model=list[SessionOut], tags=["sessions"])
+async def list_sessions(
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    result = await db.execute(
+        select(Session).where(Session.owner_id == owner_id).order_by(Session.created_at.desc())
+    )
+    return [SessionOut.model_validate(s) for s in result.scalars().all()]
+
+
+@app.get("/api/sessions/{session_id}", response_model=SessionOut, tags=["sessions"])
+async def get_session(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    session = await db.get(Session, session_id)
+    if session is None or session.owner_id != owner_id:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return SessionOut.model_validate(session)
+
+
+@app.get("/api/sessions/{session_id}/turns", response_model=list[SessionTurnOut], tags=["sessions"])
+async def list_session_turns(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    session = await db.get(Session, session_id)
+    if session is None or session.owner_id != owner_id:
+        raise HTTPException(status_code=404, detail="Session not found")
+    result = await db.execute(
+        select(SessionTurn).where(SessionTurn.session_id == session_id).order_by(SessionTurn.seq)
+    )
+    return [SessionTurnOut.model_validate(t) for t in result.scalars().all()]
+
+
+@app.post("/api/sessions/{session_id}/turns", response_model=SessionTurnOut,
+          status_code=201, tags=["sessions"])
+async def create_session_turn(
+    session_id: str,
+    body: TurnCreate,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """
+    Send a message to the session's agent. Optionally switch provider for this and
+    subsequent turns; the switched-in agent continues from the workspace + SESSION.md.
+    Streams events live over /ws; returns the completed turn record.
+    """
+    session = await db.get(Session, session_id)
+    if session is None or session.owner_id != owner_id:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if not body.message.strip():
+        raise HTTPException(status_code=400, detail="message must not be empty")
+
+    from app.sessions.orchestrator import run_turn, SessionError
+    try:
+        turn_id = await run_turn(session_id, body.message, provider=body.provider, owner_id=owner_id)
+    except SessionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    turn = await db.get(SessionTurn, turn_id)
+    return SessionTurnOut.model_validate(turn)
 
 
 # ── /api/stats ──────────────────────────────────────────────────────────────────

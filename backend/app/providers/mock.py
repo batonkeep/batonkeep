@@ -11,6 +11,7 @@ Simulates:
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any, AsyncIterator, Optional
 
 from app.providers.base import (
@@ -97,6 +98,23 @@ class MockExecutor(Executor):
 
         yield ExecEvent(kind=EventKind.phase, phase="running", message="[mock] running")
         await asyncio.sleep(delay)
+
+        # Build-session mode (M1.1): act like a coding agent and actually edit a
+        # file in the workspace so the per-turn change is real and inspectable.
+        if extra and extra.get("session"):
+            seq = extra.get("turn_seq", 0)
+            user_message = (extra.get("user_message") or prompt)[:120].strip()
+            try:
+                index_path = os.path.join(workdir, "index.html")
+                with open(index_path, "a", encoding="utf-8") as f:
+                    f.write(f"<!-- mock turn {seq}: {user_message} -->\n")
+                yield ExecEvent(
+                    kind=EventKind.tool,
+                    message=f"[mock] wrote index.html (turn {seq})",
+                    data={"tool": "file_write", "path": "index.html"},
+                )
+            except OSError:
+                pass
 
         # Stream the mock report in chunks
         report = _MOCK_REPORT

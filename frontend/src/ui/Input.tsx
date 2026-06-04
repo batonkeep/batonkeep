@@ -3,8 +3,8 @@ import type { InputHTMLAttributes, ReactNode } from "react";
 
 const FIELD_BASE =
   "w-full rounded-md border border-edge bg-base/60 px-3 text-sm text-ink placeholder:text-muted/70 " +
-  "transition-colors focus-visible:border-amber/60 focus-visible:outline-none focus-visible:ring-2 " +
-  "focus-visible:ring-amber/30 disabled:opacity-50";
+  "transition-colors focus-visible:border-brand/60 focus-visible:outline-none focus-visible:ring-2 " +
+  "focus-visible:ring-brand/30 disabled:opacity-50";
 
 export default function Input({ className = "", ...rest }: InputHTMLAttributes<HTMLInputElement>) {
   return <input className={`${FIELD_BASE} h-10 ${className}`} {...rest} />;

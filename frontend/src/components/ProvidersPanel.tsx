@@ -86,7 +86,7 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
               const cooling = !!p.cooldown_until && new Date(p.cooldown_until).getTime() > now;
               const unhealthy = !p.healthy;
               const usedPct = p.est_used_pct != null ? Math.round(p.est_used_pct * 100) : null;
-              const barColor = usedPct == null ? "bg-edge" : usedPct > 85 ? "bg-bad" : usedPct > 60 ? "bg-defer" : "bg-amber";
+              const barColor = usedPct == null ? "bg-edge" : usedPct > 85 ? "bg-bad" : usedPct > 60 ? "bg-defer" : "bg-brand";
               const healthTone = cooling ? "defer" : p.healthy ? "ok" : "bad";
 
               return (
@@ -108,7 +108,7 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
                             <input autoFocus value={modelDraft} onChange={(e) => setModelDraft(e.target.value)}
                               onKeyDown={(e) => e.key === "Enter" && saveModel(p.name)}
                               placeholder={p.model || "model id"}
-                              className="w-32 rounded border border-amber/50 bg-base px-1.5 py-0.5 font-mono text-[10px] text-ink outline-none"
+                              className="w-32 rounded border border-brand/50 bg-base px-1.5 py-0.5 font-mono text-[10px] text-ink outline-none"
                             />
                             <button onClick={() => saveModel(p.name)} className="text-ok hover:text-ink"><Check size={12} /></button>
                           </span>
@@ -117,7 +117,7 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
                             {p.model || "default model"}
                             {canConsole && p.kind !== "cli" && (
                               <button onClick={() => { setEditingModel(p.name); setModelDraft(p.model || ""); }}
-                                className="ml-1 text-muted hover:text-amber"><Pencil size={10} /></button>
+                                className="ml-1 text-muted hover:text-brand"><Pencil size={10} /></button>
                             )}
                           </Badge>
                         )}
@@ -155,7 +155,7 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
                     <div className="mt-3 border-t border-edge pt-2">
                       {canConsole ? (
                         <button onClick={() => setAuthTarget(p.name)}
-                          className="flex items-center gap-1.5 font-mono text-[11px] text-amber hover:text-ink">
+                          className="flex items-center gap-1.5 font-mono text-[11px] text-brand hover:text-ink">
                           <Terminal size={12} /> re-auth in console
                         </button>
                       ) : (

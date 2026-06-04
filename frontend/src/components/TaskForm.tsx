@@ -214,7 +214,7 @@ export default function TaskForm({ task, providers, onSave, onClose }: Props) {
             </Button>
           </div>
           <textarea
-            className="w-full rounded-md border border-edge bg-base/60 px-3 py-2 font-mono text-xs text-ink outline-none transition-colors focus-visible:border-amber/60 focus-visible:ring-2 focus-visible:ring-amber/30 min-h-[120px] resize-y"
+            className="w-full rounded-md border border-edge bg-base/60 px-3 py-2 font-mono text-xs text-ink outline-none transition-colors focus-visible:border-brand/60 focus-visible:ring-2 focus-visible:ring-brand/30 min-h-[120px] resize-y"
             value={promptTemplate}
             onChange={(e) => setPromptTemplate(e.target.value)}
           />
@@ -240,7 +240,7 @@ export default function TaskForm({ task, providers, onSave, onClose }: Props) {
             ))}
             <Button variant="ghost" size="sm" icon={<Plus size={13} />}
               onClick={() => setParams([...params, { key: "", value: "" }])}
-              className="text-amber hover:opacity-80">
+              className="text-brand hover:opacity-80">
               Add param
             </Button>
           </div>
@@ -249,11 +249,11 @@ export default function TaskForm({ task, providers, onSave, onClose }: Props) {
         {/* Output toggles */}
         <div className="flex gap-4">
           <label className="flex items-center gap-2 text-sm text-ink">
-            <input type="checkbox" checked={wantMarkdown} onChange={(e) => setWantMarkdown(e.target.checked)} className="accent-amber" />
+            <input type="checkbox" checked={wantMarkdown} onChange={(e) => setWantMarkdown(e.target.checked)} className="brand-brand" />
             Markdown report
           </label>
           <label className="flex items-center gap-2 text-sm text-ink">
-            <input type="checkbox" checked={wantJson} onChange={(e) => setWantJson(e.target.checked)} className="accent-amber" />
+            <input type="checkbox" checked={wantJson} onChange={(e) => setWantJson(e.target.checked)} className="brand-brand" />
             JSON output
           </label>
         </div>
@@ -261,7 +261,7 @@ export default function TaskForm({ task, providers, onSave, onClose }: Props) {
         {/* Routing editor */}
         <Card className="p-3">
           <div className="mb-3 flex items-center gap-2">
-            <span className="font-mono text-xs font-semibold text-amber">routing</span>
+            <span className="font-mono text-xs font-semibold text-brand">routing</span>
             <span className="text-[11px] text-muted">cross-provider order + failover</span>
           </div>
 
@@ -315,7 +315,7 @@ export default function TaskForm({ task, providers, onSave, onClose }: Props) {
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {addableProviders.map((p) => (
                   <button key={p} onClick={() => addCandidate(p)}
-                    className="flex items-center gap-1 rounded border border-edge px-2 py-1 font-mono text-[11px] text-muted hover:border-amber/50 hover:text-ink">
+                    className="flex items-center gap-1 rounded border border-edge px-2 py-1 font-mono text-[11px] text-muted hover:border-brand/50 hover:text-ink">
                     <Plus size={11} /> {labelFor(p)}
                   </button>
                 ))}
@@ -328,7 +328,7 @@ export default function TaskForm({ task, providers, onSave, onClose }: Props) {
             <span className="mb-1.5 block font-mono text-[11px] uppercase tracking-wider text-muted">Capability tags</span>
             <div className="flex flex-wrap items-center gap-1.5">
               {routing.capability_tags.map((t) => (
-                <Badge key={t} tone="amber">
+                <Badge key={t} tone="brand">
                   {t}
                   <button className="ml-1" onClick={() => setRouting({ ...routing, capability_tags: routing.capability_tags.filter((x) => x !== t) })}>
                     <X size={11} />
@@ -336,7 +336,7 @@ export default function TaskForm({ task, providers, onSave, onClose }: Props) {
                 </Badge>
               ))}
               <input
-                className="w-28 rounded border border-edge bg-base px-2 py-1 font-mono text-[11px] text-ink outline-none focus:border-amber/60"
+                className="w-28 rounded border border-edge bg-base px-2 py-1 font-mono text-[11px] text-ink outline-none focus:border-brand/60"
                 placeholder="add tag…"
                 value={tagInput}
                 onChange={(e) => setTagInput(e.target.value)}
@@ -349,14 +349,14 @@ export default function TaskForm({ task, providers, onSave, onClose }: Props) {
           <div className="mt-3 flex items-center gap-4">
             <label className="flex items-center gap-2 text-sm text-ink">
               <input type="checkbox" checked={routing.failover}
-                onChange={(e) => setRouting({ ...routing, failover: e.target.checked })} className="accent-amber" />
+                onChange={(e) => setRouting({ ...routing, failover: e.target.checked })} className="brand-brand" />
               Failover
             </label>
             <label className="flex items-center gap-2 text-xs text-muted">
               max attempts
               <input type="number" min={1} max={10} value={routing.max_attempts}
                 onChange={(e) => setRouting({ ...routing, max_attempts: Math.max(1, parseInt(e.target.value || "1", 10)) })}
-                className="w-16 rounded border border-edge bg-base px-2 py-1 font-mono text-ink outline-none focus:border-amber/60"
+                className="w-16 rounded border border-edge bg-base px-2 py-1 font-mono text-ink outline-none focus:border-brand/60"
               />
             </label>
           </div>

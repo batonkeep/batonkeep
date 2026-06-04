@@ -191,7 +191,7 @@ function AppShell() {
         {/* Header */}
         <div className="mb-5 flex items-center justify-between gap-2">
           <div>
-            <span className="md:hidden"><Logo size={20} /></span>
+            <span className="md:hidden"><Logo size={30} /></span>
             <p className="hidden font-mono text-xs uppercase tracking-widest text-muted md:block">
               control plane · {view === "tasks" ? tasksTab : view}
             </p>
@@ -270,7 +270,7 @@ function AppShell() {
                     <button
                       key={r.id}
                       onClick={() => setSelectedRunId(r.id)}
-                      className="flex w-full items-center gap-3 rounded-lg border border-edge bg-panel/60 px-3 py-2.5 text-left hover:border-amber/40"
+                      className="flex w-full items-center gap-3 rounded-lg border border-edge bg-panel/60 px-3 py-2.5 text-left hover:border-brand/40"
                     >
                       <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${meta.dot}`} />
                       <span className="min-w-0 flex-1">

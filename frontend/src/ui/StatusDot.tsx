@@ -9,7 +9,7 @@ const DOT: Record<Tone, string> = {
   bad: "bg-bad",
   live: "bg-live",
   defer: "bg-defer",
-  amber: "bg-amber",
+  brand: "bg-brand",
 };
 
 interface Props {

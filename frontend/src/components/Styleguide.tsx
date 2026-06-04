@@ -10,13 +10,13 @@ const ACCENTS = [
   { id: "navy",   label: "Navy #1e3a8a",   note: "alternative" },
   { id: "indigo", label: "Indigo",          note: "alternative" },
   { id: "blue",   label: "Blue",            note: "alternative" },
-  { id: "amber",  label: "Amber",           note: "original mission-control" },
+  { id: "brand",  label: "Amber",           note: "original mission-control" },
   { id: "red",    label: "Red #c8102e",    note: "logo colour (not UI)" },
 ] as const;
 
 function setAccent(id: string) {
-  if (!id) document.documentElement.removeAttribute("data-accent");
-  else document.documentElement.setAttribute("data-accent", id);
+  if (!id) document.documentElement.removeAttribute("data-brand");
+  else document.documentElement.setAttribute("data-brand", id);
 }
 
 const SWATCHES: { name: string; cls: string; note: string }[] = [
@@ -25,7 +25,7 @@ const SWATCHES: { name: string; cls: string; note: string }[] = [
   { name: "edge", cls: "bg-edge", note: "hairline borders" },
   { name: "ink", cls: "bg-ink", note: "primary text" },
   { name: "muted", cls: "bg-muted", note: "dimmed text" },
-  { name: "amber", cls: "bg-amber", note: "signal accent" },
+  { name: "brand", cls: "bg-brand", note: "signal brand" },
   { name: "live", cls: "bg-live", note: "live / streaming only" },
   { name: "ok", cls: "bg-ok", note: "success" },
   { name: "warn", cls: "bg-warn", note: "warning" },
@@ -33,7 +33,7 @@ const SWATCHES: { name: string; cls: string; note: string }[] = [
   { name: "defer", cls: "bg-defer", note: "deferred" },
 ];
 
-const TONES: Tone[] = ["neutral", "amber", "ok", "warn", "bad", "live", "defer"];
+const TONES: Tone[] = ["neutral", "brand", "ok", "warn", "bad", "live", "defer"];
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -53,43 +53,43 @@ const RUN_TABS = [
 export default function Styleguide() {
   const [tab, setTab] = useState<(typeof RUN_TABS)[number]["id"]>("report");
   const [modalOpen, setModalOpen] = useState(false);
-  const [accent, setAccentId] = useState("teal");
+  const [brand, setAccentId] = useState("teal");
   // Teal is the default (set in base CSS); mount/unmount cleanup just ensures
-  // no stale data-accent from a previous lab session.
+  // no stale data-brand from a previous lab session.
   useEffect(() => {
-    document.documentElement.removeAttribute("data-accent");
-    return () => document.documentElement.removeAttribute("data-accent");
+    document.documentElement.removeAttribute("data-brand");
+    return () => document.documentElement.removeAttribute("data-brand");
   }, []);
 
   return (
     <div className="mx-auto max-w-4xl px-5 py-8">
       <header className="mb-10 flex items-center justify-between">
         <Logo size={26} />
-        <Badge tone="amber">design system · D-track</Badge>
+        <Badge tone="brand">design system · D-track</Badge>
       </header>
 
-      <Section title="Brand lab — mark + accent (live preview)">
-        {/* Accent switcher — re-themes the whole page via data-accent on <html>. */}
+      <Section title="Brand lab — mark + brand (live preview)">
+        {/* Accent switcher — re-themes the whole page via data-brand on <html>. */}
         <Card className="mb-3 flex flex-wrap items-center gap-2 p-4">
-          <span className="mr-1 font-mono text-[11px] uppercase tracking-wider text-muted">accent</span>
+          <span className="mr-1 font-mono text-[11px] uppercase tracking-wider text-muted">brand</span>
           {ACCENTS.map((a) => (
             <Button
               key={a.id}
               size="sm"
-              variant={accent === a.id ? "primary" : "outline"}
+              variant={brand === a.id ? "primary" : "outline"}
               onClick={() => { setAccentId(a.id); setAccent(a.id); }}
               title={a.note}
             >
               {a.label}
             </Button>
           ))}
-          <span className="ml-2 text-[11px] text-muted">{ACCENTS.find((a) => a.id === accent)?.note}</span>
+          <span className="ml-2 text-[11px] text-muted">{ACCENTS.find((a) => a.id === brand)?.note}</span>
         </Card>
 
-        {/* Mark candidates — all use the accent token, so they follow the switch. */}
+        {/* Mark candidates — all use the brand token, so they follow the switch. */}
         <div className="grid gap-3 sm:grid-cols-4">
           <Card active className="flex flex-col items-center gap-3 p-6">
-            <BatonMark size={72} className="text-amber" />
+            <BatonMark size={72} className="text-brand" />
             <div className="text-center font-mono text-[11px] text-muted">baton mark<br />(final SVG)</div>
           </Card>
           <Card className="flex flex-col items-center gap-3 p-6">
@@ -101,7 +101,7 @@ export default function Styleguide() {
             <div className="text-center font-mono text-[11px] text-muted">outline shield</div>
           </Card>
           <Card className="flex flex-col items-center gap-3 p-6">
-            <LogoMark size={52} className="text-amber" />
+            <LogoMark size={52} className="text-brand" />
             <div className="text-center font-mono text-[11px] text-muted">relay baton<br />(no shield)</div>
           </Card>
         </div>
@@ -109,9 +109,9 @@ export default function Styleguide() {
         {/* Favicon scale */}
         <Card className="mt-3 flex items-center gap-5 p-5">
           <span className="font-mono text-[11px] uppercase tracking-wider text-muted">favicon scale</span>
-          <BatonMark size={16} className="text-amber" />
-          <BatonMark size={20} className="text-amber" />
-          <BatonMark size={28} className="text-amber" />
+          <BatonMark size={16} className="text-brand" />
+          <BatonMark size={20} className="text-brand" />
+          <BatonMark size={28} className="text-brand" />
           <span className="mx-3 text-muted">|</span>
           <ShieldSolid size={16} />
           <ShieldSolid size={20} />
@@ -119,17 +119,17 @@ export default function Styleguide() {
           <span className="text-[11px] text-muted ml-2">baton mark vs solid shield</span>
         </Card>
 
-        {/* Wordmark lockups + a few accent surfaces so the switch is visible. */}
+        {/* Wordmark lockups + a few brand surfaces so the switch is visible. */}
         <Card className="mt-3 flex flex-wrap items-center gap-6 p-6">
           <span className="inline-flex items-center gap-2.5">
-            <BatonMark size={32} className="text-amber" />
+            <BatonMark size={32} className="text-brand" />
             <span className="font-mono text-lg font-semibold tracking-tight text-ink">
               baton<span className="text-muted">keep</span>
             </span>
           </span>
           <Button variant="primary" size="sm">Primary</Button>
-          <Badge tone="amber">accent badge</Badge>
-          <StatusDot tone="amber" /> <span className="text-xs text-muted">accent</span>
+          <Badge tone="brand">brand badge</Badge>
+          <StatusDot tone="brand" /> <span className="text-xs text-muted">brand</span>
           <StatusDot tone="live" pulse /> <span className="text-xs text-muted">live (cyan — reserved)</span>
         </Card>
       </Section>
@@ -185,7 +185,7 @@ export default function Styleguide() {
       <Section title="Cards">
         <div className="grid gap-3 sm:grid-cols-2">
           <Card className="p-5"><div className="text-sm text-ink">Default card</div><div className="text-xs text-muted">raised surface over the textured base</div></Card>
-          <Card active className="p-5"><div className="text-sm text-ink">Active card</div><div className="text-xs text-muted">amber hairline + glow</div></Card>
+          <Card active className="p-5"><div className="text-sm text-ink">Active card</div><div className="text-xs text-muted">brand hairline + glow</div></Card>
         </div>
       </Section>
 
@@ -237,7 +237,7 @@ export default function Styleguide() {
       </Section>
 
       <footer className="mt-12 border-t border-edge pt-4 font-mono text-[11px] text-muted">
-        batonkeep design system — D-0006. Compose new surfaces from <code className="text-amber">src/ui/</code>.
+        batonkeep design system — D-0006. Compose new surfaces from <code className="text-brand">src/ui/</code>.
       </footer>
     </div>
   );

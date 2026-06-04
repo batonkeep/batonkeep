@@ -14,12 +14,12 @@ interface Props extends ButtonHTMLAttributes<HTMLButtonElement> {
 
 const BASE =
   "inline-flex items-center justify-center gap-2 rounded-md font-medium tracking-tight " +
-  "transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber/60 " +
+  "transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/60 " +
   "disabled:cursor-not-allowed disabled:opacity-45";
 
 const VARIANTS: Record<Variant, string> = {
-  primary: "bg-amber text-white hover:bg-amber/90 active:bg-amber/80",
-  outline: "border border-edge text-ink hover:border-amber/60 hover:text-amber",
+  primary: "bg-brand text-white hover:bg-brand/90 active:bg-brand/80",
+  outline: "border border-edge text-ink hover:border-brand/60 hover:text-brand",
   ghost: "text-muted hover:bg-ink/5 hover:text-ink",
   danger: "border border-bad/40 text-bad hover:bg-bad/10",
 };

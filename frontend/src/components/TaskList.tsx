@@ -59,7 +59,7 @@ export default function TaskList({ tasks, latestRunByTask, now, busyTaskId, onRu
         return (
           <Card
             key={task.id}
-            className={`p-4 transition-colors hover:border-amber/40 ${task.enabled ? "" : "opacity-60"}`}
+            className={`p-4 transition-colors hover:border-brand/40 ${task.enabled ? "" : "opacity-60"}`}
           >
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0">
@@ -80,7 +80,7 @@ export default function TaskList({ tasks, latestRunByTask, now, busyTaskId, onRu
               <button
                 onClick={() => onToggle(task)}
                 title={task.enabled ? "Enabled — click to disable" : "Disabled — click to enable"}
-                className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${task.enabled ? "bg-amber/80" : "bg-edge"}`}
+                className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${task.enabled ? "bg-brand/80" : "bg-edge"}`}
               >
                 <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-panel transition-all ${task.enabled ? "left-4" : "left-0.5"}`} />
               </button>

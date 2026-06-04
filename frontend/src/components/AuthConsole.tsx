@@ -15,7 +15,7 @@ interface Props {
   onClose: () => void;
 }
 
-// Mission-control palette (matches the app's near-black + amber theme).
+// Mission-control palette (matches the app's near-black + brand theme).
 const THEME = {
   background: "#0a0b0d",
   foreground: "#e8e6e1",
@@ -92,7 +92,7 @@ export default function AuthConsole({ target, token, onClose }: Props) {
         <div className="flex items-center justify-between border-b border-edge px-5 py-3">
           <div>
             <h2 className="font-mono text-sm font-semibold text-ink">
-              auth · <span className="text-amber">{target}</span>
+              auth · <span className="text-brand">{target}</span>
             </h2>
             <p className={`text-[11px] ${statusColor}`}>{status} · type directly into the terminal to answer prompts</p>
           </div>

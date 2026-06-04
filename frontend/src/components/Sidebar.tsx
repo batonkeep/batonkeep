@@ -30,7 +30,7 @@ export default function Sidebar({ view, onChange, wsStatus, activeRuns }: Props)
     >
       {/* Brand — desktop only */}
       <div className="hidden md:mb-5 md:flex md:items-center md:px-2 md:pt-1">
-        <Logo size={20} />
+        <Logo size={30} />
       </div>
 
       {ITEMS.map(({ id, label, icon: Icon }) => {
@@ -42,11 +42,11 @@ export default function Sidebar({ view, onChange, wsStatus, activeRuns }: Props)
             className={`
               relative flex flex-1 flex-col items-center gap-1 py-2.5 text-[11px]
               md:flex-none md:flex-row md:gap-3 md:rounded-lg md:px-3 md:py-2.5 md:text-sm
-              ${active ? "text-amber md:bg-amber/10" : "text-muted hover:text-ink"}
+              ${active ? "text-brand md:bg-brand/10" : "text-muted hover:text-ink"}
               transition-colors
             `}
           >
-            <Icon size={18} className={active ? "text-amber" : ""} />
+            <Icon size={18} className={active ? "text-brand" : ""} />
             <span className="font-mono">{label}</span>
             {id === "tasks" && activeRuns > 0 && (
               <span className="absolute right-1/4 top-1 h-1.5 w-1.5 rounded-full bg-live animate-pulse-live md:static md:ml-auto md:h-auto md:w-auto md:rounded-none md:bg-transparent md:text-xs md:text-live">

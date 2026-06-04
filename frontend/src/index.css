@@ -3,8 +3,8 @@
 @tailwind utilities;
 
 /* Theme tokens as RGB channels. Light is the DEFAULT; `.dark` on <html> overrides.
-   UI accent = teal #006d77 (0 109 119). Logo mark = #ff4f4f (hardcoded in BatonMark,
-   separate from the UI accent). `--c-amber` is the Tailwind alias for the UI accent;
+   UI brand = teal #006d77 (0 109 119). Logo mark = #ff4f4f (hardcoded in BatonMark,
+   separate from the UI brand). `--c-brand` is the Tailwind alias for the UI brand;
    button text is white on teal. Error token is orange-red, distinct from both. */
 :root {
   --c-base: 244 242 235;   /* warm paper */
@@ -12,12 +12,12 @@
   --c-edge: 214 209 196;   /* hairline borders */
   --c-ink: 26 28 32;       /* primary text (near-black) */
   --c-muted: 106 102 86;   /* dimmed warm grey */
-  --c-amber: 0 109 119;    /* UI accent: teal #006d77 */
+  --c-brand: 0 109 119;    /* UI brand: teal #006d77 */
   --c-live: 14 116 144;    /* cyan, darkened for light bg — live/streaming ONLY */
   --c-ok: 21 128 61;
   --c-bad: 194 65 12;      /* orange-red — distinct from both teal + live */
   --c-defer: 168 110 40;
-  --c-warn: 161 100 0;     /* amber-gold for warnings */
+  --c-warn: 161 100 0;     /* brand-gold for warnings */
   color-scheme: light;
 }
 
@@ -27,7 +27,7 @@
   --c-edge: 28 31 38;
   --c-ink: 236 231 218;    /* warm off-white */
   --c-muted: 138 134 120;
-  --c-amber: 0 168 180;    /* teal brightened for dark bg */
+  --c-brand: 0 168 180;    /* teal brightened for dark bg */
   --c-live: 34 211 238;    /* bright cyan — live/streaming ONLY */
   --c-ok: 92 200 138;
   --c-bad: 234 88 12;      /* orange-red */
@@ -37,24 +37,24 @@
 }
 
 /* ── Accent themes (D-track brand lab) ────────────────────────────────────────
-   The accent token is `--c-amber` (the `amber` Tailwind colour). Swapping it via
-   `data-accent` on <html> re-themes every accent surface with no code change, so
-   the brand decision (amber vs indigo vs blue) can be previewed live. `warn`
-   stays amber on purpose — a warning should read amber regardless of brand. */
-[data-accent="indigo"] { --c-amber: 79 70 229; }   /* light · indigo-600 */
-.dark[data-accent="indigo"] { --c-amber: 129 140 248; } /* dark · indigo-400 */
+   The brand token is `--c-brand` (the `brand` Tailwind colour). Swapping it via
+   `data-brand` on <html> re-themes every brand surface with no code change, so
+   the brand decision (brand vs indigo vs blue) can be previewed live. `warn`
+   stays brand on purpose — a warning should read brand regardless of brand. */
+[data-brand="indigo"] { --c-brand: 79 70 229; }   /* light · indigo-600 */
+.dark[data-brand="indigo"] { --c-brand: 129 140 248; } /* dark · indigo-400 */
 
-[data-accent="blue"] { --c-amber: 37 99 235; }     /* light · blue-600 */
-.dark[data-accent="blue"] { --c-amber: 96 165 250; }  /* dark · blue-400 */
+[data-brand="blue"] { --c-brand: 37 99 235; }     /* light · blue-600 */
+.dark[data-brand="blue"] { --c-brand: 96 165 250; }  /* dark · blue-400 */
 
-[data-accent="red"] { --c-amber: 200 16 46; }         /* #c8102e — deep brand red */
-.dark[data-accent="red"] { --c-amber: 220 50 75; }   /* lightened for dark bg */
+[data-brand="red"] { --c-brand: 200 16 46; }         /* #c8102e — deep brand red */
+.dark[data-brand="red"] { --c-brand: 220 50 75; }   /* lightened for dark bg */
 
-[data-accent="teal"] { --c-amber: 0 109 119; }        /* #006d77 — deep teal */
-.dark[data-accent="teal"] { --c-amber: 0 148 161; }   /* brightened for dark bg */
+[data-brand="teal"] { --c-brand: 0 109 119; }        /* #006d77 — deep teal */
+.dark[data-brand="teal"] { --c-brand: 0 148 161; }   /* brightened for dark bg */
 
-[data-accent="navy"] { --c-amber: 30 58 138; }         /* #1e3a8a — deep navy */
-.dark[data-accent="navy"] { --c-amber: 59 97 200; }   /* brightened for dark bg */
+[data-brand="navy"] { --c-brand: 30 58 138; }         /* #1e3a8a — deep navy */
+.dark[data-brand="navy"] { --c-brand: 59 97 200; }   /* brightened for dark bg */
 
 html,
 body,
@@ -70,8 +70,8 @@ body {
   -webkit-font-smoothing: antialiased;
   /* Faint blueprint grid + subtle radial glow — themes with the palette. */
   background-image:
-    linear-gradient(rgb(var(--c-amber) / 0.05) 1px, transparent 1px),
-    linear-gradient(90deg, rgb(var(--c-amber) / 0.05) 1px, transparent 1px),
+    linear-gradient(rgb(var(--c-brand) / 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(var(--c-brand) / 0.05) 1px, transparent 1px),
     radial-gradient(circle at 50% 0%, rgb(var(--c-live) / 0.05), transparent 60%);
   background-size: 32px 32px, 32px 32px, 100% 100%;
   background-attachment: fixed;
@@ -137,19 +137,19 @@ pre {
   font-size: 0.92rem;
 }
 .markdown h1 { font-family: "IBM Plex Mono", monospace; font-size: 1.4rem; font-weight: 600; margin: 0.2rem 0 0.8rem; color: rgb(var(--c-ink)); }
-.markdown h2 { font-family: "IBM Plex Mono", monospace; font-size: 1.1rem; font-weight: 600; margin: 1.2rem 0 0.5rem; color: rgb(var(--c-amber)); }
+.markdown h2 { font-family: "IBM Plex Mono", monospace; font-size: 1.1rem; font-weight: 600; margin: 1.2rem 0 0.5rem; color: rgb(var(--c-brand)); }
 .markdown h3 { font-family: "IBM Plex Mono", monospace; font-size: 0.98rem; margin: 1rem 0 0.4rem; color: rgb(var(--c-ink)); }
 .markdown p { margin: 0.5rem 0; color: rgb(var(--c-ink) / 0.88); }
 .markdown a { color: rgb(var(--c-live)); text-decoration: underline; text-underline-offset: 2px; }
 .markdown ul, .markdown ol { margin: 0.5rem 0; padding-left: 1.4rem; color: rgb(var(--c-ink) / 0.88); }
 .markdown li { margin: 0.25rem 0; }
-.markdown code { background: rgb(var(--c-edge) / 0.6); padding: 0.1rem 0.35rem; border-radius: 4px; font-size: 0.85em; color: rgb(var(--c-amber)); }
+.markdown code { background: rgb(var(--c-edge) / 0.6); padding: 0.1rem 0.35rem; border-radius: 4px; font-size: 0.85em; color: rgb(var(--c-brand)); }
 .markdown pre { background: rgb(var(--c-base)); border: 1px solid rgb(var(--c-edge)); padding: 0.8rem; border-radius: 8px; overflow-x: auto; }
 .markdown pre code { background: none; color: rgb(var(--c-ink) / 0.85); padding: 0; }
 .markdown table { border-collapse: collapse; width: 100%; margin: 0.8rem 0; font-size: 0.85rem; }
 .markdown th, .markdown td { border: 1px solid rgb(var(--c-edge)); padding: 0.4rem 0.6rem; text-align: left; }
-.markdown th { background: rgb(var(--c-base)); color: rgb(var(--c-amber)); font-family: "IBM Plex Mono", monospace; }
-.markdown blockquote { border-left: 2px solid rgb(var(--c-amber)); padding-left: 0.8rem; margin: 0.6rem 0; color: rgb(var(--c-muted)); }
+.markdown th { background: rgb(var(--c-base)); color: rgb(var(--c-brand)); font-family: "IBM Plex Mono", monospace; }
+.markdown blockquote { border-left: 2px solid rgb(var(--c-brand)); padding-left: 0.8rem; margin: 0.6rem 0; color: rgb(var(--c-muted)); }
 
 /* Range input (drag-to-reorder uses buttons; this styles any sliders). */
 @media (max-width: 768px) {

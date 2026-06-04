@@ -12,7 +12,7 @@ export default function Card({ active = false, children, className = "", ...rest
     <div
       className={
         "rounded-lg border bg-panel/80 backdrop-blur-sm transition-colors " +
-        (active ? "border-amber/50 shadow-[0_0_0_1px_rgb(var(--c-amber)/0.25)] " : "border-edge ") +
+        (active ? "border-brand/50 shadow-[0_0_0_1px_rgb(var(--c-brand)/0.25)] " : "border-edge ") +
         className
       }
       {...rest}

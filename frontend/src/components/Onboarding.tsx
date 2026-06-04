@@ -61,7 +61,7 @@ export default function Onboarding({ mode, providers, credentials, onAddCredenti
         <span className="flex flex-col">
           <span>Connect your providers</span>
           <span className="text-[11px] font-normal text-muted">
-            Mode: <span className="text-amber">{mode?.deployment_mode ?? "…"}</span> · set up the box once, drive from any device.
+            Mode: <span className="text-brand">{mode?.deployment_mode ?? "…"}</span> · set up the box once, drive from any device.
           </span>
         </span>
       }
@@ -71,7 +71,7 @@ export default function Onboarding({ mode, providers, credentials, onAddCredenti
         {/* 1 — Plan-CLI (canonical) */}
         <Card className="p-4">
           <div className={head}>
-            <Terminal size={16} className="text-amber" /> Plan-CLI · canonical
+            <Terminal size={16} className="text-brand" /> Plan-CLI · canonical
             {!planAllowed && <Badge tone="bad">disabled in managed</Badge>}
           </div>
           <p className="mt-2 text-xs text-muted">
@@ -102,7 +102,7 @@ export default function Onboarding({ mode, providers, credentials, onAddCredenti
           )}
           {/* Add another subscription of the same provider (Phase B). */}
           <details className="mt-3 text-xs text-muted">
-            <summary className="cursor-pointer text-ink hover:text-amber">+ Add another account of a provider</summary>
+            <summary className="cursor-pointer text-ink hover:text-brand">+ Add another account of a provider</summary>
             <div className="mt-2 space-y-1.5">
               <p>To run a second subscription of the same provider (e.g. two Claude accounts) for rate-limit spreading:</p>
               <ol className="ml-4 list-decimal space-y-1">
@@ -118,7 +118,7 @@ export default function Onboarding({ mode, providers, credentials, onAddCredenti
         {/* 2 — BYO-key */}
         <Card className="p-4">
           <div className={head}>
-            <KeyRound size={16} className="text-amber" /> Bring your own API key
+            <KeyRound size={16} className="text-brand" /> Bring your own API key
           </div>
           <p className="mt-2 text-xs text-muted">Stored encrypted at rest (Fernet via APP_SECRET). Co-equal with plan-CLI for routing.</p>
           <div className="mt-2 flex flex-col gap-2 sm:flex-row">
@@ -165,7 +165,7 @@ export default function Onboarding({ mode, providers, credentials, onAddCredenti
         {/* 3 — Hosted open-weight */}
         <Card className="p-4">
           <div className={head}>
-            <Cloud size={16} className="text-amber" /> Hosted open-weight
+            <Cloud size={16} className="text-brand" /> Hosted open-weight
           </div>
           <p className="mt-2 text-xs text-muted">
             Credential-free: the deployment runs inference itself (set <code>OPENAI_BASE_URL</code>/<code>OPENAI_API_KEY</code> on the

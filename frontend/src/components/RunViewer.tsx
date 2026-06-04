@@ -36,8 +36,8 @@ const RUN_TABS = [
 const KIND_COLOR: Record<string, string> = {
   log: "text-muted",
   phase: "text-ink",
-  tool: "text-amber",
-  subagent: "text-amber",
+  tool: "text-brand",
+  subagent: "text-brand",
   result: "text-ok",
   error: "text-bad",
   route: "text-live",
@@ -122,8 +122,8 @@ export default function RunViewer({ run, taskName, now, onRequeue, onCancel, onC
             {run.provider && <span className="text-ink">{run.provider}{run.model ? ` · ${run.model}` : ""}</span>}
             {run.started_at && <span title={run.started_at}>{fmtTime(run.started_at)}</span>}
             <span>elapsed {fmtDuration(run.finished_at ? run.duration_ms : elapsedMs)}</span>
-            <span className="text-amber">{run.tokens_in + run.tokens_out} tok</span>
-            <span className="text-amber">{fmtCost(run.cost_usd)}</span>
+            <span className="text-brand">{run.tokens_in + run.tokens_out} tok</span>
+            <span className="text-brand">{fmtCost(run.cost_usd)}</span>
             {run.overflow_used && <Badge tone="defer">overflow</Badge>}
           </div>
         </div>

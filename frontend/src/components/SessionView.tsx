@@ -54,8 +54,8 @@ const TURN_TONE: Record<SessionTurn["status"], Tone> = {
 const KIND_COLOR: Record<string, string> = {
   log: "text-muted",
   phase: "text-ink",
-  tool: "text-amber",
-  subagent: "text-amber",
+  tool: "text-brand",
+  subagent: "text-brand",
   result: "text-ok",
   error: "text-bad",
   route: "text-live",
@@ -216,7 +216,7 @@ export default function SessionView({
               key={s.id}
               onClick={() => onSelect(s.id)}
               className={`block w-full rounded-lg border px-3 py-2 text-left transition-colors ${
-                active ? "border-amber/50 bg-amber/10" : "border-edge bg-panel/60 hover:border-amber/30"
+                active ? "border-brand/50 bg-brand/10" : "border-edge bg-panel/60 hover:border-brand/30"
               }`}
             >
               <span className="block truncate font-mono text-sm text-ink">{s.title}</span>
@@ -248,7 +248,7 @@ export default function SessionView({
                       if (e.key === "Enter") handleRename();
                       if (e.key === "Escape") setTitleDraft(null);
                     }}
-                    className="flex-1 rounded-md border border-edge bg-base px-2 py-1 font-mono text-sm text-ink focus-visible:border-amber/60 focus-visible:outline-none"
+                    className="flex-1 rounded-md border border-edge bg-base px-2 py-1 font-mono text-sm text-ink focus-visible:border-brand/60 focus-visible:outline-none"
                   />
                   <Button variant="ghost" size="sm" className="px-1.5" icon={<Check size={15} />}
                     onClick={handleRename} title="Save" />
@@ -397,7 +397,7 @@ export default function SessionView({
                   }}
                   rows={2}
                   placeholder="Describe the next change…  (⌘/Ctrl+Enter to send)"
-                  className="flex-1 resize-none rounded-md border border-edge bg-base px-3 py-2 text-sm text-ink placeholder:text-muted focus-visible:border-amber/60 focus-visible:outline-none"
+                  className="flex-1 resize-none rounded-md border border-edge bg-base px-3 py-2 text-sm text-ink placeholder:text-muted focus-visible:border-brand/60 focus-visible:outline-none"
                 />
                 <Button
                   variant="primary"

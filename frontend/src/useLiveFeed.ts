@@ -6,13 +6,24 @@
 //                            accumulated locally so high-frequency tokens don't churn
 //                            the rest of the app.
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import type { Run, RunEvent, WsMessage } from "./types";
+import type { Run, RunEvent, TurnStatus, WsMessage } from "./types";
 
 export type WsStatus = "connecting" | "open" | "closed";
+
+/** Latest live turn state for a session (from session.turn.update frames). */
+export interface LiveTurn {
+  id: number;
+  seq: number;
+  provider: string | null;
+  status: TurnStatus;
+  switched?: boolean;
+}
 
 interface Snapshot {
   status: WsStatus;
   runs: Record<number, Run>;
+  // Latest turn-update per session id — drives preview refresh on turn completion.
+  sessionTurns: Record<string, LiveTurn>;
 }
 
 type RawListener = (msg: WsMessage) => void;
@@ -22,7 +33,7 @@ class LiveFeed {
   private reconnectDelay = 1000;
   private rawListeners = new Set<RawListener>();
   private changeListeners = new Set<() => void>();
-  private snapshot: Snapshot = { status: "connecting", runs: {} };
+  private snapshot: Snapshot = { status: "connecting", runs: {}, sessionTurns: {} };
 
   start() {
     if (this.started) return;
@@ -70,8 +81,14 @@ class LiveFeed {
         runs: { ...this.snapshot.runs, [msg.run.id]: msg.run },
       };
       this.emitChange();
+    } else if (msg.type === "session.turn.update") {
+      this.snapshot = {
+        ...this.snapshot,
+        sessionTurns: { ...this.snapshot.sessionTurns, [msg.session_id]: msg.turn },
+      };
+      this.emitChange();
     }
-    // Fan out every frame to raw listeners (per-run event subscribers).
+    // Fan out every frame to raw listeners (per-run / per-session event subscribers).
     this.rawListeners.forEach((l) => l(msg));
   }
 
@@ -106,7 +123,7 @@ const feed = new LiveFeed();
 /** Connection status + latest Run state for every run we've seen update live. */
 export function useLiveFeed() {
   const snap = useSyncExternalStore(feed.subscribe, feed.getSnapshot, feed.getSnapshot);
-  return { status: snap.status, liveRuns: snap.runs };
+  return { status: snap.status, liveRuns: snap.runs, liveSessionTurns: snap.sessionTurns };
 }
 
 /**
@@ -148,4 +165,61 @@ export function useRunEvents(runId: number | null) {
   };
 
   return { events, streamingText, seedEvents: seed };
+}
+
+/** One session event in arrival order (session frames carry no seq number). */
+export interface SessionEvent {
+  turn_seq: number;
+  kind: RunEvent["kind"];
+  message: string | null;
+  phase: string | null;
+  data: Record<string, any> | null;
+}
+
+/**
+ * Live event stream for one build session (mirror of useRunEvents). `events`
+ * excludes token frames; `streamingText` accumulates token deltas for the live
+ * agent reply; `lastTurn` is the latest turn.update (status drives preview refresh).
+ */
+export function useSessionEvents(sessionId: string | null) {
+  const [events, setEvents] = useState<SessionEvent[]>([]);
+  const [streamingText, setStreamingText] = useState("");
+  const [lastTurn, setLastTurn] = useState<LiveTurn | null>(null);
+
+  useEffect(() => {
+    setEvents([]);
+    setStreamingText("");
+    setLastTurn(null);
+    if (sessionId == null) return;
+
+    const off = feed.onMessage((msg) => {
+      if (msg.type === "session.turn.update" && msg.session_id === sessionId) {
+        setLastTurn(msg.turn);
+        // A new turn starting clears the prior turn's streaming buffer.
+        if (msg.turn.status === "running") setStreamingText("");
+        return;
+      }
+      if (msg.type !== "session.event" || msg.session_id !== sessionId) return;
+      const ev = msg.event;
+      if (ev.kind === "token") {
+        if (ev.text) setStreamingText((t) => t + ev.text);
+        return;
+      }
+      setEvents((prev) => [
+        ...prev,
+        {
+          turn_seq: msg.turn_seq,
+          kind: ev.kind,
+          message: ev.message,
+          phase: ev.phase,
+          data: ev.data,
+        },
+      ]);
+    });
+    return () => {
+      off();
+    };
+  }, [sessionId]);
+
+  return { events, streamingText, lastTurn };
 }

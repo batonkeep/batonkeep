@@ -165,6 +165,9 @@ class Session(Base):
     provider: Mapped[Optional[str]] = mapped_column(String(96), nullable=True)
     # absolute path to the sandboxed workspace directory
     workspace_path: Mapped[str] = mapped_column(String(512), nullable=False)
+    # unguessable token gating the live preview (M1.2). Required on every preview
+    # request so a session's workspace is never reachable without session auth.
+    preview_token: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     # "active" | "archived"
     status: Mapped[str] = mapped_column(String(16), default="active", index=True)
     created_at: Mapped[datetime] = mapped_column(

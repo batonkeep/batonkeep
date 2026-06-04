@@ -37,6 +37,7 @@ from app.schemas import (
     SessionCreate,
     SessionOut,
     SessionTurnOut,
+    SessionUpdate,
     StatsOut,
     TaskCreate,
     TaskOut,
@@ -359,6 +360,7 @@ async def create_session(
     owner_id: str = Depends(_owner_id),
 ):
     """Create a build session with a sandboxed, git-init'd workspace (M1.1)."""
+    import secrets
     import uuid
     from app.sessions import workspace as ws
 
@@ -372,6 +374,7 @@ async def create_session(
         title=title,
         provider=body.provider,
         workspace_path=workspace_path,
+        preview_token=secrets.token_urlsafe(24),
         status="active",
     )
     db.add(session)
@@ -400,6 +403,27 @@ async def get_session(
     session = await db.get(Session, session_id)
     if session is None or session.owner_id != owner_id:
         raise HTTPException(status_code=404, detail="Session not found")
+    return SessionOut.model_validate(session)
+
+
+@app.patch("/api/sessions/{session_id}", response_model=SessionOut, tags=["sessions"])
+async def update_session(
+    session_id: str,
+    body: SessionUpdate,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """Rename a build session (the only mutable field; provider switches via turns)."""
+    session = await db.get(Session, session_id)
+    if session is None or session.owner_id != owner_id:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if body.title is not None:
+        title = body.title.strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="title must not be empty")
+        session.title = title[:256]
+    await db.commit()
+    await db.refresh(session)
     return SessionOut.model_validate(session)
 
 
@@ -445,6 +469,40 @@ async def create_session_turn(
 
     turn = await db.get(SessionTurn, turn_id)
     return SessionTurnOut.model_validate(turn)
+
+
+@app.get("/api/sessions/{session_id}/preview/{token}/{path:path}", tags=["sessions"])
+@app.get("/api/sessions/{session_id}/preview/{token}", tags=["sessions"])
+async def session_preview(
+    session_id: str,
+    token: str,
+    path: str = "",
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """
+    Serve a file from the session workspace for the in-UI live preview (M1.2).
+
+    The preview token is a **path segment** (not a query param) so that the agent's
+    relative asset links (`href="style.css"`) resolve under the same authenticated
+    base and carry the token automatically — sub-assets load without cookies or
+    HTML rewriting. The workspace is never reachable without session auth, and
+    paths are confined to the session's own workspace.
+    """
+    from app.sessions.preview import resolve_preview_file, check_token, PreviewError
+
+    session = await db.get(Session, session_id)
+    if session is None or session.owner_id != owner_id:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    try:
+        check_token(session.preview_token, token)
+        file_path, media = resolve_preview_file(session.workspace_path, path)
+    except PreviewError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail)
+
+    # no-store: preview reflects the latest turn's edits, never a cached version.
+    return FileResponse(file_path, media_type=media, headers={"Cache-Control": "no-store"})
 
 
 # ── /api/stats ──────────────────────────────────────────────────────────────────

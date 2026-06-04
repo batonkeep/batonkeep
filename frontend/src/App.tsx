@@ -3,16 +3,17 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Moon, Plus, Settings2, Sun } from "lucide-react";
 import { api } from "./api";
 import { useLiveFeed } from "./useLiveFeed";
-import type { Credential, Mode, ProviderHealth, Run, Stats, Task, TaskInput } from "./types";
+import type { Credential, Mode, ProviderHealth, Run, Session, Stats, Task, TaskInput } from "./types";
 import Sidebar, { View } from "./components/Sidebar";
 import StatsBar from "./components/StatsBar";
 import TaskList from "./components/TaskList";
 import TaskForm from "./components/TaskForm";
 import RunViewer from "./components/RunViewer";
+import SessionView from "./components/SessionView";
 import ProvidersPanel from "./components/ProvidersPanel";
 import Onboarding from "./components/Onboarding";
 import Styleguide from "./components/Styleguide";
-import { Button, Logo } from "./ui";
+import { Button, Logo, Tabs } from "./ui";
 import { STATUS_META, fmtTime } from "./format";
 
 function runsPerDay(runs: Run[], days = 14): number[] {
@@ -43,12 +44,15 @@ export default function App() {
 function AppShell() {
   const { status: wsStatus, liveRuns } = useLiveFeed();
   const [view, setView] = useState<View>("tasks");
+  const [tasksTab, setTasksTab] = useState<"tasks" | "live">("tasks");
   const [tasks, setTasks] = useState<Task[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
   const [providers, setProviders] = useState<ProviderHealth[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
   const [mode, setMode] = useState<Mode | null>(null);
   const [credentials, setCredentials] = useState<Credential[]>([]);
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
   // Scoped console: available only when the backend enables it; token is entered
   // by the operator and kept in React state (never persisted).
@@ -84,6 +88,7 @@ function AppShell() {
   const loadProviders = useCallback(() => api.listProviders().then(setProviders).catch(() => { }), []);
   const loadStats = useCallback(() => api.getStats().then(setStats).catch(() => { }), []);
   const loadCreds = useCallback(() => api.listCredentials().then(setCredentials).catch(() => { }), []);
+  const loadSessions = useCallback(() => api.listSessions().then(setSessions).catch(() => { }), []);
 
   useEffect(() => {
     loadTasks();
@@ -91,9 +96,10 @@ function AppShell() {
     loadProviders();
     loadStats();
     loadCreds();
+    loadSessions();
     api.getMode().then(setMode).catch(() => { });
     api.getConsoleConfig().then((c) => setConsoleAvailable(c.available)).catch(() => { });
-  }, [loadTasks, loadRuns, loadProviders, loadStats, loadCreds]);
+  }, [loadTasks, loadRuns, loadProviders, loadStats, loadCreds, loadSessions]);
 
   // Poll the slowly-changing aggregates; live run state comes over the WS.
   useEffect(() => {
@@ -135,7 +141,8 @@ function AppShell() {
       const run = await api.runTask(task.id);
       setRuns((prev) => [run, ...prev]);
       setSelectedRunId(run.id);
-      setView("live");
+      setView("tasks");
+      setTasksTab("live");
     } finally {
       setBusyTaskId(null);
     }
@@ -186,7 +193,7 @@ function AppShell() {
           <div>
             <span className="md:hidden"><Logo size={20} /></span>
             <p className="hidden font-mono text-xs uppercase tracking-widest text-muted md:block">
-              control plane · {view}
+              control plane · {view === "tasks" ? tasksTab : view}
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -224,48 +231,73 @@ function AppShell() {
 
         {/* Views */}
         {view === "tasks" && (
-          <TaskList
-            tasks={tasks}
-            latestRunByTask={latestRunByTask}
-            now={now}
-            busyTaskId={busyTaskId}
-            onRun={handleRun}
-            onEdit={(t) => { setEditingTask(t); setShowForm(true); }}
-            onDelete={handleDelete}
-            onToggle={handleToggle}
-            onOpenRun={(id) => { setSelectedRunId(id); setView("live"); }}
-          />
-        )}
+          <>
+            {/* Tasks + Live runs share this pane; sub-tabs keep mobile to 3 nav items. */}
+            <Tabs
+              className="mb-4"
+              tabs={[
+                { id: "tasks", label: "Tasks" },
+                { id: "live", label: activeRuns > 0 ? `Live · ${activeRuns}` : "Live" },
+              ] as const}
+              active={tasksTab}
+              onChange={setTasksTab}
+            />
 
-        {view === "live" && (
-          <div className="stagger space-y-2">
-            {mergedRuns.length === 0 && (
-              <div className="rounded-lg border border-dashed border-edge p-8 text-center text-muted">
-                No runs yet. Hit “Run now” on a task.
+            {tasksTab === "tasks" && (
+              <TaskList
+                tasks={tasks}
+                latestRunByTask={latestRunByTask}
+                now={now}
+                busyTaskId={busyTaskId}
+                onRun={handleRun}
+                onEdit={(t) => { setEditingTask(t); setShowForm(true); }}
+                onDelete={handleDelete}
+                onToggle={handleToggle}
+                onOpenRun={(id) => { setSelectedRunId(id); setTasksTab("live"); }}
+              />
+            )}
+
+            {tasksTab === "live" && (
+              <div className="stagger space-y-2">
+                {mergedRuns.length === 0 && (
+                  <div className="rounded-lg border border-dashed border-edge p-8 text-center text-muted">
+                    No runs yet. Hit “Run now” on a task.
+                  </div>
+                )}
+                {mergedRuns.slice(0, 40).map((r) => {
+                  const meta = STATUS_META[r.status];
+                  return (
+                    <button
+                      key={r.id}
+                      onClick={() => setSelectedRunId(r.id)}
+                      className="flex w-full items-center gap-3 rounded-lg border border-edge bg-panel/60 px-3 py-2.5 text-left hover:border-amber/40"
+                    >
+                      <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${meta.dot}`} />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate font-mono text-sm text-ink">
+                          {taskById[r.task_id]?.name ?? `Task ${r.task_id}`}
+                        </span>
+                        <span className="font-mono text-[11px] text-muted">
+                          run #{r.id} · {r.provider ?? "—"} · {fmtTime(r.created_at)}
+                        </span>
+                      </span>
+                      <span className={`shrink-0 font-mono text-xs ${meta.text}`}>{meta.label}</span>
+                    </button>
+                  );
+                })}
               </div>
             )}
-            {mergedRuns.slice(0, 40).map((r) => {
-              const meta = STATUS_META[r.status];
-              return (
-                <button
-                  key={r.id}
-                  onClick={() => setSelectedRunId(r.id)}
-                  className="flex w-full items-center gap-3 rounded-lg border border-edge bg-panel/60 px-3 py-2.5 text-left hover:border-amber/40"
-                >
-                  <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${meta.dot}`} />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate font-mono text-sm text-ink">
-                      {taskById[r.task_id]?.name ?? `Task ${r.task_id}`}
-                    </span>
-                    <span className="font-mono text-[11px] text-muted">
-                      run #{r.id} · {r.provider ?? "—"} · {fmtTime(r.created_at)}
-                    </span>
-                  </span>
-                  <span className={`shrink-0 font-mono text-xs ${meta.text}`}>{meta.label}</span>
-                </button>
-              );
-            })}
-          </div>
+          </>
+        )}
+
+        {view === "build" && (
+          <SessionView
+            sessions={sessions}
+            selectedId={selectedSessionId}
+            onSelect={setSelectedSessionId}
+            onSessionsChanged={loadSessions}
+            providers={providers}
+          />
         )}
 
         {view === "providers" && (

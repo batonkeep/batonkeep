@@ -128,6 +128,11 @@ class SessionCreate(BaseModel):
     provider: Optional[str] = None
 
 
+class SessionUpdate(BaseModel):
+    # rename a session (other fields like provider are switched via turns)
+    title: Optional[str] = None
+
+
 class TurnCreate(BaseModel):
     message: str
     # optional provider switch for this and subsequent turns
@@ -157,6 +162,7 @@ class SessionOut(BaseModel):
     title: str
     provider: Optional[str]
     workspace_path: str
+    preview_token: str
     status: str
     created_at: datetime
     updated_at: datetime

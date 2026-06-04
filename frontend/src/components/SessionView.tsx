@@ -136,10 +136,17 @@ export default function SessionView({
     }
   }, [lastTurn, loadTurns, loadVersions]);
 
-  // Auto-scroll the chat to the latest content.
+  // Auto-scroll the chat to the latest content — but not while History is open,
+  // since the History card sits at the top of the stream and we want it in view.
   useEffect(() => {
+    if (historyOpen) return;
     if (streamRef.current) streamRef.current.scrollTop = streamRef.current.scrollHeight;
-  }, [events, streamingText, turns, pendingMessage]);
+  }, [events, streamingText, turns, pendingMessage, historyOpen]);
+
+  // Opening History reveals its card at the top of the stream — scroll up to it.
+  useEffect(() => {
+    if (historyOpen && streamRef.current) streamRef.current.scrollTop = 0;
+  }, [historyOpen]);
 
   const handleCreate = async () => {
     setCreating(true);
@@ -468,7 +475,15 @@ export default function SessionView({
                 </div>
               )}
 
-              {/* Detailed activity log — off by default (toggled from the header). */}
+              {/* Detailed activity log — off by default (toggled from the header).
+                  Events are live-only (streamed over WS for the current session),
+                  so on an idle session there's nothing until a turn runs. Show an
+                  explicit empty state rather than rendering nothing on toggle. */}
+              {activityOpen && events.length === 0 && !streamingText && (
+                <div className="rounded-lg border border-dashed border-edge bg-base/60 p-3 text-xs text-muted">
+                  No live activity yet — send a turn to watch the agent’s steps stream here.
+                </div>
+              )}
               {activityOpen && (events.length > 0 || streamingText) && (
                 <div className="space-y-1 rounded-lg border border-edge bg-base/60 p-3 font-mono text-xs">
                   {shownEvents.map((ev, i) => (

@@ -216,6 +216,17 @@ export interface VersionDiff {
   diff: string;
 }
 
+// Publish/share state of a session's build (M1.4).
+export interface Publish {
+  published: boolean;
+  share_token: string | null;
+  share_path: string | null; // e.g. "/api/share/<token>/"
+  version: string | null;
+  kind: string;
+  file_count: number | null;
+  updated_at: string | null;
+}
+
 // Payload accepted by PATCH /sessions/{id}.
 export interface SessionUpdate {
   title?: string | null;

@@ -17,13 +17,13 @@ from datetime import datetime, timezone
 
 from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings, DeploymentMode
 from app.db import get_db, init_db
-from app.models import Credential, Owner, Session, SessionTurn, Task, Run, RunEvent
+from app.models import Artifact, Credential, Owner, Session, SessionTurn, Task, Run, RunEvent
 from app.schemas import (
     CredentialCreate,
     CredentialOut,
@@ -32,6 +32,7 @@ from app.schemas import (
     ProviderHealth,
     ProviderLimitsUpdate,
     ProviderModelUpdate,
+    PublishOut,
     RestoreOut,
     RestoreRequest,
     RunEventOut,
@@ -575,6 +576,151 @@ async def restore_session_version(
     session.updated_at = datetime.now(timezone.utc)
     await db.commit()
     return RestoreOut.model_validate(result)
+
+
+# ── Publish + share (M1.4) ───────────────────────────────────────────────────
+# Two delivery mechanisms (D-0009): a download pack (zip the static assets) and a
+# revocable backend share link (public bundle served at /api/share/{token}). Host
+# connectors are out of M1.4 (deferred post-M1). owner-scoped routes load the
+# session under the caller first; the public share route is gated only by the
+# unguessable token (its capability), never by owner.
+
+def _artifact_to_publish_out(artifact: Optional[Artifact]) -> PublishOut:
+    if artifact is None or not artifact.published or not artifact.share_token:
+        return PublishOut(published=False)
+    file_count = None
+    if artifact.path and os.path.isdir(artifact.path):
+        file_count = sum(len(files) for _, _, files in os.walk(artifact.path))
+    return PublishOut(
+        published=True,
+        share_token=artifact.share_token,
+        share_path=f"/api/share/{artifact.share_token}/",
+        version=artifact.version,
+        kind=artifact.kind,
+        file_count=file_count,
+        updated_at=artifact.updated_at,
+    )
+
+
+async def _get_artifact(db: AsyncSession, session_id: str) -> Optional[Artifact]:
+    return (await db.execute(
+        select(Artifact).where(Artifact.session_id == session_id)
+    )).scalar_one_or_none()
+
+
+@app.get("/api/sessions/{session_id}/publish", response_model=PublishOut, tags=["sessions"])
+async def get_publish_state(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """Current publish/share state of a session's build (for the UI)."""
+    await _owned_session(session_id, owner_id, db)
+    return _artifact_to_publish_out(await _get_artifact(db, session_id))
+
+
+@app.post("/api/sessions/{session_id}/publish", response_model=PublishOut, tags=["sessions"])
+async def publish_session(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """
+    Publish the session's current build to a revocable public share link. Snapshots
+    the workspace's static assets into a fresh bundle and mints a new share token
+    (re-publishing rotates the token + refreshes the snapshot).
+    """
+    import secrets
+    from app.sessions import publish as pub
+    from app.sessions import workspace as ws
+
+    session = await _owned_session(session_id, owner_id, db)
+
+    artifact = await _get_artifact(db, session_id)
+    # Drop any prior bundle before minting a new token (revoke-then-republish).
+    if artifact is not None:
+        pub.remove_bundle(artifact.share_token, artifact.path)
+
+    share_token = secrets.token_urlsafe(18)
+    bundle_path = pub.build_bundle(session.workspace_path, share_token)
+    version = await ws.head_commit(session.workspace_path)
+
+    if artifact is None:
+        artifact = Artifact(session_id=session_id, owner_id=owner_id, kind="site")
+        db.add(artifact)
+    artifact.share_token = share_token
+    artifact.published = True
+    artifact.path = bundle_path
+    artifact.version = version
+    await db.commit()
+    await db.refresh(artifact)
+    return _artifact_to_publish_out(artifact)
+
+
+@app.delete("/api/sessions/{session_id}/publish", response_model=PublishOut, tags=["sessions"])
+async def revoke_publish(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """Revoke a session's share link: remove the public bundle and clear the token (→ 404)."""
+    from app.sessions import publish as pub
+
+    await _owned_session(session_id, owner_id, db)
+    artifact = await _get_artifact(db, session_id)
+    if artifact is not None:
+        pub.remove_bundle(artifact.share_token, artifact.path)
+        artifact.published = False
+        artifact.share_token = None
+        artifact.path = None
+        await db.commit()
+    return PublishOut(published=False)
+
+
+@app.get("/api/sessions/{session_id}/download", tags=["sessions"])
+async def download_session(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """Download the session's build as a zip of its static assets (download pack #1)."""
+    from app.sessions import publish as pub
+
+    session = await _owned_session(session_id, owner_id, db)
+    data = pub.zip_workspace(session.workspace_path)
+    safe_name = "".join(c if c.isalnum() or c in "-_" else "-" for c in session.title)[:48] or "site"
+    return Response(
+        content=data,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}.zip"'},
+    )
+
+
+@app.get("/api/share/{token}/{path:path}", tags=["share"])
+@app.get("/api/share/{token}", tags=["share"])
+async def serve_share(
+    token: str,
+    path: str = "",
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Public share route (M1.4): serve a published bundle by its share token. No owner
+    auth — the unguessable token is the capability. Revoked/unknown tokens 404, and
+    only the published bundle is reachable (the live workspace is never exposed here).
+    """
+    from app.sessions.preview import resolve_preview_file, PreviewError
+
+    artifact = (await db.execute(
+        select(Artifact).where(Artifact.share_token == token)
+    )).scalar_one_or_none()
+    if artifact is None or not artifact.published or not artifact.path:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    try:
+        file_path, media = resolve_preview_file(artifact.path, path)
+    except PreviewError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail)
+    return FileResponse(file_path, media_type=media)
 
 
 # ── /api/stats ──────────────────────────────────────────────────────────────────

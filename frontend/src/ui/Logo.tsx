@@ -41,6 +41,77 @@ export function LogoMark({ size = 24, className = "", title }: MarkProps) {
   );
 }
 
+const SHIELD = "M12 2.4 L19.4 5.2 L19.4 11.4 C19.4 16 16.1 19.5 12 21.6 C7.9 19.5 4.6 16 4.6 11.4 L4.6 5.2 Z";
+
+/**
+ * Candidate mark: baton in a shield. The shield = "keep" (a fortified stronghold
+ * → custody / sovereignty); the baton = orchestration. Captures both halves of
+ * the name. Shield in currentColor; baton in the accent token (themes with the
+ * chosen accent). `relay` swaps the vertical baton for the diagonal hand-off.
+ */
+export function ShieldMark({
+  size = 24,
+  className = "",
+  relay = false,
+  title,
+}: MarkProps & { relay?: boolean }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      className={className}
+      role={title ? "img" : undefined}
+      aria-hidden={title ? undefined : true}
+      aria-label={title}
+    >
+      {title ? <title>{title}</title> : null}
+      <path d={SHIELD} stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" opacity="0.85" />
+      {relay ? (
+        <>
+          <path d="M9.4 14.6 L14.6 9.4" className="stroke-amber" strokeWidth="2.4" strokeLinecap="round" />
+          <circle cx="8.2" cy="15.8" r="1.5" className="fill-amber" opacity="0.4" />
+          <circle cx="15.8" cy="8.2" r="1.5" className="fill-amber" />
+        </>
+      ) : (
+        <path d="M12 7 L12 15.2" className="stroke-amber" strokeWidth="2.7" strokeLinecap="round" />
+      )}
+    </svg>
+  );
+}
+
+/**
+ * Solid-shield mark: the shield is filled with the accent (the brand colour); the
+ * baton (node·shaft·node) is knocked out to the page background, so it stays
+ * high-contrast on any accent and reads cleanly at favicon size. This is the
+ * "shield colour = primary" lockup.
+ */
+export function ShieldSolid({ size = 24, className = "", title }: MarkProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      className={className}
+      role={title ? "img" : undefined}
+      aria-hidden={title ? undefined : true}
+      aria-label={title}
+    >
+      {title ? <title>{title}</title> : null}
+      {/* shield = brand colour */}
+      <path d="M5 4 L19 4 L19 12.6 C19 18 12 21.6 12 21.6 C12 21.6 5 18 5 12.6 Z" className="fill-amber" />
+      {/* baton knockout (node · shaft · node) → page background shows through */}
+      <g className="fill-base">
+        <circle cx="12" cy="8.6" r="1.5" />
+        <rect x="10.8" y="10.7" width="2.4" height="5.6" rx="1.2" />
+        <circle cx="12" cy="18.1" r="1.25" />
+      </g>
+    </svg>
+  );
+}
+
 interface LogoProps {
   /** Render the wordmark beside the mark. */
   wordmark?: boolean;

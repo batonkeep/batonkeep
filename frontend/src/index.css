@@ -33,6 +33,20 @@
   color-scheme: dark;
 }
 
+/* ── Accent themes (D-track brand lab) ────────────────────────────────────────
+   The accent token is `--c-amber` (the `amber` Tailwind colour). Swapping it via
+   `data-accent` on <html> re-themes every accent surface with no code change, so
+   the brand decision (amber vs indigo vs blue) can be previewed live. `warn`
+   stays amber on purpose — a warning should read amber regardless of brand. */
+[data-accent="indigo"] { --c-amber: 79 70 229; }   /* light · indigo-600 */
+.dark[data-accent="indigo"] { --c-amber: 129 140 248; } /* dark · indigo-400 */
+
+[data-accent="blue"] { --c-amber: 37 99 235; }     /* light · blue-600 */
+.dark[data-accent="blue"] { --c-amber: 96 165 250; }  /* dark · blue-400 */
+
+[data-accent="red"] { --c-amber: 231 76 60; }      /* #E74C3C — note: ~= the bad/error token */
+.dark[data-accent="red"] { --c-amber: 231 76 60; }
+
 html,
 body,
 #root {

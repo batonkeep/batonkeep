@@ -1,9 +1,21 @@
 // Styleguide.tsx — living reference for the Batonkeep design system (D-track).
 // Open via #styleguide. Shows brand, tokens, and every ui/ primitive so new
 // surfaces (M1–M6) compose from a known palette instead of inventing one.
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Plus } from "lucide-react";
-import { Badge, Button, Card, Field, Input, Logo, LogoMark, Modal, Select, StatusDot, Tabs, type Tone } from "../ui";
+import { Badge, Button, Card, Field, Input, Logo, LogoMark, Modal, Select, ShieldMark, ShieldSolid, StatusDot, Tabs, type Tone } from "../ui";
+
+const ACCENTS = [
+  { id: "amber", label: "Amber", note: "current · mission-control" },
+  { id: "indigo", label: "Indigo", note: "professional · distinct from live-cyan" },
+  { id: "blue", label: "Blue", note: "trust · close to live-cyan" },
+  { id: "red", label: "Red", note: "#E74C3C · warning: ≈ the error token" },
+] as const;
+
+function setAccent(id: string) {
+  if (id === "amber") document.documentElement.removeAttribute("data-accent");
+  else document.documentElement.setAttribute("data-accent", id);
+}
 
 const SWATCHES: { name: string; cls: string; note: string }[] = [
   { name: "base", cls: "bg-base", note: "page background" },
@@ -39,6 +51,13 @@ const RUN_TABS = [
 export default function Styleguide() {
   const [tab, setTab] = useState<(typeof RUN_TABS)[number]["id"]>("report");
   const [modalOpen, setModalOpen] = useState(false);
+  const [accent, setAccentId] = useState("indigo");
+  // Open the lab on indigo (recommended) so the solid-shield brand shows in context;
+  // restore amber on unmount so the rest of the app is unaffected.
+  useEffect(() => {
+    setAccent("indigo");
+    return () => setAccent("amber");
+  }, []);
 
   return (
     <div className="mx-auto max-w-4xl px-5 py-8">
@@ -47,14 +66,65 @@ export default function Styleguide() {
         <Badge tone="amber">design system · D-track</Badge>
       </header>
 
-      <Section title="Brand mark">
-        <Card className="flex flex-wrap items-center gap-8 p-6">
-          <LogoMark size={56} className="text-amber" />
-          <Logo size={28} />
-          <Logo wordmark={false} size={32} />
-          <div className="font-mono text-xs text-muted">
-            relay baton mid-hand-off — work passed between agents,<br />failover across owned plans
-          </div>
+      <Section title="Brand lab — mark + accent (live preview)">
+        {/* Accent switcher — re-themes the whole page via data-accent on <html>. */}
+        <Card className="mb-3 flex flex-wrap items-center gap-2 p-4">
+          <span className="mr-1 font-mono text-[11px] uppercase tracking-wider text-muted">accent</span>
+          {ACCENTS.map((a) => (
+            <Button
+              key={a.id}
+              size="sm"
+              variant={accent === a.id ? "primary" : "outline"}
+              onClick={() => { setAccentId(a.id); setAccent(a.id); }}
+              title={a.note}
+            >
+              {a.label}
+            </Button>
+          ))}
+          <span className="ml-2 text-[11px] text-muted">{ACCENTS.find((a) => a.id === accent)?.note}</span>
+        </Card>
+
+        {/* Mark candidates — all use the accent token, so they follow the switch. */}
+        <div className="grid gap-3 sm:grid-cols-4">
+          <Card active className="flex flex-col items-center gap-3 p-6">
+            <ShieldSolid size={52} />
+            <div className="text-center font-mono text-[11px] text-muted">solid shield<br />(brand = primary)</div>
+          </Card>
+          <Card className="flex flex-col items-center gap-3 p-6">
+            <ShieldMark size={52} className="text-ink" />
+            <div className="text-center font-mono text-[11px] text-muted">outline shield<br />(baton + keep)</div>
+          </Card>
+          <Card className="flex flex-col items-center gap-3 p-6">
+            <ShieldMark size={52} relay className="text-ink" />
+            <div className="text-center font-mono text-[11px] text-muted">relay + shield<br />(both, busier)</div>
+          </Card>
+          <Card className="flex flex-col items-center gap-3 p-6">
+            <LogoMark size={52} className="text-amber" />
+            <div className="text-center font-mono text-[11px] text-muted">relay baton<br />(no shield)</div>
+          </Card>
+        </div>
+
+        {/* Favicon-scale legibility check for the solid shield. */}
+        <Card className="mt-3 flex items-center gap-5 p-5">
+          <span className="font-mono text-[11px] uppercase tracking-wider text-muted">favicon scale</span>
+          <ShieldSolid size={16} />
+          <ShieldSolid size={20} />
+          <ShieldSolid size={28} />
+          <span className="text-[11px] text-muted">solid shapes stay legible where outlines collapse</span>
+        </Card>
+
+        {/* Wordmark lockups + a few accent surfaces so the switch is visible. */}
+        <Card className="mt-3 flex flex-wrap items-center gap-6 p-6">
+          <span className="inline-flex items-center gap-2.5">
+            <ShieldSolid size={28} />
+            <span className="font-mono text-lg font-semibold tracking-tight text-ink">
+              Baton<span className="text-muted">keep</span>
+            </span>
+          </span>
+          <Button variant="primary" size="sm">Primary</Button>
+          <Badge tone="amber">accent badge</Badge>
+          <StatusDot tone="amber" /> <span className="text-xs text-muted">accent</span>
+          <StatusDot tone="live" pulse /> <span className="text-xs text-muted">live (cyan — reserved)</span>
         </Card>
       </Section>
 

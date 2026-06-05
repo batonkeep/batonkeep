@@ -37,6 +37,10 @@ class ProviderDef:
     env_key: Optional[str] = None       # env var holding the API key
     cli_binary: Optional[str] = None    # for kind=cli
     mode: str = "mock"                  # plan | api | open | mock
+    # Sovereignty boundary (P-0009 #1): True iff inference runs on infrastructure
+    # we control and the prompt never leaves the box (a local model). Confidential
+    # work routes *only* to local providers and never falls back to a remote one.
+    local: bool = False
 
 
 # ── Static registry ────────────────────────────────────────────────────────────
@@ -144,6 +148,26 @@ _ALL_PROVIDERS: list[ProviderDef] = [
         env_key="OPENAI_API_KEY",
         base_url=None,   # set via OPENAI_BASE_URL env
         mode="open",
+    ),
+    # ── Local model (ollama) — sovereignty tier (P-0009 #1) ───────────────────
+    # Runs entirely on the operator's box via ollama's OpenAI-compatible API, so
+    # confidential work can be processed without any prompt leaving the machine.
+    # Validated end-to-end (the 'Daily AI Ecosystem Brief' ran through the API
+    # executor + our tool loop against gemma4:12b). The model is overridable per
+    # instance / at runtime; the env key is a placeholder (ollama ignores it, but
+    # the OpenAI client requires a non-empty value).
+    ProviderDef(
+        name="ollama",
+        kind="openai_compatible",
+        tier="open",
+        capability_tags=["open", "any", "local", "synthesis"],
+        model="gemma4:12b",
+        cost_in_per_mtok=0.0,
+        cost_out_per_mtok=0.0,
+        env_key="OLLAMA_API_KEY",
+        base_url="http://localhost:11434/v1",
+        mode="open",
+        local=True,
     ),
 ]
 
@@ -381,6 +405,18 @@ def list_instances() -> list[ProviderInstance]:
             continue
         result.append(inst)
     return result
+
+
+def local_candidate_ids() -> list[str]:
+    """Instance ids of every available local (sovereignty-tier) provider — the
+    only eligible candidates for confidential work (P-0009 #1). Default instances
+    of local templates, plus any declared local instances."""
+    ids: list[str] = []
+    for inst in list_instances():
+        pdef = get_provider_def(inst.template)
+        if pdef is not None and pdef.local:
+            ids.append(inst.id)
+    return ids
 
 
 def list_providers(include_cli: bool | None = None) -> list[ProviderDef]:

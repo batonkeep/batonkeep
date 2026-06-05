@@ -7,6 +7,8 @@ import re
 
 import httpx
 
+from app.providers.tools._ssrf import SSRFError, safe_get
+
 TOOL_SCHEMA = {
     "name": "web_fetch",
     "description": "Fetch and extract the main text content from a URL.",
@@ -23,8 +25,11 @@ TOOL_SCHEMA = {
 
 async def run(url: str, max_chars: int = 8000) -> str:
     try:
-        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
-            resp = await client.get(
+        # follow_redirects=False so the SSRF guard re-validates each hop itself
+        # (a public URL can 30x into an internal address).
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=False) as client:
+            resp = await safe_get(
+                client,
                 url,
                 headers={"User-Agent": "batonkeep-agent/0.1"},
             )
@@ -35,6 +40,8 @@ async def run(url: str, max_chars: int = 8000) -> str:
             else:
                 text = resp.text
             return text[:max_chars] + ("…" if len(text) > max_chars else "")
+    except SSRFError as exc:
+        return f"[web_fetch blocked] refusing to fetch a non-public address: {exc}"
     except Exception as exc:
         return f"[web_fetch error] {exc}"
 

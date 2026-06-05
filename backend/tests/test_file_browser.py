@@ -177,3 +177,51 @@ class TestFileBrowserHTTP:
             assert c.get("/api/sessions/sb/files/raw/anything").status_code == 404
         finally:
             app.dependency_overrides.clear()
+
+    def test_turns_endpoint_rewrites_legacy_file_links(self, tmp_path):
+        # A turn persisted BEFORE this feature still has a raw file:// link; the
+        # turns endpoint rewrites it on read so the existing session renders fixed.
+        import asyncio
+        from fastapi.testclient import TestClient
+        from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+        from app.db import Base, get_db
+        from app.models import Owner, Session as SessionModel, SessionTurn
+        from app.main import app, _owner_id
+
+        ws._settings.__dict__["sessions_dir"] = str(tmp_path / "sessions")
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/t.db", echo=False)
+
+        async def _setup():
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            root = await ws.create_workspace("sx", title="X", goal="G")
+            legacy = f"see [download_data.py](file://{root}/download_data.py)"
+            Maker = async_sessionmaker(engine, expire_on_commit=False)
+            async with Maker() as db:
+                db.add_all([
+                    Owner(id="local", label="Me"),
+                    SessionModel(id="sx", owner_id="local", title="X", provider="mock",
+                                 workspace_path=root, preview_token="t", status="active"),
+                    SessionTurn(session_id="sx", owner_id="local", seq=0, provider="mock",
+                                prompt="go", response=legacy, status="succeeded"),
+                ])
+                await db.commit()
+            return Maker
+
+        Maker = asyncio.get_event_loop().run_until_complete(_setup())
+
+        async def _override_db():
+            async with Maker() as db:
+                yield db
+
+        app.dependency_overrides[get_db] = _override_db
+        app.dependency_overrides[_owner_id] = lambda: "local"
+        try:
+            c = TestClient(app)
+            turns = c.get("/api/sessions/sx/turns")
+            assert turns.status_code == 200
+            resp = turns.json()[0]["response"]
+            assert "/api/sessions/sx/files/raw/download_data.py" in resp
+            assert "file://" not in resp
+        finally:
+            app.dependency_overrides.clear()

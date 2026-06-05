@@ -507,13 +507,25 @@ async def list_session_turns(
     db: AsyncSession = Depends(get_db),
     owner_id: str = Depends(_owner_id),
 ):
+    from app.sessions.preview import rewrite_workspace_file_links
+
     session = await db.get(Session, session_id)
     if session is None or session.owner_id != owner_id:
         raise HTTPException(status_code=404, detail="Session not found")
     result = await db.execute(
         select(SessionTurn).where(SessionTurn.session_id == session_id).order_by(SessionTurn.seq)
     )
-    return [SessionTurnOut.model_validate(t) for t in result.scalars().all()]
+    out: list[SessionTurnOut] = []
+    for t in result.scalars().all():
+        item = SessionTurnOut.model_validate(t)
+        # Rewrite file:// links on read too, so turns persisted before this feature
+        # (idempotent for already-rewritten text) also render clickable artifacts.
+        if item.response:
+            item.response = rewrite_workspace_file_links(
+                item.response, session_id, session.workspace_path
+            )
+        out.append(item)
+    return out
 
 
 @app.post("/api/sessions/{session_id}/turns", response_model=SessionTurnOut,

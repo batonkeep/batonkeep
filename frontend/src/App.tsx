@@ -131,6 +131,10 @@ function AppShell() {
   }, [mergedRuns]);
 
   const activeRuns = mergedRuns.filter((r) => ["queued", "planning", "running"].includes(r.status)).length;
+  // Immersive build session (mobile): once a session is open, give it the full
+  // screen — collapse the header to the brand and drop the bottom tab bar (the
+  // in-session "Sessions" back button is the way out). Desktop ignores this.
+  const immersive = view === "build" && selectedSessionId != null;
   const selectedRun = selectedRunId != null ? mergedRuns.find((r) => r.id === selectedRunId) ?? null : null;
   const taskById = useMemo(() => Object.fromEntries(tasks.map((t) => [t.id, t])), [tasks]);
 
@@ -185,10 +189,14 @@ function AppShell() {
   // ── Render ───────────────────────────────────────────────────────────────--
   return (
     <div className="flex min-h-screen flex-col md:flex-row">
-      <Sidebar view={view} onChange={setView} wsStatus={wsStatus} activeRuns={activeRuns} />
+      <Sidebar view={view} onChange={setView} wsStatus={wsStatus} activeRuns={activeRuns} immersive={immersive} />
 
-      <main className="flex-1 overflow-x-hidden px-4 pb-24 pt-5 md:px-8 md:pb-8">
-        {/* Header */}
+      <main
+        className={`flex-1 overflow-x-hidden px-4 pt-5 md:px-8 md:pb-8 ${
+          immersive ? "pb-0" : "pb-24"
+        }`}
+      >
+        {/* Header — collapses to just the brand on an immersive mobile session. */}
         <div className="mb-5 flex items-center justify-between gap-2">
           <div>
             <span className="md:hidden"><Logo size={30} /></span>
@@ -196,7 +204,7 @@ function AppShell() {
               control plane · {view === "tasks" ? tasksTab : view}
             </p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className={`items-center gap-2 ${immersive ? "hidden md:flex" : "flex"}`}>
             <Button
               variant="outline"
               size="sm"
@@ -225,9 +233,12 @@ function AppShell() {
           </div>
         </div>
 
-        <div className="mb-6">
-          <StatsBar stats={stats} sparkData={sparkData} />
-        </div>
+        {/* Run/task aggregates — irrelevant to the Build surface, so hide there. */}
+        {view !== "build" && (
+          <div className="mb-6">
+            <StatsBar stats={stats} sparkData={sparkData} />
+          </div>
+        )}
 
         {/* Views */}
         {view === "tasks" && (

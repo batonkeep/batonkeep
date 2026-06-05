@@ -12,6 +12,9 @@ interface Props {
   onChange: (v: View) => void;
   wsStatus: WsStatus;
   activeRuns: number;
+  // Mobile: hide the bottom tab bar so an open build session gets the full
+  // screen. Desktop (md+) always shows the rail.
+  immersive?: boolean;
 }
 
 const ITEMS: { id: View; label: string; icon: typeof ListChecks }[] = [
@@ -20,13 +23,14 @@ const ITEMS: { id: View; label: string; icon: typeof ListChecks }[] = [
   { id: "providers", label: "Providers", icon: Server },
 ];
 
-export default function Sidebar({ view, onChange, wsStatus, activeRuns }: Props) {
+export default function Sidebar({ view, onChange, wsStatus, activeRuns, immersive = false }: Props) {
   return (
     <nav
-      className="
-        fixed bottom-0 left-0 right-0 z-30 flex flex-row justify-around border-t border-edge bg-panel/95 backdrop-blur
+      className={`
+        ${immersive ? "hidden" : "flex"} md:flex
+        fixed bottom-0 left-0 right-0 z-30 flex-row justify-around border-t border-edge bg-panel/95 backdrop-blur
         md:static md:h-full md:w-56 md:flex-col md:justify-start md:gap-1 md:border-r md:border-t-0 md:p-3
-      "
+      `}
     >
       {/* Brand — desktop only */}
       <div className="hidden md:mb-5 md:flex md:items-center md:px-2 md:pt-1">

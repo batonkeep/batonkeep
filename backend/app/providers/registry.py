@@ -419,6 +419,15 @@ def local_candidate_ids() -> list[str]:
     return ids
 
 
+def is_local_instance(instance_id: str) -> bool:
+    """True iff the instance resolves to a local (sovereignty-tier) provider."""
+    inst = get_instance(instance_id)
+    if inst is None:
+        return False
+    pdef = get_provider_def(inst.template)
+    return bool(pdef and pdef.local)
+
+
 def list_providers(include_cli: bool | None = None) -> list[ProviderDef]:
     """
     Return all provider definitions, optionally filtered.

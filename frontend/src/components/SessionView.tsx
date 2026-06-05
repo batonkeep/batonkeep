@@ -7,7 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
 import hljs from "highlight.js/lib/common";
 import "highlight.js/styles/github-dark.css";
-import { Activity, Archive, Check, ChevronLeft, ChevronRight, Cloud, Copy, Download, FileCode, Globe, History, Link2, Loader2, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, X } from "lucide-react";
+import { Activity, Archive, Check, ChevronLeft, ChevronRight, Cloud, Copy, Download, FileCode, Globe, History, Link2, Loader2, Lock, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, Shield, X } from "lucide-react";
 import type { CloudflareStatus, ProviderHealth, Publish, Session, SessionTemplate, SessionTurn, Version } from "../types";
 import { api } from "../api";
 import { useSessionEvents, type SessionEvent } from "../useLiveFeed";
@@ -114,6 +114,7 @@ export default function SessionView({
   const [providerSwitch, setProviderSwitch] = useState("");
   const [sending, setSending] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [confidentialDraft, setConfidentialDraft] = useState(false); // new-session local-only pin
   const [previewNonce, setPreviewNonce] = useState(0);
   const [rawOpen, setRawOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
@@ -239,12 +240,22 @@ export default function SessionView({
   const handleCreate = async (template?: string) => {
     setCreating(true);
     try {
-      const s = await api.createSession(template ? { template } : { title: "Untitled session" });
+      const s = await api.createSession({
+        ...(template ? { template } : { title: "Untitled session" }),
+        confidential: confidentialDraft,
+      });
       onSessionsChanged();
       onSelect(s.id);
     } finally {
       setCreating(false);
     }
+  };
+
+  const handleToggleConfidential = async () => {
+    if (!selectedId || !detail) return;
+    const updated = await api.updateSession(selectedId, { confidential: !detail.confidential });
+    setDetail(updated);
+    onSessionsChanged();
   };
 
   const handleRename = async () => {
@@ -666,6 +677,18 @@ export default function SessionView({
                 </button>
               ))}
             </div>
+            <label className="flex cursor-pointer items-center gap-2 text-xs text-muted">
+              <input
+                type="checkbox"
+                checked={confidentialDraft}
+                onChange={(e) => setConfidentialDraft(e.target.checked)}
+                className="accent-brand"
+              />
+              <Lock size={12} />
+              <span>
+                Confidential — pin to a local model; the prompt &amp; workspace never leave this box.
+              </span>
+            </label>
             <p className="text-xs text-muted">…or pick an existing session from the list.</p>
           </div>
         ) : (
@@ -694,6 +717,23 @@ export default function SessionView({
                   <span className="flex-1 truncate font-mono text-sm text-ink">
                     {detail?.title ?? "…"}
                   </span>
+                  {detail?.confidential && (
+                    <span
+                      className="flex items-center gap-1 rounded border border-brand/40 bg-brand/10 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-brand"
+                      title="Confidential — pinned to a local model; nothing leaves this box"
+                    >
+                      <Lock size={11} /> Local-only
+                    </span>
+                  )}
+                  <Button
+                    variant={detail?.confidential ? "outline" : "ghost"}
+                    size="sm"
+                    className="px-1.5"
+                    icon={detail?.confidential ? <Lock size={13} /> : <Shield size={13} />}
+                    onClick={handleToggleConfidential}
+                    disabled={!detail}
+                    title={detail?.confidential ? "Confidential: on — click to allow remote models" : "Make confidential — pin to a local model"}
+                  />
                   <Button
                     variant="ghost"
                     size="sm"

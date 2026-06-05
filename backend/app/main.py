@@ -456,6 +456,7 @@ async def create_session(
         workspace_path=workspace_path,
         preview_token=secrets.token_urlsafe(24),
         status="active",
+        confidential=body.confidential,
     )
     db.add(session)
     await db.commit()
@@ -493,7 +494,7 @@ async def update_session(
     db: AsyncSession = Depends(get_db),
     owner_id: str = Depends(_owner_id),
 ):
-    """Rename a build session (the only mutable field; provider switches via turns)."""
+    """Rename a session or toggle its confidential (local-only) pin."""
     session = await db.get(Session, session_id)
     if session is None or session.owner_id != owner_id:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -502,6 +503,8 @@ async def update_session(
         if not title:
             raise HTTPException(status_code=400, detail="title must not be empty")
         session.title = title[:256]
+    if body.confidential is not None:
+        session.confidential = body.confidential
     await db.commit()
     await db.refresh(session)
     return SessionOut.model_validate(session)

@@ -9,12 +9,16 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from app.providers.registry import (
     get_provider_def,
+    is_local_instance,
     local_candidate_ids,
 )
 from app.quota import QuotaTracker
 from app.router import CandidatePlan, DeferredResult, resolve
+from app.sessions.orchestrator import SessionError, enforce_local_if_confidential
 
 
 def fresh_quota() -> QuotaTracker:
@@ -84,3 +88,85 @@ class TestConfidentialRouting:
         assert isinstance(result, CandidatePlan)
         assert result.candidates == ["mock"]
         assert "ollama" not in result.candidates
+
+
+# ── Confidential session pin (build sessions, not the Task router) ──────────────
+
+class TestConfidentialSessionPin:
+    def test_is_local_instance(self):
+        assert is_local_instance("ollama") is True
+        assert is_local_instance("mock") is False
+        assert is_local_instance("claude-api") is False
+        assert is_local_instance("does-not-exist") is False
+
+    def test_non_confidential_keeps_chosen_provider(self):
+        assert enforce_local_if_confidential("mock", False) == "mock"
+        assert enforce_local_if_confidential("claude-api", False) == "claude-api"
+
+    def test_confidential_keeps_an_already_local_choice(self):
+        assert enforce_local_if_confidential("ollama", True) == "ollama"
+
+    def test_confidential_overrides_a_remote_choice_to_local(self):
+        # a remote selection on a confidential session is pinned back to local
+        assert enforce_local_if_confidential("claude-api", True) == "ollama"
+        assert enforce_local_if_confidential("mock", True) == "ollama"
+
+    def test_confidential_fails_closed_when_no_local_available(self, monkeypatch):
+        import app.sessions.orchestrator as orch
+        monkeypatch.setattr(orch, "local_candidate_ids", lambda: [])
+        monkeypatch.setattr(orch, "is_local_instance", lambda _id: False)
+        with pytest.raises(SessionError):
+            enforce_local_if_confidential("claude-api", True)
+
+
+# ── Confidential toggle over HTTP ───────────────────────────────────────────────
+
+class TestConfidentialSessionApi:
+    def test_create_and_toggle_confidential(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from fastapi.testclient import TestClient
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+        from app.db import Base, get_db
+        from app.main import _owner_id, app
+        from app.models import Owner
+        from app.sessions import workspace as ws_mod
+
+        monkeypatch.setattr(ws_mod._settings, "sessions_dir", str(tmp_path / "sessions"))
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/c.db", echo=False)
+
+        async def _setup():
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            maker = async_sessionmaker(engine, expire_on_commit=False)
+            async with maker() as db:
+                db.add(Owner(id="local", label="Test"))
+                await db.commit()
+            return maker
+
+        maker = asyncio.get_event_loop().run_until_complete(_setup())
+
+        async def _override_db():
+            async with maker() as db:
+                yield db
+
+        app.dependency_overrides[get_db] = _override_db
+        app.dependency_overrides[_owner_id] = lambda: "local"
+        try:
+            c = TestClient(app)
+            created = c.post("/api/sessions", json={"title": "Secret", "confidential": True})
+            assert created.status_code == 201
+            sid = created.json()["id"]
+            assert created.json()["confidential"] is True
+
+            # default is off
+            other = c.post("/api/sessions", json={"title": "Public"})
+            assert other.json()["confidential"] is False
+
+            # toggle off via PATCH
+            patched = c.patch(f"/api/sessions/{sid}", json={"confidential": False})
+            assert patched.status_code == 200
+            assert patched.json()["confidential"] is False
+        finally:
+            app.dependency_overrides.clear()

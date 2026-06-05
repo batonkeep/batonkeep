@@ -27,7 +27,11 @@ from app.config import get_settings
 from app.db import AsyncSessionLocal
 from app.models import Session, SessionTurn
 from app.providers.base import EventKind, ExecResult, Usage
-from app.providers.registry import get_executor
+from app.providers.registry import (
+    get_executor,
+    is_local_instance,
+    local_candidate_ids,
+)
 from app.sessions import workspace as ws
 from app.sessions.preview import rewrite_workspace_file_links
 from app.ws import ws_manager
@@ -38,6 +42,21 @@ _settings = get_settings()
 
 class SessionError(Exception):
     """Raised for caller-facing problems (unknown session/provider)."""
+
+
+def enforce_local_if_confidential(chosen: str, confidential: bool) -> str:
+    """Sovereignty boundary (P-0009 #1): a confidential session may only run on a
+    local model. A remote selection is overridden to an available local provider;
+    if none is available the turn fails closed rather than leaking off-box."""
+    if not confidential or is_local_instance(chosen):
+        return chosen
+    locals_ = local_candidate_ids()
+    if not locals_:
+        raise SessionError(
+            "this session is confidential but no local provider is available — "
+            "configure a local model (e.g. ollama) to run it"
+        )
+    return locals_[0]
 
 
 async def run_turn(
@@ -59,6 +78,8 @@ async def run_turn(
         chosen = provider or session.provider
         if not chosen:
             raise SessionError("no provider selected for this session")
+        # Confidential sessions are pinned to a local model (fail closed otherwise).
+        chosen = enforce_local_if_confidential(chosen, session.confidential)
 
         executor = get_executor(chosen)
         if executor is None:

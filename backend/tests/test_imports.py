@@ -107,6 +107,58 @@ class TestExtract:
         assert ei.value.status == 400
 
 
+class TestGitClone:
+    async def test_rejects_non_https(self, tmp_path):
+        with pytest.raises(imports.ImportArchiveError) as ei:
+            await imports.clone_repo(_ws(tmp_path), "git@github.com:owner/repo.git")
+        assert ei.value.status == 400
+
+    async def test_rejects_internal_host(self, tmp_path, monkeypatch):
+        import socket
+        # Resolve the host to a private IP → SSRF guard must refuse.
+        monkeypatch.setattr(
+            socket, "getaddrinfo",
+            lambda *a, **k: [(socket.AF_INET, None, None, "", ("127.0.0.1", 443))],
+        )
+        with pytest.raises(imports.ImportArchiveError) as ei:
+            await imports.clone_repo(_ws(tmp_path), "https://internal.local/repo.git")
+        assert ei.value.status == 400
+
+    async def test_happy_path_imports_working_tree(self, tmp_path, monkeypatch):
+        ws = _ws(tmp_path)
+
+        async def fake_run(cmd, env, cwd=None):
+            # Simulate a clone: populate the target dir (last arg) like git would.
+            target = cmd[-1]
+            os.makedirs(os.path.join(target, ".git"))
+            with open(os.path.join(target, ".git", "config"), "w") as f:
+                f.write("[core]")
+            os.makedirs(os.path.join(target, "src"))
+            with open(os.path.join(target, "index.html"), "w") as f:
+                f.write("<h1>cloned</h1>")
+            with open(os.path.join(target, "src", "app.js"), "w") as f:
+                f.write("x")
+            # Credential prompts disabled so private repos fail fast.
+            assert env.get("GIT_TERMINAL_PROMPT") == "0"
+            return 0, ""
+
+        monkeypatch.setattr(imports.shutil, "which", lambda _: "/usr/bin/git")
+        monkeypatch.setattr(imports, "_run_git", fake_run)
+        paths = await imports.clone_repo(ws, "https://github.com/owner/repo.git")
+        assert paths == ["index.html", "src/app.js"]  # .git dropped
+        assert os.path.isfile(os.path.join(ws, "src", "app.js"))
+
+    async def test_clone_failure_surfaced(self, tmp_path, monkeypatch):
+        async def fake_run(cmd, env, cwd=None):
+            return 128, "fatal: Authentication failed"
+
+        monkeypatch.setattr(imports.shutil, "which", lambda _: "/usr/bin/git")
+        monkeypatch.setattr(imports, "_run_git", fake_run)
+        with pytest.raises(imports.ImportArchiveError) as ei:
+            await imports.clone_repo(_ws(tmp_path), "https://github.com/owner/private.git")
+        assert ei.value.status == 502
+
+
 class TestRoute:
     def test_import_route_extracts_and_commits(self, tmp_path):
         import asyncio

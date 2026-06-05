@@ -17,10 +17,13 @@ capped to defuse archive bombs.
 """
 from __future__ import annotations
 
+import asyncio
 import os
+import shutil
 import tarfile
+import tempfile
 import zipfile
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Optional
 
 from app.sessions.workspace import safe_join
 
@@ -153,3 +156,80 @@ def extract_archive(workspace: str, archive_path: str) -> list[str]:
     else:
         raise ImportArchiveError(415, "unsupported archive — provide a .zip or .tar(.gz/.bz2/.xz)")
     return _write_entries(workspace, entries)
+
+
+# ── Git URL clone ─────────────────────────────────────────────────────────────
+
+_CLONE_TIMEOUT_S = 120
+
+
+def _validate_git_url(url: str) -> None:
+    """
+    Allow only https:// to a public host. A clone is a server-side fetch, so this
+    is an SSRF surface — reuse the web-fetch guard to block loopback/private/
+    link-local/metadata targets. ssh/git/file URLs are refused (creds / internal).
+    """
+    from app.providers.tools._ssrf import assert_url_allowed, SSRFError
+
+    if not url.lower().startswith("https://"):
+        raise ImportArchiveError(400, "only https:// git URLs are supported")
+    try:
+        assert_url_allowed(url)
+    except SSRFError as exc:
+        raise ImportArchiveError(400, f"refusing to clone: {exc}")
+
+
+def _dir_entries(root: str) -> list[tuple[str, int, Callable[[], bytes]]]:
+    """Walk a directory into import entries, skipping the .git internals."""
+    out: list[tuple[str, int, Callable[[], bytes]]] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        if ".git" in dirnames:
+            dirnames.remove(".git")
+        for fn in filenames:
+            ap = os.path.join(dirpath, fn)
+            if os.path.islink(ap) or not os.path.isfile(ap):
+                continue
+            rel = os.path.relpath(ap, root).replace(os.sep, "/")
+            out.append((rel, os.path.getsize(ap), (lambda ap=ap: open(ap, "rb").read())))
+    return out
+
+
+async def _run_git(cmd: list[str], env: dict, cwd: Optional[str] = None) -> tuple[int, str]:
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=env, cwd=cwd,
+    )
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=_CLONE_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        proc.kill()
+        raise ImportArchiveError(504, "git clone timed out")
+    return proc.returncode, (out or b"").decode("utf-8", errors="replace")
+
+
+async def clone_repo(workspace: str, url: str, branch: Optional[str] = None) -> list[str]:
+    """
+    Shallow-clone a public https git URL and import its working tree into the
+    workspace (structure preserved; the repo's .git is dropped — the session keeps
+    its own history). Returns the relative paths written. Public repos only:
+    credential prompts are disabled so private repos fail fast rather than hang.
+    """
+    url = (url or "").strip()
+    _validate_git_url(url)
+    if not shutil.which("git"):
+        raise ImportArchiveError(500, "git is not installed on the backend")
+
+    tmp = tempfile.mkdtemp(prefix="gitclone-")
+    try:
+        cmd = ["git", "-c", "credential.helper=", "clone", "--depth=1", "--single-branch"]
+        if branch:
+            cmd += ["--branch", branch]
+        cmd += ["--", url, tmp]
+        env = os.environ.copy()
+        env["GIT_TERMINAL_PROMPT"] = "0"   # never prompt for credentials
+        env["GIT_ASKPASS"] = "true"        # ...and supply empty ones (fail fast on private)
+        rc, out = await _run_git(cmd, env)
+        if rc != 0:
+            raise ImportArchiveError(502, f"git clone failed:\n{out[-800:]}")
+        return _write_entries(workspace, _dir_entries(tmp))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)

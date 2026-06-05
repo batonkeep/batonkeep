@@ -117,6 +117,11 @@ export const api = {
     form.append("file", file, file.name);
     return req<ImportResult>(`/sessions/${id}/import`, { method: "POST", headers: {}, body: form });
   },
+  importGit: (id: string, url: string, branch?: string) =>
+    req<ImportResult>(`/sessions/${id}/import/git`, {
+      method: "POST",
+      body: JSON.stringify({ url, branch: branch || null }),
+    }),
   // Authenticated live-preview URL for an iframe. The token is a path segment (not a
   // query param) and the base ends in a slash, so the agent's relative asset links
   // (href="style.css") resolve under the same authenticated base and load (M1.2).

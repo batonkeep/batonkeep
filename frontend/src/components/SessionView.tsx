@@ -152,6 +152,10 @@ export default function SessionView({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
   const [importing, setImporting] = useState(false);
+  const [importModalOpen, setImportModalOpen] = useState(false);
+  const [gitUrl, setGitUrl] = useState("");
+  const [gitBranch, setGitBranch] = useState("");
+  const [importError, setImportError] = useState<string | null>(null);
 
   // Distinct provider instance ids for the switcher (grouped by what's healthy).
   const providerIds = useMemo(
@@ -300,23 +304,45 @@ export default function SessionView({
     }
   };
 
-  // Import an existing site (zip/tar) into the session, preserving structure.
+  // Shared post-import wiring: surface the new site + record the new version.
+  const afterImport = (count: number) => {
+    setMessage((m) => (m.trim() ? m : `Imported ${count} files — continue from this site.`));
+    setPreviewNonce((n) => n + 1); // reflect the imported site in the preview
+    onSessionsChanged();           // import landed as a new version
+    setImportModalOpen(false);
+  };
+
+  // Import an existing site from an archive (zip/tar), preserving structure.
   const handleImport = async (files: FileList | null) => {
     const f = files?.[0];
     if (!selectedId || !f || importing) return;
-    setSendError(null);
+    setImportError(null);
     setImporting(true);
     try {
       const res = await api.importArchive(selectedId, f);
-      setMessage((m) =>
-        m.trim() ? m : `Imported ${res.count} files — continue from this site.`);
-      setPreviewNonce((n) => n + 1); // reflect the imported site in the preview
-      onSessionsChanged();           // import landed as a new version
+      afterImport(res.count);
     } catch (err) {
-      setSendError(err instanceof Error ? err.message : "Could not import the archive");
+      setImportError(err instanceof Error ? err.message : "Could not import the archive");
     } finally {
       setImporting(false);
       if (importInputRef.current) importInputRef.current.value = "";
+    }
+  };
+
+  // Import an existing site by cloning a public git URL.
+  const handleGitImport = async () => {
+    if (!selectedId || !gitUrl.trim() || importing) return;
+    setImportError(null);
+    setImporting(true);
+    try {
+      const res = await api.importGit(selectedId, gitUrl.trim(), gitBranch.trim() || undefined);
+      setGitUrl("");
+      setGitBranch("");
+      afterImport(res.count);
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : "Could not clone the repository");
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -926,9 +952,9 @@ export default function SessionView({
                   size="sm"
                   className="shrink-0 px-2 py-2"
                   icon={importing ? <Loader2 size={15} className="animate-spin" /> : <Archive size={15} />}
-                  onClick={() => importInputRef.current?.click()}
+                  onClick={() => { setImportError(null); setImportModalOpen(true); }}
                   disabled={importing || sending}
-                  title="Import an existing site (.zip / .tar) — keeps its folder structure"
+                  title="Import an existing site (.zip / .tar, or a git URL)"
                 />
                 <textarea
                   value={message}
@@ -1105,6 +1131,69 @@ export default function SessionView({
           </div>
         )}
       </Card>
+
+      {/* Import an existing site — archive (zip/tar) or a public git URL. */}
+      <Modal
+        open={importModalOpen}
+        onClose={() => setImportModalOpen(false)}
+        title="Import an existing site"
+      >
+        <div className="space-y-4">
+          <p className="text-xs text-muted">
+            Bring an existing site into this session, preserving its folder structure. Git
+            history isn't carried — the session keeps its own version history.
+          </p>
+
+          <div className="space-y-1.5">
+            <span className="font-mono text-[11px] font-medium uppercase tracking-wider text-muted">
+              From an archive
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full"
+              icon={importing ? <Loader2 size={14} className="animate-spin" /> : <Archive size={14} />}
+              onClick={() => importInputRef.current?.click()}
+              disabled={importing}
+            >
+              Choose a .zip / .tar file…
+            </Button>
+          </div>
+
+          <div className="flex items-center gap-2 text-[11px] text-muted">
+            <span className="h-px flex-1 bg-edge" /> or <span className="h-px flex-1 bg-edge" />
+          </div>
+
+          <div className="space-y-2">
+            <Field label="From a git URL" hint="Public https repositories only.">
+              <Input
+                value={gitUrl}
+                onChange={(e) => setGitUrl(e.target.value)}
+                placeholder="https://github.com/owner/repo.git"
+              />
+            </Field>
+            <Field label="Branch (optional)">
+              <Input
+                value={gitBranch}
+                onChange={(e) => setGitBranch(e.target.value)}
+                placeholder="main"
+              />
+            </Field>
+            <Button
+              variant="primary"
+              size="sm"
+              className="w-full"
+              icon={importing ? <Loader2 size={14} className="animate-spin" /> : <Globe size={14} />}
+              onClick={handleGitImport}
+              disabled={importing || !gitUrl.trim()}
+            >
+              Clone & import
+            </Button>
+          </div>
+
+          {importError && <p className="text-xs text-bad">{importError}</p>}
+        </div>
+      </Modal>
 
       {/* Cloudflare Pages connector setup (D-0009). Token is write-only — the
           backend stores it encrypted and never returns it; the agent never sees it. */}

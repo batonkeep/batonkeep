@@ -213,11 +213,18 @@ class UploadOut(BaseModel):
 
 
 class ImportOut(BaseModel):
-    """Result of importing an existing site (zip/tar) into a session workspace."""
+    """Result of importing an existing site (zip/tar/git) into a session workspace."""
 
     paths: list[str]
     count: int
     commit_sha: Optional[str] = None
+
+
+class GitImportIn(BaseModel):
+    """Import a site by cloning a public https git URL."""
+
+    url: str
+    branch: Optional[str] = None
 
 
 class PublishOut(BaseModel):

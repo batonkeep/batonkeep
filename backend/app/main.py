@@ -37,6 +37,7 @@ from app.schemas import (
     CloudflareStatusOut,
     ConsoleConfig,
     FileEntryOut,
+    GitImportIn,
     ImportOut,
     ProviderHealth,
     ProviderLimitsUpdate,
@@ -642,6 +643,35 @@ async def import_session_archive(
 
     commit_sha = await ws.commit_paths(
         session.workspace_path, message=f"import: {len(paths)} files from {file.filename or 'archive'}"
+    )
+    session.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    return ImportOut(paths=paths, count=len(paths), commit_sha=commit_sha)
+
+
+@app.post("/api/sessions/{session_id}/import/git", response_model=ImportOut,
+          status_code=201, tags=["sessions"])
+async def import_session_git(
+    session_id: str,
+    body: GitImportIn,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """
+    Import a site by shallow-cloning a public https git URL into the workspace
+    (structure preserved; the repo's .git is dropped — the session keeps its own
+    history). SSRF-guarded (public hosts only); private repos fail fast (no creds).
+    """
+    from app.sessions import imports, workspace as ws
+
+    session = await _owned_session(session_id, owner_id, db)
+    try:
+        paths = await imports.clone_repo(session.workspace_path, body.url, body.branch)
+    except imports.ImportArchiveError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail)
+
+    commit_sha = await ws.commit_paths(
+        session.workspace_path, message=f"import: {len(paths)} files from {body.url}"
     )
     session.updated_at = datetime.now(timezone.utc)
     await db.commit()

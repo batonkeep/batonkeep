@@ -40,7 +40,7 @@ _BRIEF_TEMPLATE = """\
 
 - **Title:** {title}
 - **Goal:** {goal}
-
+{guidance}
 ## Decisions / progress
 _(none yet)_
 """
@@ -87,19 +87,28 @@ async def _git_out(workspace: str, *args: str) -> tuple[int, str]:
     return proc.returncode, out.decode("utf-8", "replace")
 
 
-async def create_workspace(session_id: str, *, title: str, goal: str) -> str:
+async def create_workspace(
+    session_id: str, *, title: str, goal: str, guidance: str = ""
+) -> str:
     """
     Create the sandboxed workspace dir, seed SESSION.md, git-init with an initial
     commit. Returns the absolute workspace path. Idempotent-ish: re-creating an
     existing dir is tolerated.
+
+    `guidance` (optional) is a task-type block (D-0011) embedded into SESSION.md so
+    the agent reads it on every turn — this is how session templates work without
+    any orchestrator change.
     """
     root = workspace_root(session_id)
     os.makedirs(root, exist_ok=True)
 
+    guidance_block = f"\n## Task guidance\n{guidance.strip()}\n" if guidance.strip() else ""
     brief_path = os.path.join(root, BRIEF_FILENAME)
     if not os.path.exists(brief_path):
         with open(brief_path, "w", encoding="utf-8") as f:
-            f.write(_BRIEF_TEMPLATE.format(title=title, goal=goal or "_(not yet stated)_"))
+            f.write(_BRIEF_TEMPLATE.format(
+                title=title, goal=goal or "_(not yet stated)_", guidance=guidance_block,
+            ))
 
     if not os.path.isdir(os.path.join(root, ".git")):
         await _git(root, "init", "-q")

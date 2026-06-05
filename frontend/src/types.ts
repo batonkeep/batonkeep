@@ -183,6 +183,7 @@ export interface SessionInput {
   title?: string | null;
   goal?: string | null;
   provider?: string | null;
+  template?: string | null;
 }
 
 export interface SessionTurn {
@@ -232,6 +233,13 @@ export interface Publish {
 export interface Upload {
   paths: string[];
   commit_sha: string | null;
+}
+
+// A session task type (P-0010 / D-0011) offered as a starter card.
+export interface SessionTemplate {
+  id: string;
+  label: string;
+  description: string;
 }
 
 // Payload accepted by PATCH /sessions/{id}.

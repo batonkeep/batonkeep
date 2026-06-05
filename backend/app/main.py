@@ -41,6 +41,7 @@ from app.schemas import (
     RunOut,
     SessionCreate,
     SessionOut,
+    SessionTemplateOut,
     SessionTurnOut,
     SessionUpdate,
     StatsOut,
@@ -361,20 +362,43 @@ async def get_run_output(
 
 # ── /api/sessions (M1.1: build sessions + workspace) ─────────────────────────
 
+@app.get("/api/session-templates", response_model=list[SessionTemplateOut], tags=["sessions"])
+async def list_session_templates():
+    """Task types offered as starter cards (P-0010 / D-0011)."""
+    from app.sessions import templates as tmpl
+
+    return [
+        SessionTemplateOut(id=t.id, label=t.label, description=t.description)
+        for t in tmpl.list_templates()
+    ]
+
+
 @app.post("/api/sessions", response_model=SessionOut, status_code=201, tags=["sessions"])
 async def create_session(
     body: SessionCreate,
     db: AsyncSession = Depends(get_db),
     owner_id: str = Depends(_owner_id),
 ):
-    """Create a build session with a sandboxed, git-init'd workspace (M1.1)."""
+    """Create a build session with a sandboxed, git-init'd workspace (M1.1).
+
+    An optional `template` (D-0011) seeds a task-type goal + guidance into SESSION.md.
+    """
     import secrets
     import uuid
     from app.sessions import workspace as ws
+    from app.sessions import templates as tmpl
+
+    tpl = tmpl.get_template(body.template) if body.template else None
+    if body.template and tpl is None:
+        raise HTTPException(status_code=400, detail=f"unknown template {body.template!r}")
 
     session_id = uuid.uuid4().hex
-    title = (body.title or "Untitled session").strip()[:256]
-    workspace_path = await ws.create_workspace(session_id, title=title, goal=body.goal or "")
+    default_title = tpl.label if tpl else "Untitled session"
+    title = (body.title or default_title).strip()[:256]
+    goal = body.goal or (tpl.goal if tpl else "")
+    workspace_path = await ws.create_workspace(
+        session_id, title=title, goal=goal, guidance=tpl.guidance if tpl else "",
+    )
 
     session = Session(
         id=session_id,

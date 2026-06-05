@@ -142,8 +142,11 @@ export const api = {
   setCloudflare: (body: CloudflareConfig) =>
     req<CloudflareStatus>("/integrations/cloudflare", { method: "PUT", body: JSON.stringify(body) }),
   clearCloudflare: () => req<void>("/integrations/cloudflare", { method: "DELETE" }),
-  deployCloudflare: (id: string) =>
-    req<CloudflareDeploy>(`/sessions/${id}/publish/cloudflare`, { method: "POST" }),
+  deployCloudflare: (id: string, project_name?: string) =>
+    req<CloudflareDeploy>(`/sessions/${id}/publish/cloudflare`, {
+      method: "POST",
+      body: JSON.stringify({ project_name: project_name || null }),
+    }),
 
   // Session file browser (P-0016 b): list workspace files, and the raw-file route
   // that serves one verbatim. fileRawUrl is the same path agents' rewritten

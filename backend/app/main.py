@@ -32,6 +32,7 @@ from app.schemas import (
     CredentialOut,
     ModeOut,
     CloudflareConfigIn,
+    CloudflareDeployIn,
     CloudflareDeployOut,
     CloudflareStatusOut,
     ConsoleConfig,
@@ -857,6 +858,7 @@ async def revoke_publish(
           tags=["sessions"])
 async def publish_session_cloudflare(
     session_id: str,
+    body: CloudflareDeployIn = CloudflareDeployIn(),
     db: AsyncSession = Depends(get_db),
     owner_id: str = Depends(_owner_id),
 ):
@@ -872,10 +874,15 @@ async def publish_session_cloudflare(
     config = await cf_pages.get_config(db, owner_id)
     if config is None:
         raise HTTPException(status_code=400, detail="Cloudflare is not configured")
+    # Project is per-session: explicit override → remembered project → title default.
+    project = (body.project_name or session.cf_project or cf_pages.slug_project(session.title))
     try:
-        result = await cf_pages.deploy(session.workspace_path, config)
+        result = await cf_pages.deploy(session.workspace_path, config, project)
     except cf_pages.CloudflareError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
+    # Remember where this session deploys so later deploys default to the same site.
+    session.cf_project = result["project"]
+    await db.commit()
     return CloudflareDeployOut(**result)
 
 
@@ -1035,9 +1042,7 @@ async def get_cloudflare_config(
     cfg = await cf_pages.get_config(db, owner_id)
     if cfg is None:
         return CloudflareStatusOut(configured=False)
-    return CloudflareStatusOut(
-        configured=True, account_id=cfg["account_id"], project_name=cfg["project_name"]
-    )
+    return CloudflareStatusOut(configured=True, account_id=cfg["account_id"])
 
 
 @app.put("/api/integrations/cloudflare", response_model=CloudflareStatusOut, tags=["integrations"])
@@ -1051,15 +1056,11 @@ async def set_cloudflare_config(
 
     try:
         await cf_pages.set_config(
-            db, owner_id,
-            api_token=body.api_token, account_id=body.account_id, project_name=body.project_name,
+            db, owner_id, api_token=body.api_token, account_id=body.account_id,
         )
     except cf_pages.CloudflareError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return CloudflareStatusOut(
-        configured=True, account_id=body.account_id.strip(),
-        project_name=body.project_name.strip().lower(),
-    )
+    return CloudflareStatusOut(configured=True, account_id=body.account_id.strip())
 
 
 @app.delete("/api/integrations/cloudflare", status_code=204, tags=["integrations"])

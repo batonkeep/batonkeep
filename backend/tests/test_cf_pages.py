@@ -66,23 +66,30 @@ async def db(tmp_path):
 class TestConfig:
     async def test_roundtrip(self, db):
         assert await cf_pages.get_config(db, "local") is None
-        await cf_pages.set_config(
-            db, "local", api_token="tok", account_id="acct", project_name="My-Site"
-        )
+        await cf_pages.set_config(db, "local", api_token="tok", account_id="acct")
         cfg = await cf_pages.get_config(db, "local")
-        assert cfg == {"api_token": "tok", "account_id": "acct", "project_name": "my-site"}
+        assert cfg == {"api_token": "tok", "account_id": "acct"}
         assert await cf_pages.clear_config(db, "local") is True
         assert await cf_pages.get_config(db, "local") is None
 
     async def test_requires_all_fields(self, db):
         with pytest.raises(cf_pages.CloudflareError):
-            await cf_pages.set_config(db, "local", api_token="", account_id="a", project_name="p")
+            await cf_pages.set_config(db, "local", api_token="", account_id="a")
 
-    async def test_rejects_bad_project_name(self, db):
+
+class TestProjectNaming:
+    def test_normalize_rejects_bad(self):
         with pytest.raises(cf_pages.CloudflareError):
-            await cf_pages.set_config(
-                db, "local", api_token="t", account_id="a", project_name="Bad Name!"
-            )
+            cf_pages.normalize_project("Bad Name!")
+
+    def test_normalize_lowercases(self):
+        assert cf_pages.normalize_project("My-Site") == "my-site"
+
+    def test_slug_from_title(self):
+        assert cf_pages.slug_project("Catering Landing Page!") == "catering-landing-page"
+
+    def test_slug_never_empty(self):
+        assert cf_pages.slug_project("###") == "batonkeep-site"
 
 
 # ── Deploy orchestration (wrangler mocked) ────────────────────────────────────
@@ -109,7 +116,7 @@ class TestDeploy:
         monkeypatch.setattr(cf_pages.shutil, "which", lambda _: "/usr/bin/wrangler")
         monkeypatch.setattr(cf_pages, "_run", fake_run)
 
-        res = await cf_pages.deploy(root, {"api_token": "t", "account_id": "a", "project_name": "my-site"})
+        res = await cf_pages.deploy(root, {"api_token": "t", "account_id": "a"}, "my-site")
         assert res == {"url": "https://h.my-site.pages.dev", "project": "my-site"}
         # Both project-create and deploy were attempted, in order.
         assert calls[0][2] == "project" and calls[1][2] == "deploy"
@@ -118,7 +125,7 @@ class TestDeploy:
         root = _workspace_with_site(tmp_path)
         monkeypatch.setattr(cf_pages.shutil, "which", lambda _: None)
         with pytest.raises(cf_pages.CloudflareError, match="wrangler"):
-            await cf_pages.deploy(root, {"api_token": "t", "account_id": "a", "project_name": "p"})
+            await cf_pages.deploy(root, {"api_token": "t", "account_id": "a"}, "p")
 
     async def test_deploy_surfaces_failure(self, tmp_path, monkeypatch):
         root = _workspace_with_site(tmp_path)
@@ -129,14 +136,14 @@ class TestDeploy:
         monkeypatch.setattr(cf_pages.shutil, "which", lambda _: "/usr/bin/wrangler")
         monkeypatch.setattr(cf_pages, "_run", fake_run)
         with pytest.raises(cf_pages.CloudflareError, match="Authentication error"):
-            await cf_pages.deploy(root, {"api_token": "t", "account_id": "a", "project_name": "p"})
+            await cf_pages.deploy(root, {"api_token": "t", "account_id": "a"}, "p")
 
     async def test_deploy_empty_build(self, tmp_path, monkeypatch):
         root = str(tmp_path / "empty")
         os.makedirs(root)
         monkeypatch.setattr(cf_pages.shutil, "which", lambda _: "/usr/bin/wrangler")
         with pytest.raises(cf_pages.CloudflareError, match="nothing to publish"):
-            await cf_pages.deploy(root, {"api_token": "t", "account_id": "a", "project_name": "p"})
+            await cf_pages.deploy(root, {"api_token": "t", "account_id": "a"}, "p")
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -157,14 +164,14 @@ class TestRoutes:
         async def _setup():
             async with engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all)
-            root = await ws.create_workspace("s1", title="S", goal="G")
+            root = await ws.create_workspace("s1", title="My Build", goal="G")
             with open(os.path.join(root, "index.html"), "w") as f:
                 f.write("<h1>hi</h1>")
             Maker = async_sessionmaker(engine, expire_on_commit=False)
             async with Maker() as db:
                 db.add_all([
                     Owner(id="local", label="Me"),
-                    SessionModel(id="s1", owner_id="local", title="S", provider="mock",
+                    SessionModel(id="s1", owner_id="local", title="My Build", provider="mock",
                                  workspace_path=root, preview_token="t", status="active"),
                 ])
                 await db.commit()
@@ -176,10 +183,14 @@ class TestRoutes:
             async with Maker() as db:
                 yield db
 
-        # Deploy is mocked — we verify wiring + the "not configured" gate, not wrangler.
-        async def fake_deploy(workspace, config, **kw):
+        # Deploy is mocked — we verify wiring, the project resolution, and the
+        # "not configured" gate, not wrangler. Capture the project it was called with.
+        seen = {}
+
+        async def fake_deploy(workspace, config, project, **kw):
             assert config["api_token"] == "tok"  # token reaches the backend connector
-            return {"url": "https://h.site.pages.dev", "project": config["project_name"]}
+            seen["project"] = project
+            return {"url": f"https://h.{project}.pages.dev", "project": project}
 
         monkeypatch.setattr(cf, "deploy", fake_deploy)
         app.dependency_overrides[get_db] = _override_db
@@ -191,21 +202,28 @@ class TestRoutes:
             assert c.post("/api/sessions/s1/publish/cloudflare").status_code == 400
             assert c.get("/api/integrations/cloudflare").json()["configured"] is False
 
-            # Configure.
+            # Configure owner-level credentials (token + account only — no project).
             r = c.put("/api/integrations/cloudflare", json={
-                "api_token": "tok", "account_id": "acct", "project_name": "site",
+                "api_token": "tok", "account_id": "acct",
             })
             assert r.status_code == 200 and r.json()["configured"] is True
 
-            # Status never leaks the token.
+            # Status never leaks the token, and has no project (it's per-session).
             st = c.get("/api/integrations/cloudflare").json()
-            assert st == {"configured": True, "account_id": "acct", "project_name": "site"}
+            assert st == {"configured": True, "account_id": "acct"}
             assert "tok" not in c.get("/api/integrations/cloudflare").text
 
-            # Deploy now succeeds (mocked).
+            # Deploy with no project → defaults from the session title slug.
             d = c.post("/api/sessions/s1/publish/cloudflare")
             assert d.status_code == 200
-            assert d.json() == {"url": "https://h.site.pages.dev", "project": "site"}
+            assert seen["project"] == "my-build"  # slug of title "My Build"
+            assert d.json()["project"] == "my-build"
+
+            # The session remembered the project; an explicit override wins next time.
+            assert c.get("/api/sessions/s1").json()["cf_project"] == "my-build"
+            d2 = c.post("/api/sessions/s1/publish/cloudflare", json={"project_name": "other-site"})
+            assert seen["project"] == "other-site"
+            assert c.get("/api/sessions/s1").json()["cf_project"] == "other-site"
 
             # Delete.
             assert c.delete("/api/integrations/cloudflare").status_code == 204

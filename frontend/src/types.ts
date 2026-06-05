@@ -174,6 +174,8 @@ export interface Session {
   // unguessable token that gates the live preview (M1.2).
   preview_token: string;
   status: SessionStatus;
+  // Cloudflare Pages project this session deploys to (D-0009); null until first deploy.
+  cf_project?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -242,16 +244,15 @@ export interface FileEntry {
   modified: number;
 }
 
-// Cloudflare Pages host connector (D-0009).
+// Cloudflare Pages host connector (D-0009). Token + account are owner-level;
+// the project is per-session (passed at deploy time).
 export interface CloudflareConfig {
   api_token: string;
   account_id: string;
-  project_name: string;
 }
 export interface CloudflareStatus {
   configured: boolean;
   account_id?: string | null;
-  project_name?: string | null;
 }
 export interface CloudflareDeploy {
   url: string;

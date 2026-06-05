@@ -227,11 +227,10 @@ class PublishOut(BaseModel):
 
 
 class CloudflareConfigIn(BaseModel):
-    """Set the Cloudflare Pages connector config (D-0009 host connector)."""
+    """Set the owner-level Cloudflare credentials (D-0009 host connector)."""
 
     api_token: str       # high-privilege deploy token; encrypted at rest, never in a sandbox
     account_id: str
-    project_name: str
 
 
 class CloudflareStatusOut(BaseModel):
@@ -239,6 +238,11 @@ class CloudflareStatusOut(BaseModel):
 
     configured: bool
     account_id: Optional[str] = None
+
+
+class CloudflareDeployIn(BaseModel):
+    """Per-deploy options. Project is per-session; omit to use the session's default."""
+
     project_name: Optional[str] = None
 
 
@@ -259,6 +263,7 @@ class SessionOut(BaseModel):
     workspace_path: str
     preview_token: str
     status: str
+    cf_project: Optional[str] = None  # Cloudflare Pages project this session deploys to
     created_at: datetime
     updated_at: datetime
 

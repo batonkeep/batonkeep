@@ -57,6 +57,9 @@ _ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
         "commit_sha": "VARCHAR(40)",
         "diffstat": "TEXT",
     },
+    "sessions": {
+        "cf_project": "VARCHAR(64)",
+    },
 }
 
 

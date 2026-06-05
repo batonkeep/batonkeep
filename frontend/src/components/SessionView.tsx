@@ -42,6 +42,12 @@ function highlightCode(content: string, path: string): { html: string; lang: str
   }
 }
 
+// Default a Cloudflare Pages project name from a session title (mirrors the backend).
+function slugProject(title: string): string {
+  const s = (title || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 58);
+  return s || "batonkeep-site";
+}
+
 // A file the user opened from a chat link, shown in the Preview pane.
 interface OpenFile {
   path: string;
@@ -132,9 +138,11 @@ export default function SessionView({
   const [fileCopied, setFileCopied] = useState(false);
   // Cloudflare Pages connector (D-0009): owner-level config + per-session deploy.
   const [cf, setCf] = useState<CloudflareStatus | null>(null);
-  const [cfModalOpen, setCfModalOpen] = useState(false);
-  const [cfForm, setCfForm] = useState({ api_token: "", account_id: "", project_name: "" });
+  const [cfModalOpen, setCfModalOpen] = useState(false); // credentials setup
+  const [cfForm, setCfForm] = useState({ api_token: "", account_id: "" });
   const [cfSaving, setCfSaving] = useState(false);
+  const [cfDeployModalOpen, setCfDeployModalOpen] = useState(false); // per-session project + deploy
+  const [cfProject, setCfProject] = useState("");
   const [cfDeploying, setCfDeploying] = useState(false);
   const [cfUrl, setCfUrl] = useState<string | null>(null);
   const [cfError, setCfError] = useState<string | null>(null);
@@ -430,7 +438,9 @@ export default function SessionView({
       const st = await api.setCloudflare(cfForm);
       setCf(st);
       setCfModalOpen(false);
-      setCfForm({ api_token: "", account_id: "", project_name: "" });
+      setCfForm({ api_token: "", account_id: "" });
+      // Credentials in place — proceed to the per-session project + deploy step.
+      openDeployModal();
     } catch (e) {
       setCfError(e instanceof Error ? e.message : "Could not save Cloudflare settings");
     } finally {
@@ -449,19 +459,31 @@ export default function SessionView({
     setCfUrl(null);
   };
 
-  // Deploy this session's build to Cloudflare Pages. If unconfigured, open setup.
+  // Open the deploy step with the project prefilled: remembered project → title default.
+  const openDeployModal = () => {
+    setCfProject(detail?.cf_project || slugProject(detail?.title || ""));
+    setCfError(null);
+    setCfDeployModalOpen(true);
+  };
+
+  // Clicking "Cloudflare": set up credentials first if missing, else go to deploy.
+  const handleCloudflareClick = () => {
+    if (!selectedId) return;
+    if (!cf?.configured) setCfModalOpen(true);
+    else openDeployModal();
+  };
+
+  // Deploy this session's build to the chosen Cloudflare Pages project.
   const handleDeployCloudflare = async () => {
     if (!selectedId) return;
-    if (!cf?.configured) {
-      setCfModalOpen(true);
-      return;
-    }
     setCfDeploying(true);
     setCfError(null);
     setCfUrl(null);
     try {
-      const res = await api.deployCloudflare(selectedId);
+      const res = await api.deployCloudflare(selectedId, cfProject.trim() || undefined);
       setCfUrl(res.url);
+      setCfDeployModalOpen(false);
+      if (detail) setDetail({ ...detail, cf_project: res.project }); // remember per-session
     } catch (e) {
       setCfError(e instanceof Error ? e.message : "Deploy failed");
     } finally {
@@ -938,10 +960,10 @@ export default function SessionView({
               size="sm"
               className="gap-1.5 px-2"
               icon={cfDeploying ? <Loader2 size={13} className="animate-spin" /> : <Cloud size={13} />}
-              onClick={handleDeployCloudflare}
+              onClick={handleCloudflareClick}
               disabled={!selectedId || cfDeploying}
               title={cf?.configured
-                ? `Deploy to Cloudflare Pages (${cf.project_name})`
+                ? "Deploy this session to Cloudflare Pages"
                 : "Set up Cloudflare Pages publishing"}
             >
               <span className="text-[11px]">Cloudflare</span>
@@ -953,7 +975,7 @@ export default function SessionView({
                 className="px-1.5"
                 icon={<Pencil size={12} />}
                 onClick={() => setCfModalOpen(true)}
-                title="Edit Cloudflare settings"
+                title="Edit Cloudflare credentials"
               />
             )}
             <Button
@@ -1064,7 +1086,7 @@ export default function SessionView({
               variant="primary"
               size="sm"
               onClick={handleSaveCloudflare}
-              disabled={cfSaving || !cfForm.api_token || !cfForm.account_id || !cfForm.project_name}
+              disabled={cfSaving || !cfForm.api_token || !cfForm.account_id}
               icon={cfSaving ? <Loader2 size={13} className="animate-spin" /> : undefined}
             >
               Save
@@ -1074,14 +1096,14 @@ export default function SessionView({
       >
         <div className="space-y-3">
           <p className="text-xs text-muted">
-            Deploy a session's built site to your Cloudflare Pages project. The API token is
-            stored encrypted on the backend and used only to publish — it is never exposed to
-            the build agent.
+            Connect Cloudflare once for your account. The API token is stored encrypted on the
+            backend and used only to publish — it is never exposed to the build agent. You pick
+            the Pages project per session when you deploy.
           </p>
           {cf?.configured && (
             <p className="text-[11px] text-muted">
-              Currently configured for account <span className="font-mono text-ink">{cf.account_id}</span>,
-              project <span className="font-mono text-ink">{cf.project_name}</span>. Saving replaces it.
+              Connected to account <span className="font-mono text-ink">{cf.account_id}</span>.
+              Saving replaces the stored token.
             </p>
           )}
           <Field label="API token" hint="Cloudflare → My Profile → API Tokens (Pages: Edit).">
@@ -1099,10 +1121,39 @@ export default function SessionView({
               onChange={(e) => setCfForm((f) => ({ ...f, account_id: e.target.value }))}
             />
           </Field>
-          <Field label="Project name" hint="Pages project to deploy to (created if missing).">
+          {cfError && <p className="text-xs text-bad">{cfError}</p>}
+        </div>
+      </Modal>
+
+      {/* Per-session deploy: choose the Pages project (defaults from the title). */}
+      <Modal
+        open={cfDeployModalOpen}
+        onClose={() => setCfDeployModalOpen(false)}
+        title="Deploy to Cloudflare Pages"
+        footer={
+          <>
+            <Button variant="ghost" size="sm" onClick={() => setCfDeployModalOpen(false)}>Cancel</Button>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={handleDeployCloudflare}
+              disabled={cfDeploying || !cfProject.trim()}
+              icon={cfDeploying ? <Loader2 size={13} className="animate-spin" /> : <Cloud size={13} />}
+            >
+              Deploy
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <p className="text-xs text-muted">
+            Each session deploys to its own Cloudflare Pages project. The project is created if it
+            doesn't exist; re-deploying updates the same site.
+          </p>
+          <Field label="Project name" hint="Lowercase letters, digits and hyphens.">
             <Input
-              value={cfForm.project_name}
-              onChange={(e) => setCfForm((f) => ({ ...f, project_name: e.target.value }))}
+              value={cfProject}
+              onChange={(e) => setCfProject(e.target.value)}
               placeholder="my-site"
             />
           </Field>

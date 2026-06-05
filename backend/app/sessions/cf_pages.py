@@ -9,9 +9,12 @@ Security boundary (per the D-0012 discussion): this is a **backend-side** connec
 The Cloudflare API token is a high-privilege deploy credential — it lives in the
 encrypted credential store and is handed only to a trusted `wrangler` subprocess
 that operates on an already-built bundle. It is **never** injected into an agent
-sandbox, so agent-authored code / prompt injection can't read or abuse it. The
-account id + project name are config (not secrets) but ride along in the same
-encrypted blob for simplicity.
+sandbox, so agent-authored code / prompt injection can't read or abuse it.
+
+Credential lifecycle: the **token + account id are owner-level** (entered once,
+encrypted at rest, reused for every deploy). The **project is per-session** (each
+build gets its own Pages site) — stored on the Session and defaulted from its
+title — so it's passed in at deploy time, not part of the owner config.
 
 Deploy is delegated to Cloudflare's official `wrangler pages deploy` rather than a
 hand-rolled Direct-Upload client, so the upload protocol stays correct across
@@ -51,27 +54,36 @@ class CloudflareError(Exception):
 
 # ── Config storage (encrypted credential store) ───────────────────────────────
 
+def normalize_project(name: str) -> str:
+    """Validate a Cloudflare project name, raising CloudflareError if malformed."""
+    name = (name or "").strip().lower()
+    if not _PROJECT_RE.match(name):
+        raise CloudflareError(
+            "project name must be lowercase letters, digits and hyphens (≤ 58 chars)"
+        )
+    return name
+
+
+def slug_project(title: str) -> str:
+    """Default a Pages project name from a session title (safe, never empty)."""
+    slug = re.sub(r"[^a-z0-9]+", "-", (title or "").lower()).strip("-")[:58]
+    return slug or "batonkeep-site"
+
+
 async def set_config(
-    db: AsyncSession, owner_id: str, *, api_token: str, account_id: str, project_name: str
+    db: AsyncSession, owner_id: str, *, api_token: str, account_id: str
 ) -> None:
-    """Validate + store the Cloudflare connector config (token encrypted at rest)."""
+    """Validate + store the owner-level Cloudflare credentials (token encrypted at rest)."""
     api_token = (api_token or "").strip()
     account_id = (account_id or "").strip()
-    project_name = (project_name or "").strip().lower()
-    if not api_token or not account_id or not project_name:
-        raise CloudflareError("api_token, account_id and project_name are all required")
-    if not _PROJECT_RE.match(project_name):
-        raise CloudflareError(
-            "project_name must be lowercase letters, digits and hyphens (≤ 58 chars)"
-        )
-    blob = json.dumps(
-        {"api_token": api_token, "account_id": account_id, "project_name": project_name}
-    )
+    if not api_token or not account_id:
+        raise CloudflareError("api_token and account_id are both required")
+    blob = json.dumps({"api_token": api_token, "account_id": account_id})
     await creds.store_credential(db, owner_id, CF_PROVIDER, blob, label="Cloudflare Pages")
 
 
 async def get_config(db: AsyncSession, owner_id: str) -> Optional[dict]:
-    """Return the decrypted config dict, or None if the connector isn't set up."""
+    """Return the decrypted credentials dict, or None if the connector isn't set up."""
     raw = await creds.get_credential(db, owner_id, CF_PROVIDER)
     if not raw:
         return None
@@ -79,13 +91,13 @@ async def get_config(db: AsyncSession, owner_id: str) -> Optional[dict]:
         cfg = json.loads(raw)
     except json.JSONDecodeError:
         raise CloudflareError("stored Cloudflare config is corrupt — re-enter it")
-    if not all(cfg.get(k) for k in ("api_token", "account_id", "project_name")):
+    if not all(cfg.get(k) for k in ("api_token", "account_id")):
         raise CloudflareError("stored Cloudflare config is incomplete — re-enter it")
     return cfg
 
 
 async def clear_config(db: AsyncSession, owner_id: str) -> bool:
-    """Remove the connector config. Returns True if it existed."""
+    """Remove the owner-level credentials. Returns True if they existed."""
     return await creds.delete_credential(db, owner_id, CF_PROVIDER)
 
 
@@ -142,9 +154,10 @@ async def _run(cmd: list[str], env: dict) -> tuple[int, str]:
     return proc.returncode, (out or b"").decode("utf-8", errors="replace")
 
 
-async def deploy(workspace: str, config: dict, *, branch: str = "main") -> dict:
+async def deploy(workspace: str, config: dict, project: str, *, branch: str = "main") -> dict:
     """
-    Deploy the workspace's current static build to Cloudflare Pages.
+    Deploy the workspace's current static build to the given Cloudflare Pages
+    project, using the owner's stored credentials (`config`).
 
     Returns {"url": <deployment url>, "project": <name>}. Raises CloudflareError
     with the wrangler output on failure.
@@ -153,7 +166,7 @@ async def deploy(workspace: str, config: dict, *, branch: str = "main") -> dict:
         raise CloudflareError(
             "wrangler is not installed on the backend — Cloudflare publish unavailable"
         )
-    project = config["project_name"]
+    project = normalize_project(project)
     env = _deploy_env(config["api_token"], config["account_id"])
     directory = _materialize_bundle(workspace)
     if not os.listdir(directory):

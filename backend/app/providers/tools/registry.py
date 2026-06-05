@@ -56,7 +56,17 @@ class ToolProvider(ABC):
     async def call_tool(self, name: str, arguments: dict, *, workdir: str) -> str:
         """Dispatch a tool call and return text content. `workdir` is the
         session sandbox dir — built-in `file_write` writes into it; external
-        providers will be launched with it as their cwd."""
+        providers will be launched with it as their cwd.
+
+        External-MCP-provider contract (validated against the real SDK + the
+        official `fetch` server, P-0017): the SDK returns a `CallToolResult`
+        with `.content` (a list of typed blocks — TextContent / image /
+        embedded resource) and `.isError: bool`, not a plain string. The
+        external provider adapter is responsible for normalising that to this
+        `-> str` contract: flatten text blocks (placeholder non-text blocks),
+        and map `isError is True` onto the registry's `[<name> error] …`
+        convention. Launch servers with clean stdout (they may emit non-JSONRPC
+        noise; the SDK logs and continues, but a clean stream is preferred)."""
         ...
 
 

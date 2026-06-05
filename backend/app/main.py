@@ -20,6 +20,7 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
+from starlette.datastructures import Headers, MutableHeaders
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -112,6 +113,42 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+class PrivateNetworkAccessMiddleware:
+    """Answer Chrome's Private Network Access (PNA) preflight.
+
+    A page on a public origin (e.g. a hosted control plane) connecting to this
+    backend on a private/loopback address (``127.0.0.1``, LAN) triggers a CORS
+    preflight carrying ``Access-Control-Request-Private-Network: true``. Chrome
+    blocks the request unless the response echoes
+    ``Access-Control-Allow-Private-Network: true`` — which Starlette's
+    ``CORSMiddleware`` does not add. This wraps the response (HTTP preflight and
+    the WebSocket handshake) to add it when the client asks for it.
+
+    Note: newer Chrome ("Local Network Access") may additionally show a one-time
+    user permission prompt; this header is necessary but, on those versions, may
+    not be sufficient on its own.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        # The PNA preflight is an HTTP OPTIONS request (sent before both fetch
+        # and the WebSocket handshake), so we only need to handle "http".
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        wants_pna = Headers(scope=scope).get("access-control-request-private-network") == "true"
+        if not wants_pna:
+            return await self.app(scope, receive, send)
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                MutableHeaders(raw=message["headers"])["Access-Control-Allow-Private-Network"] = "true"
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -119,6 +156,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Added LAST so it is the OUTERMOST middleware: it must wrap CORSMiddleware to
+# append the PNA header to the preflight response CORS generates and returns.
+app.add_middleware(PrivateNetworkAccessMiddleware)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

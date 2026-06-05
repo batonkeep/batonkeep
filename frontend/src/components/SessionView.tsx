@@ -165,17 +165,17 @@ export default function SessionView({
 
   const loadTurns = useCallback(() => {
     if (!selectedId) return;
-    api.listTurns(selectedId).then(setTurns).catch(() => {});
+    api.listTurns(selectedId).then(setTurns).catch(() => { });
   }, [selectedId]);
 
   const loadVersions = useCallback(() => {
     if (!selectedId) return;
-    api.listVersions(selectedId).then(setVersions).catch(() => {});
+    api.listVersions(selectedId).then(setVersions).catch(() => { });
   }, [selectedId]);
 
   const loadPublish = useCallback(() => {
     if (!selectedId) return;
-    api.getPublish(selectedId).then(setPublish).catch(() => {});
+    api.getPublish(selectedId).then(setPublish).catch(() => { });
   }, [selectedId]);
 
   // Load the selected session detail (for the preview token) + its turn history.
@@ -202,7 +202,7 @@ export default function SessionView({
     setCfUrl(null);
     setCfError(null);
     if (!selectedId) return;
-    api.getSession(selectedId).then(setDetail).catch(() => {});
+    api.getSession(selectedId).then(setDetail).catch(() => { });
     loadTurns();
     loadPublish();
   }, [selectedId, loadTurns, loadPublish]);
@@ -233,7 +233,7 @@ export default function SessionView({
   // Task-type starters (P-0010 / D-0011). Loaded once; rendered as cards in the
   // empty state. A blank session is always available via the header + button.
   useEffect(() => {
-    api.listSessionTemplates().then(setTemplates).catch(() => {});
+    api.listSessionTemplates().then(setTemplates).catch(() => { });
   }, []);
 
   const handleCreate = async (template?: string) => {
@@ -543,9 +543,8 @@ export default function SessionView({
   // against the token base; the backend ignores it (Cache-Control: no-store anyway).
   const previewSrc =
     detail && detail.preview_token
-      ? `${api.previewUrl(detail.id, detail.preview_token)}${
-          previewNonce ? `?_=${previewNonce}` : ""
-        }`
+      ? `${api.previewUrl(detail.id, detail.preview_token)}${previewNonce ? `?_=${previewNonce}` : ""
+      }`
       : null;
 
   const turnRunning = lastTurn?.status === "running" || sending;
@@ -598,9 +597,8 @@ export default function SessionView({
             <button
               key={s.id}
               onClick={() => onSelect(s.id)}
-              className={`block w-full rounded-lg border px-3 py-2 text-left transition-colors ${
-                active ? "border-brand/50 bg-brand/10" : "border-edge bg-panel/60 hover:border-brand/30"
-              }`}
+              className={`block w-full rounded-lg border px-3 py-2 text-left transition-colors ${active ? "border-brand/50 bg-brand/10" : "border-edge bg-panel/60 hover:border-brand/30"
+                }`}
             >
               <span className="block truncate font-mono text-sm text-ink">{s.title}</span>
               <span className="font-mono text-[11px] text-muted">
@@ -938,24 +936,26 @@ export default function SessionView({
                   className="hidden"
                   onChange={(e) => handleImport(e.target.files)}
                 />
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="shrink-0 px-2 py-2"
-                  icon={uploading ? <Loader2 size={15} className="animate-spin" /> : <Paperclip size={15} />}
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={uploading || sending}
-                  title="Attach a file (image, CSV, PDF…) — drop into the box too"
-                />
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="shrink-0 px-2 py-2"
-                  icon={importing ? <Loader2 size={15} className="animate-spin" /> : <Archive size={15} />}
-                  onClick={() => { setImportError(null); setImportModalOpen(true); }}
-                  disabled={importing || sending}
-                  title="Import an existing site (.zip / .tar, or a git URL)"
-                />
+                <div className="flex shrink-0 flex-col gap-0.5">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="px-2 py-2"
+                    icon={uploading ? <Loader2 size={15} className="animate-spin" /> : <Paperclip size={15} />}
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={uploading || sending}
+                    title="Attach a file (image, CSV, PDF…) — drop into the box too"
+                  />
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="px-2 py-2"
+                    icon={importing ? <Loader2 size={15} className="animate-spin" /> : <Archive size={15} />}
+                    onClick={() => { setImportError(null); setImportModalOpen(true); }}
+                    disabled={importing || sending}
+                    title="Import an existing site (.zip / .tar, or a git URL)"
+                  />
+                </div>
                 <textarea
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}

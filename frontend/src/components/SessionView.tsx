@@ -427,18 +427,23 @@ export default function SessionView({
   // of a fixed 70vh, keeping the composer pinned above the screen bottom. On
   // desktop (lg) all three panes sit in the grid at a fixed height, as before.
   const inSession = !!selectedId;
+  // Landing (no session): on mobile, lead with the "Start a session" CTA and
+  // demote the session list below it (flex + order), instead of stacking the full
+  // list on top of a tall start panel. Desktop keeps the 3-column grid.
   const rootCls = inSession
     ? "flex flex-col gap-2 h-[calc(100dvh-5rem)] lg:grid lg:h-auto lg:grid-cols-[15rem_minmax(0,1fr)_minmax(0,1fr)] lg:gap-4"
-    : "space-y-4 lg:grid lg:grid-cols-[15rem_minmax(0,1fr)_minmax(0,1fr)] lg:gap-4 lg:space-y-0";
-  const paneSize = inSession ? "min-h-0 flex-1 lg:h-[70vh] lg:flex-none" : "h-[70vh]";
-  const chatPaneCls = `flex flex-col p-0 ${paneSize} ${inSession && mobilePane === "preview" ? "hidden lg:flex" : ""}`;
+    : "flex flex-col gap-4 lg:grid lg:grid-cols-[15rem_minmax(0,1fr)_minmax(0,1fr)] lg:gap-4";
+  // On mobile landing the start card sizes to its content (lg:h-[70vh] only on
+  // desktop), so it doesn't reserve 70vh of empty space above the session list.
+  const paneSize = inSession ? "min-h-0 flex-1 lg:h-[70vh] lg:flex-none" : "lg:h-[70vh]";
+  const chatPaneCls = `flex flex-col p-0 ${paneSize} ${inSession && mobilePane === "preview" ? "hidden lg:flex" : ""} ${!inSession ? "order-1 lg:order-none" : ""}`;
   const previewPaneCls = `flex flex-col p-0 ${paneSize} ${!inSession || mobilePane === "chat" ? "hidden lg:flex" : ""}`;
 
   return (
     <div className={rootCls}>
       {/* ── Session list — on mobile, hidden once a session is selected
             (master→detail); always shown on desktop. ───────────────────── */}
-      <div className={`space-y-2 ${selectedId ? "hidden lg:block" : ""}`}>
+      <div className={`space-y-2 ${selectedId ? "hidden lg:block" : "order-2 lg:order-none"}`}>
         <div className="flex items-center justify-between">
           <span className="font-mono text-xs uppercase tracking-widest text-muted">Sessions</span>
           <Button
@@ -504,7 +509,7 @@ export default function SessionView({
         {!selectedId ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-5 p-6">
             <p className="text-sm text-muted">Start a session</p>
-            <div className="grid w-full max-w-2xl gap-3 sm:grid-cols-3">
+            <div className="grid w-full max-w-2xl grid-cols-2 gap-3 sm:grid-cols-3">
               {/* Flagship build session (D-0007) + the retention task types (D-0011). */}
               <button
                 onClick={() => handleCreate()}

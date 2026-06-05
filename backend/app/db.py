@@ -60,6 +60,11 @@ _ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
     "sessions": {
         "cf_project": "VARCHAR(64)",
     },
+    "credentials": {
+        # added to the model after early DBs were created; backfill so credential
+        # reads/writes (e.g. the Cloudflare connector) don't hit "no such column".
+        "label": "VARCHAR(128)",
+    },
 }
 
 

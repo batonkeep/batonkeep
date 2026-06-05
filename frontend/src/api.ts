@@ -18,6 +18,7 @@ import type {
   TaskInput,
   TurnInput,
   Publish,
+  Upload,
   Version,
   VersionDiff,
 } from "./types";
@@ -34,8 +35,13 @@ class ApiError extends Error {
 }
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
+  // FormData (file upload) must set its own multipart boundary — never force JSON.
+  const isForm = init?.body instanceof FormData;
+  const baseHeaders: Record<string, string> = isForm
+    ? {}
+    : { "Content-Type": "application/json" };
   const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
+    headers: { ...baseHeaders, ...(init?.headers || {}) },
     ...init,
   });
   if (!res.ok) {
@@ -90,6 +96,13 @@ export const api = {
   listTurns: (id: string) => req<SessionTurn[]>(`/sessions/${id}/turns`),
   createTurn: (id: string, body: TurnInput) =>
     req<SessionTurn>(`/sessions/${id}/turns`, { method: "POST", body: JSON.stringify(body) }),
+  // Asset upload-in (M1.5): drop files into the session; they land as workspace files
+  // (assets/… or data/…) the agent can reference by name. multipart, so no JSON header.
+  uploadAssets: (id: string, files: File[]) => {
+    const form = new FormData();
+    for (const f of files) form.append("files", f, f.name);
+    return req<Upload>(`/sessions/${id}/uploads`, { method: "POST", headers: {}, body: form });
+  },
   // Authenticated live-preview URL for an iframe. The token is a path segment (not a
   // query param) and the base ends in a slash, so the agent's relative asset links
   // (href="style.css") resolve under the same authenticated base and load (M1.2).

@@ -227,6 +227,13 @@ export interface Publish {
   updated_at: string | null;
 }
 
+// Result of POST /sessions/{id}/uploads (M1.5): workspace-relative paths the agent
+// can reference by name, plus the version (commit) the upload produced.
+export interface Upload {
+  paths: string[];
+  commit_sha: string | null;
+}
+
 // Payload accepted by PATCH /sessions/{id}.
 export interface SessionUpdate {
   title?: string | null;

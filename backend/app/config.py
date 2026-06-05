@@ -83,6 +83,13 @@ class Settings(BaseSettings):
     # artifact (named by its share token); served publicly at /api/share/{token}.
     publish_dir: str = "/data/publish"
 
+    # ── Asset upload-in (M1.5, D-0010) ──────────────────────────────────────────
+    # Files dropped into the chat land as real workspace files; limits are
+    # env-configurable (D-0008 B). Extension allowlist (lowercased, no dots) and a
+    # per-file max size. Images go to assets/, data files to data/.
+    upload_max_bytes: int = 10_485_760  # 10 MiB
+    upload_allowed_ext: str = "png,jpg,jpeg,svg,webp,csv,pdf,txt,md"
+
     # ── Optional API keys (metered / BYO-key providers) ──────────────────────
     openai_api_key: Optional[str] = None
     openai_base_url: Optional[str] = None
@@ -97,6 +104,11 @@ class Settings(BaseSettings):
     @property
     def candidates_list(self) -> list[str]:
         return [c.strip() for c in self.default_candidates.split(",") if c.strip()]
+
+    @property
+    def upload_allowed_ext_set(self) -> set[str]:
+        """Lowercased extension allowlist (no leading dots) for asset upload-in."""
+        return {e.strip().lstrip(".").lower() for e in self.upload_allowed_ext.split(",") if e.strip()}
 
     @property
     def plan_cli_allowed(self) -> bool:

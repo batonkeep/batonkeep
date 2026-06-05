@@ -224,6 +224,22 @@ async def commit_turn(
     }
 
 
+async def commit_paths(workspace: str, *, message: str) -> Optional[str]:
+    """
+    Stage the whole workspace and commit, returning the new commit sha (or None if
+    nothing changed). Used for out-of-turn changes like asset uploads (M1.5) — the
+    engine owns the commit boundary (D-0008 C), so an upload becomes a version that
+    shows up in Undo/History exactly like a turn's edits.
+    """
+    await _git(workspace, "add", "-A")
+    code, _ = await _git_out(workspace, "diff", "--cached", "--quiet")
+    if code == 0:
+        return None
+    await _git(workspace, "commit", "-q", "-m", message)
+    _, sha = await _git_out(workspace, "rev-parse", "HEAD")
+    return sha.strip() or None
+
+
 async def _commit_diff(workspace: str, sha: str) -> str:
     """Unified diff introduced by `sha` (vs its parent; full patch for a root commit)."""
     _, out = await _git_out(

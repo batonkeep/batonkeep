@@ -235,6 +235,13 @@ export interface Upload {
   commit_sha: string | null;
 }
 
+// One workspace file in the session file browser (P-0016 b).
+export interface FileEntry {
+  path: string;
+  size: number;
+  modified: number;
+}
+
 // A session task type (P-0010 / D-0011) offered as a starter card.
 export interface SessionTemplate {
   id: string;

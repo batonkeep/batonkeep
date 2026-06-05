@@ -59,6 +59,8 @@ _ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
     },
     "sessions": {
         "cf_project": "VARCHAR(64)",
+        # P-0009 #1 sovereignty toggle; default off so existing sessions are unchanged.
+        "confidential": "BOOLEAN NOT NULL DEFAULT 0",
     },
     "credentials": {
         # added to the model after early DBs were created; backfill so credential

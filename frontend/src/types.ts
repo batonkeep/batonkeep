@@ -176,6 +176,8 @@ export interface Session {
   status: SessionStatus;
   // Cloudflare Pages project this session deploys to (D-0009); null until first deploy.
   cf_project?: string | null;
+  // P-0009 #1: pinned to a local model — prompt + workspace never leave the box.
+  confidential: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -186,6 +188,7 @@ export interface SessionInput {
   goal?: string | null;
   provider?: string | null;
   template?: string | null;
+  confidential?: boolean;
 }
 
 export interface SessionTurn {
@@ -276,6 +279,7 @@ export interface SessionTemplate {
 // Payload accepted by PATCH /sessions/{id}.
 export interface SessionUpdate {
   title?: string | null;
+  confidential?: boolean;
 }
 
 // Payload accepted by POST /sessions/{id}/turns.

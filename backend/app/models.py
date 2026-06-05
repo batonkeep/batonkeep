@@ -174,6 +174,10 @@ class Session(Base):
     # are owner-level (encrypted store); the *project* is per-session so each build
     # gets its own site. Remembered after the first deploy; defaults from the title.
     cf_project: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    # Sovereignty toggle (P-0009 #1): when set, every turn is pinned to a local
+    # model — the workspace + prompt never leave the box, and a remote provider
+    # selection is overridden to a local one (fail closed if none is available).
+    confidential: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

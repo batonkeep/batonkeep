@@ -27,6 +27,7 @@ from app.providers.registry import (
     ProviderDef,
     get_instance,
     get_provider_def,
+    local_candidate_ids,
 )
 from app.quota import QuotaTracker
 
@@ -74,6 +75,21 @@ def resolve(
     overflow_to: Optional[str] = routing.get("overflow_to")
     max_attempts: int = routing.get("max_attempts", 3)
     failover: bool = routing.get("failover", True)
+
+    # Sovereignty boundary (P-0009 #1): a confidential task may only ever run on a
+    # local provider — never a remote API/CLI. This is a policy layer over the
+    # normal router: it replaces the candidate set with the available local
+    # providers (ignoring any remote candidates the task declared) and forbids
+    # overflow off-box. If no local provider is healthy the task defers — it must
+    # fail closed, never silently fall back to a remote model.
+    confidential = routing.get("sensitivity") == "confidential"
+    if confidential:
+        raw_candidates = local_candidate_ids()
+        overflow_to = None
+        logger.info("[router] confidential — local providers only: %s", raw_candidates)
+        if not raw_candidates:
+            logger.warning("[router] confidential task, no local provider available — deferring")
+            return DeferredResult(deferred_until=None, cooling_providers=[])
 
     mode = deployment_mode or _settings.deployment_mode.value
     plan_cli_allowed = mode != "managed"

@@ -128,6 +128,8 @@ class SessionCreate(BaseModel):
     provider: Optional[str] = None
     # optional task-type template id (D-0011): seeds goal + guidance in SESSION.md
     template: Optional[str] = None
+    # P-0009 #1: pin this session to a local model (confidential — never off-box).
+    confidential: bool = False
 
 
 class SessionTemplateOut(BaseModel):
@@ -141,6 +143,8 @@ class SessionTemplateOut(BaseModel):
 class SessionUpdate(BaseModel):
     # rename a session (other fields like provider are switched via turns)
     title: Optional[str] = None
+    # toggle the P-0009 #1 confidential (local-only) pin
+    confidential: Optional[bool] = None
 
 
 class TurnCreate(BaseModel):
@@ -279,6 +283,7 @@ class SessionOut(BaseModel):
     preview_token: str
     status: str
     cf_project: Optional[str] = None  # Cloudflare Pages project this session deploys to
+    confidential: bool = False  # P-0009 #1: pinned to a local model
     created_at: datetime
     updated_at: datetime
 

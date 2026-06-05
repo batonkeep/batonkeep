@@ -635,7 +635,7 @@ export default function SessionView({
                 <Select
                   value={providerSwitch}
                   onChange={(e) => setProviderSwitch(e.target.value)}
-                  className="h-8 text-xs"
+                  className="h-7 text-xs"
                 >
                   <option value="">
                     {detail?.provider ? `current (${detail.provider})` : "default"}
@@ -660,7 +660,7 @@ export default function SessionView({
                   ))}
                 </div>
               )}
-              <div className="flex items-end gap-2">
+              <div className="flex items-start gap-2">
                 <input
                   ref={fileInputRef}
                   type="file"
@@ -671,13 +671,13 @@ export default function SessionView({
                 />
                 <Button
                   variant="ghost"
-                  icon={uploading ? <Loader2 size={14} className="animate-spin" /> : <Paperclip size={14} />}
+                  size="sm"
+                  className="shrink-0 px-2 py-2"
+                  icon={uploading ? <Loader2 size={15} className="animate-spin" /> : <Paperclip size={15} />}
                   onClick={() => fileInputRef.current?.click()}
                   disabled={uploading || sending}
                   title="Attach a file (image, CSV, PDF…) — drop into the box too"
-                >
-                  Attach
-                </Button>
+                />
                 <textarea
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
@@ -698,6 +698,8 @@ export default function SessionView({
                 />
                 <Button
                   variant="primary"
+                  size="sm"
+                  className="shrink-0"
                   icon={<Send size={14} />}
                   onClick={handleSend}
                   disabled={!message.trim() || sending}

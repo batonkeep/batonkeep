@@ -3,6 +3,9 @@
 
 import type {
   ConsoleConfig,
+  CloudflareConfig,
+  CloudflareDeploy,
+  CloudflareStatus,
   Credential,
   FileEntry,
   Mode,
@@ -132,6 +135,15 @@ export const api = {
   // Absolute URL for the public share link / the download zip (anchor hrefs).
   shareUrl: (sharePath: string) => `${window.location.origin}${sharePath}`,
   downloadUrl: (id: string) => `${BASE}/sessions/${id}/download`,
+
+  // Cloudflare Pages host connector (D-0009). Config is owner-level (token stored
+  // encrypted on the backend, never returned); deploy is per-session.
+  getCloudflare: () => req<CloudflareStatus>("/integrations/cloudflare"),
+  setCloudflare: (body: CloudflareConfig) =>
+    req<CloudflareStatus>("/integrations/cloudflare", { method: "PUT", body: JSON.stringify(body) }),
+  clearCloudflare: () => req<void>("/integrations/cloudflare", { method: "DELETE" }),
+  deployCloudflare: (id: string) =>
+    req<CloudflareDeploy>(`/sessions/${id}/publish/cloudflare`, { method: "POST" }),
 
   // Session file browser (P-0016 b): list workspace files, and the raw-file route
   // that serves one verbatim. fileRawUrl is the same path agents' rewritten

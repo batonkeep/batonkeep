@@ -226,6 +226,29 @@ class PublishOut(BaseModel):
     updated_at: Optional[datetime] = None
 
 
+class CloudflareConfigIn(BaseModel):
+    """Set the Cloudflare Pages connector config (D-0009 host connector)."""
+
+    api_token: str       # high-privilege deploy token; encrypted at rest, never in a sandbox
+    account_id: str
+    project_name: str
+
+
+class CloudflareStatusOut(BaseModel):
+    """Connector state for the UI — never reveals the token."""
+
+    configured: bool
+    account_id: Optional[str] = None
+    project_name: Optional[str] = None
+
+
+class CloudflareDeployOut(BaseModel):
+    """Result of a Cloudflare Pages deploy."""
+
+    url: str
+    project: str
+
+
 class SessionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

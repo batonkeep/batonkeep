@@ -7,12 +7,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
 import hljs from "highlight.js/lib/common";
 import "highlight.js/styles/github-dark.css";
-import { Activity, Check, ChevronLeft, ChevronRight, Copy, Download, FileCode, Globe, History, Link2, Loader2, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, X } from "lucide-react";
-import type { ProviderHealth, Publish, Session, SessionTemplate, SessionTurn, Version } from "../types";
+import { Activity, Check, ChevronLeft, ChevronRight, Cloud, Copy, Download, FileCode, Globe, History, Link2, Loader2, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, X } from "lucide-react";
+import type { CloudflareStatus, ProviderHealth, Publish, Session, SessionTemplate, SessionTurn, Version } from "../types";
 import { api } from "../api";
 import { useSessionEvents, type SessionEvent } from "../useLiveFeed";
 import { fmtTime } from "../format";
-import { Badge, Button, Card, Select, StatusDot, Tabs, type Tone } from "../ui";
+import { Badge, Button, Card, Field, Input, Modal, Select, StatusDot, Tabs, type Tone } from "../ui";
 
 function renderMarkdown(src: string): string {
   return marked.parse(src, { async: false }) as string;
@@ -130,6 +130,14 @@ export default function SessionView({
   const [mobilePane, setMobilePane] = useState<"chat" | "preview">("chat");
   const [openFile, setOpenFile] = useState<OpenFile | null>(null); // file viewed in Preview pane
   const [fileCopied, setFileCopied] = useState(false);
+  // Cloudflare Pages connector (D-0009): owner-level config + per-session deploy.
+  const [cf, setCf] = useState<CloudflareStatus | null>(null);
+  const [cfModalOpen, setCfModalOpen] = useState(false);
+  const [cfForm, setCfForm] = useState({ api_token: "", account_id: "", project_name: "" });
+  const [cfSaving, setCfSaving] = useState(false);
+  const [cfDeploying, setCfDeploying] = useState(false);
+  const [cfUrl, setCfUrl] = useState<string | null>(null);
+  const [cfError, setCfError] = useState<string | null>(null);
 
   const { events, streamingText, lastTurn } = useSessionEvents(selectedId);
   const streamRef = useRef<HTMLDivElement>(null);
@@ -177,6 +185,8 @@ export default function SessionView({
     setMessage("");
     setMobilePane("chat");
     setOpenFile(null);
+    setCfUrl(null);
+    setCfError(null);
     if (!selectedId) return;
     api.getSession(selectedId).then(setDetail).catch(() => {});
     loadTurns();
@@ -405,6 +415,57 @@ export default function SessionView({
       setTimeout(() => setFileCopied(false), 1500);
     } catch {
       /* clipboard unavailable */
+    }
+  };
+
+  // Cloudflare connector: load owner-level status once on mount.
+  useEffect(() => {
+    api.getCloudflare().then(setCf).catch(() => setCf({ configured: false }));
+  }, []);
+
+  const handleSaveCloudflare = async () => {
+    setCfSaving(true);
+    setCfError(null);
+    try {
+      const st = await api.setCloudflare(cfForm);
+      setCf(st);
+      setCfModalOpen(false);
+      setCfForm({ api_token: "", account_id: "", project_name: "" });
+    } catch (e) {
+      setCfError(e instanceof Error ? e.message : "Could not save Cloudflare settings");
+    } finally {
+      setCfSaving(false);
+    }
+  };
+
+  const handleRemoveCloudflare = async () => {
+    try {
+      await api.clearCloudflare();
+    } catch {
+      /* already gone */
+    }
+    setCf({ configured: false });
+    setCfModalOpen(false);
+    setCfUrl(null);
+  };
+
+  // Deploy this session's build to Cloudflare Pages. If unconfigured, open setup.
+  const handleDeployCloudflare = async () => {
+    if (!selectedId) return;
+    if (!cf?.configured) {
+      setCfModalOpen(true);
+      return;
+    }
+    setCfDeploying(true);
+    setCfError(null);
+    setCfUrl(null);
+    try {
+      const res = await api.deployCloudflare(selectedId);
+      setCfUrl(res.url);
+    } catch (e) {
+      setCfError(e instanceof Error ? e.message : "Deploy failed");
+    } finally {
+      setCfDeploying(false);
     }
   };
 
@@ -873,6 +934,29 @@ export default function SessionView({
               </a>
             )}
             <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5 px-2"
+              icon={cfDeploying ? <Loader2 size={13} className="animate-spin" /> : <Cloud size={13} />}
+              onClick={handleDeployCloudflare}
+              disabled={!selectedId || cfDeploying}
+              title={cf?.configured
+                ? `Deploy to Cloudflare Pages (${cf.project_name})`
+                : "Set up Cloudflare Pages publishing"}
+            >
+              <span className="text-[11px]">Cloudflare</span>
+            </Button>
+            {cf?.configured && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="px-1.5"
+                icon={<Pencil size={12} />}
+                onClick={() => setCfModalOpen(true)}
+                title="Edit Cloudflare settings"
+              />
+            )}
+            <Button
               variant={publish?.published ? "outline" : "primary"}
               size="sm"
               className="gap-1.5 px-2"
@@ -885,6 +969,27 @@ export default function SessionView({
             </Button>
           </div>
         </div>
+
+        {/* Cloudflare deploy result / error bar. */}
+        {cfUrl && (
+          <div className="flex items-center gap-2 border-b border-edge bg-base/60 px-3 py-1.5">
+            <Cloud size={13} className="shrink-0 text-ok" />
+            <a
+              href={cfUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex-1 truncate font-mono text-[11px] text-brand hover:underline"
+              title={cfUrl}
+            >
+              {cfUrl}
+            </a>
+          </div>
+        )}
+        {cfError && (
+          <div className="border-b border-edge bg-bad/5 px-3 py-1.5 text-[11px] text-bad">
+            {cfError}
+          </div>
+        )}
 
         {/* Share-link bar — shown once published. */}
         {publish?.published && shareUrl && (
@@ -940,6 +1045,70 @@ export default function SessionView({
           </div>
         )}
       </Card>
+
+      {/* Cloudflare Pages connector setup (D-0009). Token is write-only — the
+          backend stores it encrypted and never returns it; the agent never sees it. */}
+      <Modal
+        open={cfModalOpen}
+        onClose={() => setCfModalOpen(false)}
+        title="Cloudflare Pages"
+        footer={
+          <>
+            {cf?.configured && (
+              <Button variant="ghost" size="sm" className="mr-auto text-bad" onClick={handleRemoveCloudflare}>
+                Remove
+              </Button>
+            )}
+            <Button variant="ghost" size="sm" onClick={() => setCfModalOpen(false)}>Cancel</Button>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={handleSaveCloudflare}
+              disabled={cfSaving || !cfForm.api_token || !cfForm.account_id || !cfForm.project_name}
+              icon={cfSaving ? <Loader2 size={13} className="animate-spin" /> : undefined}
+            >
+              Save
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <p className="text-xs text-muted">
+            Deploy a session's built site to your Cloudflare Pages project. The API token is
+            stored encrypted on the backend and used only to publish — it is never exposed to
+            the build agent.
+          </p>
+          {cf?.configured && (
+            <p className="text-[11px] text-muted">
+              Currently configured for account <span className="font-mono text-ink">{cf.account_id}</span>,
+              project <span className="font-mono text-ink">{cf.project_name}</span>. Saving replaces it.
+            </p>
+          )}
+          <Field label="API token" hint="Cloudflare → My Profile → API Tokens (Pages: Edit).">
+            <Input
+              type="password"
+              autoComplete="off"
+              value={cfForm.api_token}
+              onChange={(e) => setCfForm((f) => ({ ...f, api_token: e.target.value }))}
+              placeholder="••••••••••••"
+            />
+          </Field>
+          <Field label="Account ID" hint="Cloudflare dashboard → Workers & Pages → Account ID.">
+            <Input
+              value={cfForm.account_id}
+              onChange={(e) => setCfForm((f) => ({ ...f, account_id: e.target.value }))}
+            />
+          </Field>
+          <Field label="Project name" hint="Pages project to deploy to (created if missing).">
+            <Input
+              value={cfForm.project_name}
+              onChange={(e) => setCfForm((f) => ({ ...f, project_name: e.target.value }))}
+              placeholder="my-site"
+            />
+          </Field>
+          {cfError && <p className="text-xs text-bad">{cfError}</p>}
+        </div>
+      </Modal>
     </div>
   );
 }

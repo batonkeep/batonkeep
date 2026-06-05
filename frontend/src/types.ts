@@ -242,6 +242,22 @@ export interface FileEntry {
   modified: number;
 }
 
+// Cloudflare Pages host connector (D-0009).
+export interface CloudflareConfig {
+  api_token: string;
+  account_id: string;
+  project_name: string;
+}
+export interface CloudflareStatus {
+  configured: boolean;
+  account_id?: string | null;
+  project_name?: string | null;
+}
+export interface CloudflareDeploy {
+  url: string;
+  project: string;
+}
+
 // A session task type (P-0010 / D-0011) offered as a starter card.
 export interface SessionTemplate {
   id: string;

@@ -31,6 +31,9 @@ from app.schemas import (
     CredentialCreate,
     CredentialOut,
     ModeOut,
+    CloudflareConfigIn,
+    CloudflareDeployOut,
+    CloudflareStatusOut,
     ConsoleConfig,
     FileEntryOut,
     ProviderHealth,
@@ -850,6 +853,32 @@ async def revoke_publish(
     return PublishOut(published=False)
 
 
+@app.post("/api/sessions/{session_id}/publish/cloudflare", response_model=CloudflareDeployOut,
+          tags=["sessions"])
+async def publish_session_cloudflare(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """
+    Deploy the session's current build to the owner's Cloudflare Pages project
+    (D-0009 host connector). Backend-side: the deploy token is read from the
+    encrypted credential store and used only by a trusted wrangler subprocess —
+    it never enters the agent sandbox.
+    """
+    from app.sessions import cf_pages
+
+    session = await _owned_session(session_id, owner_id, db)
+    config = await cf_pages.get_config(db, owner_id)
+    if config is None:
+        raise HTTPException(status_code=400, detail="Cloudflare is not configured")
+    try:
+        result = await cf_pages.deploy(session.workspace_path, config)
+    except cf_pages.CloudflareError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return CloudflareDeployOut(**result)
+
+
 @app.get("/api/sessions/{session_id}/download", tags=["sessions"])
 async def download_session(
     session_id: str,
@@ -989,6 +1018,61 @@ async def delete_credential_route(
     deleted = await delete_credential(db, owner_id, provider)
     if not deleted:
         raise HTTPException(status_code=404, detail="Credential not found")
+
+
+# ── /api/integrations/cloudflare (host connector, D-0009) ─────────────────────
+# Stores the Cloudflare Pages deploy config (token encrypted; account/project as
+# config). Used only by the backend-side deploy route — never an agent sandbox.
+
+@app.get("/api/integrations/cloudflare", response_model=CloudflareStatusOut, tags=["integrations"])
+async def get_cloudflare_config(
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """Connector status for the UI — reports account/project, never the token."""
+    from app.sessions import cf_pages
+
+    cfg = await cf_pages.get_config(db, owner_id)
+    if cfg is None:
+        return CloudflareStatusOut(configured=False)
+    return CloudflareStatusOut(
+        configured=True, account_id=cfg["account_id"], project_name=cfg["project_name"]
+    )
+
+
+@app.put("/api/integrations/cloudflare", response_model=CloudflareStatusOut, tags=["integrations"])
+async def set_cloudflare_config(
+    body: CloudflareConfigIn,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """Store/replace the Cloudflare Pages connector config (token encrypted at rest)."""
+    from app.sessions import cf_pages
+
+    try:
+        await cf_pages.set_config(
+            db, owner_id,
+            api_token=body.api_token, account_id=body.account_id, project_name=body.project_name,
+        )
+    except cf_pages.CloudflareError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return CloudflareStatusOut(
+        configured=True, account_id=body.account_id.strip(),
+        project_name=body.project_name.strip().lower(),
+    )
+
+
+@app.delete("/api/integrations/cloudflare", status_code=204, tags=["integrations"])
+async def delete_cloudflare_config(
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """Remove the Cloudflare connector config."""
+    from app.sessions import cf_pages
+
+    deleted = await cf_pages.clear_config(db, owner_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Cloudflare is not configured")
 
 
 # ── /api/providers ────────────────────────────────────────────────────────────

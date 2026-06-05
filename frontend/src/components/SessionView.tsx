@@ -338,8 +338,20 @@ export default function SessionView({
   const hiddenCount = events.length - curatedEvents.length;
   const shownEvents = rawOpen ? events : curatedEvents;
 
+  // Mobile master→detail: an open session fills the screen (the App shell has
+  // dropped the header chrome + bottom nav), so the pane flexes to fill instead
+  // of a fixed 70vh, keeping the composer pinned above the screen bottom. On
+  // desktop (lg) all three panes sit in the grid at a fixed height, as before.
+  const inSession = !!selectedId;
+  const rootCls = inSession
+    ? "flex flex-col gap-2 h-[calc(100dvh-5rem)] lg:grid lg:h-auto lg:grid-cols-[15rem_minmax(0,1fr)_minmax(0,1fr)] lg:gap-4"
+    : "space-y-4 lg:grid lg:grid-cols-[15rem_minmax(0,1fr)_minmax(0,1fr)] lg:gap-4 lg:space-y-0";
+  const paneSize = inSession ? "min-h-0 flex-1 lg:h-[70vh] lg:flex-none" : "h-[70vh]";
+  const chatPaneCls = `flex flex-col p-0 ${paneSize} ${inSession && mobilePane === "preview" ? "hidden lg:flex" : ""}`;
+  const previewPaneCls = `flex flex-col p-0 ${paneSize} ${!inSession || mobilePane === "chat" ? "hidden lg:flex" : ""}`;
+
   return (
-    <div className="space-y-4 lg:grid lg:grid-cols-[15rem_minmax(0,1fr)_minmax(0,1fr)] lg:gap-4 lg:space-y-0">
+    <div className={rootCls}>
       {/* ── Session list — on mobile, hidden once a session is selected
             (master→detail); always shown on desktop. ───────────────────── */}
       <div className={`space-y-2 ${selectedId ? "hidden lg:block" : ""}`}>
@@ -382,7 +394,7 @@ export default function SessionView({
       {/* ── Mobile detail toolbar: back to the list + Chat/Preview switch.
             Hidden on desktop, where all three panes are visible at once. ── */}
       {selectedId && (
-        <div className="flex items-center justify-between gap-2 lg:hidden">
+        <div className="flex shrink-0 items-center justify-between gap-2 lg:hidden">
           <Button
             variant="ghost"
             size="sm"
@@ -404,11 +416,7 @@ export default function SessionView({
       )}
 
       {/* ── Chat: provider switcher, input, turn history + live events ──── */}
-      <Card
-        className={`flex h-[70vh] flex-col p-0 ${
-          selectedId && mobilePane === "preview" ? "hidden lg:flex" : "flex"
-        }`}
-      >
+      <Card className={chatPaneCls}>
         {!selectedId ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-5 p-6">
             <p className="text-sm text-muted">Start a session</p>
@@ -747,11 +755,7 @@ export default function SessionView({
 
       {/* ── Live preview — on mobile only when a session is open + Preview
             tab is active; always visible on desktop. ─────────────────────── */}
-      <Card
-        className={`flex h-[70vh] flex-col p-0 ${
-          !selectedId || mobilePane === "chat" ? "hidden lg:flex" : "flex"
-        }`}
-      >
+      <Card className={previewPaneCls}>
         <div className="flex items-center justify-between border-b border-edge px-3 py-2">
           <div className="flex items-center gap-2">
             <StatusDot tone={turnRunning ? "live" : "ok"} pulse={turnRunning} />

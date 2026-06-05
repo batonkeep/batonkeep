@@ -46,6 +46,35 @@ async def test_init_db_backfills_missing_columns(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_init_db_backfills_credentials_label(tmp_path, monkeypatch):
+    """
+    Regression: credentials.label was added to the model after early DBs existed,
+    but wasn't in the backfill map — so credential reads (e.g. the Cloudflare
+    connector) hit "no such column: credentials.label" on a persisted volume.
+    """
+    import app.db as db
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/stale_creds.db")
+    async with engine.begin() as conn:
+        await conn.exec_driver_sql(
+            "CREATE TABLE credentials ("
+            "id INTEGER PRIMARY KEY, owner_id VARCHAR, provider VARCHAR, "
+            "ciphertext TEXT, created_at DATETIME)"  # pre-label schema
+        )
+
+    monkeypatch.setattr(db, "engine", engine)
+    await db.init_db()
+
+    async with engine.begin() as conn:
+        cols = {
+            row[1]
+            for row in (await conn.exec_driver_sql("PRAGMA table_info(credentials)")).fetchall()
+        }
+    assert "label" in cols
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_backfill_is_noop_on_fresh_db(tmp_path, monkeypatch):
     """A fresh DB gets columns from create_all; backfill finds nothing to add."""
     import app.db as db

@@ -25,6 +25,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # claude / grok — npm global
 RUN npm install -g @anthropic-ai/claude-code 2>/dev/null || true
 RUN npm install -g @xai-official/grok 2>/dev/null || true
+# wrangler — Cloudflare Pages deploy connector (backend-side publish target).
+# Invoked non-interactively with CLOUDFLARE_API_TOKEN/ACCOUNT_ID; never in a sandbox.
+RUN npm install -g wrangler 2>/dev/null || true
 # agy + codex — native binaries; override HOME so they land under /usr/local
 # (never shadowed by the agent_home volume), then symlink into /usr/local/bin.
 RUN (export HOME=/usr/local; curl -fsSL https://antigravity.google/cli/install.sh | bash) 2>/dev/null \

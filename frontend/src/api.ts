@@ -3,8 +3,12 @@
 
 import type {
   ConsoleConfig,
+  CloudflareConfig,
+  CloudflareDeploy,
+  CloudflareStatus,
   Credential,
   FileEntry,
+  ImportResult,
   Mode,
   ProviderHealth,
   ProviderLimitsUpdate,
@@ -106,6 +110,18 @@ export const api = {
     for (const f of files) form.append("files", f, f.name);
     return req<Upload>(`/sessions/${id}/uploads`, { method: "POST", headers: {}, body: form });
   },
+  // Import an existing site: a .zip / .tar(.gz/.bz2/.xz) extracted into the
+  // workspace root, preserving structure (D-0009 follow-on).
+  importArchive: (id: string, file: File) => {
+    const form = new FormData();
+    form.append("file", file, file.name);
+    return req<ImportResult>(`/sessions/${id}/import`, { method: "POST", headers: {}, body: form });
+  },
+  importGit: (id: string, url: string, branch?: string) =>
+    req<ImportResult>(`/sessions/${id}/import/git`, {
+      method: "POST",
+      body: JSON.stringify({ url, branch: branch || null }),
+    }),
   // Authenticated live-preview URL for an iframe. The token is a path segment (not a
   // query param) and the base ends in a slash, so the agent's relative asset links
   // (href="style.css") resolve under the same authenticated base and load (M1.2).
@@ -132,6 +148,18 @@ export const api = {
   // Absolute URL for the public share link / the download zip (anchor hrefs).
   shareUrl: (sharePath: string) => `${window.location.origin}${sharePath}`,
   downloadUrl: (id: string) => `${BASE}/sessions/${id}/download`,
+
+  // Cloudflare Pages host connector (D-0009). Config is owner-level (token stored
+  // encrypted on the backend, never returned); deploy is per-session.
+  getCloudflare: () => req<CloudflareStatus>("/integrations/cloudflare"),
+  setCloudflare: (body: CloudflareConfig) =>
+    req<CloudflareStatus>("/integrations/cloudflare", { method: "PUT", body: JSON.stringify(body) }),
+  clearCloudflare: () => req<void>("/integrations/cloudflare", { method: "DELETE" }),
+  deployCloudflare: (id: string, project_name?: string) =>
+    req<CloudflareDeploy>(`/sessions/${id}/publish/cloudflare`, {
+      method: "POST",
+      body: JSON.stringify({ project_name: project_name || null }),
+    }),
 
   // Session file browser (P-0016 b): list workspace files, and the raw-file route
   // that serves one verbatim. fileRawUrl is the same path agents' rewritten

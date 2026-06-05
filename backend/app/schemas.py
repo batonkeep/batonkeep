@@ -212,6 +212,21 @@ class UploadOut(BaseModel):
     commit_sha: Optional[str] = None
 
 
+class ImportOut(BaseModel):
+    """Result of importing an existing site (zip/tar/git) into a session workspace."""
+
+    paths: list[str]
+    count: int
+    commit_sha: Optional[str] = None
+
+
+class GitImportIn(BaseModel):
+    """Import a site by cloning a public https git URL."""
+
+    url: str
+    branch: Optional[str] = None
+
+
 class PublishOut(BaseModel):
     """Publish/share state of a session's build (M1.4)."""
 
@@ -226,6 +241,33 @@ class PublishOut(BaseModel):
     updated_at: Optional[datetime] = None
 
 
+class CloudflareConfigIn(BaseModel):
+    """Set the owner-level Cloudflare credentials (D-0009 host connector)."""
+
+    api_token: str       # high-privilege deploy token; encrypted at rest, never in a sandbox
+    account_id: str
+
+
+class CloudflareStatusOut(BaseModel):
+    """Connector state for the UI — never reveals the token."""
+
+    configured: bool
+    account_id: Optional[str] = None
+
+
+class CloudflareDeployIn(BaseModel):
+    """Per-deploy options. Project is per-session; omit to use the session's default."""
+
+    project_name: Optional[str] = None
+
+
+class CloudflareDeployOut(BaseModel):
+    """Result of a Cloudflare Pages deploy."""
+
+    url: str
+    project: str
+
+
 class SessionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -236,6 +278,7 @@ class SessionOut(BaseModel):
     workspace_path: str
     preview_token: str
     status: str
+    cf_project: Optional[str] = None  # Cloudflare Pages project this session deploys to
     created_at: datetime
     updated_at: datetime
 

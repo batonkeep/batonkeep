@@ -31,8 +31,14 @@ from app.schemas import (
     CredentialCreate,
     CredentialOut,
     ModeOut,
+    CloudflareConfigIn,
+    CloudflareDeployIn,
+    CloudflareDeployOut,
+    CloudflareStatusOut,
     ConsoleConfig,
     FileEntryOut,
+    GitImportIn,
+    ImportOut,
     ProviderHealth,
     ProviderLimitsUpdate,
     ProviderModelUpdate,
@@ -596,6 +602,82 @@ async def upload_session_assets(
     return UploadOut(paths=saved, commit_sha=commit_sha)
 
 
+@app.post("/api/sessions/{session_id}/import", response_model=ImportOut,
+          status_code=201, tags=["sessions"])
+async def import_session_archive(
+    session_id: str,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """
+    Import an existing site into the session by extracting a .zip or .tar(.gz/.bz2/.xz)
+    into the workspace root, preserving directory structure (unlike upload-in, which
+    buckets by type). The agent continues from it (filesystem-as-context); the import
+    is committed as one version. A `.git/` in the archive is dropped — the session
+    keeps its own engine-owned history. Nothing leaves the backend.
+    """
+    import tempfile
+    from app.sessions import imports, workspace as ws
+
+    session = await _owned_session(session_id, owner_id, db)
+
+    # Stream the upload to a temp file so the archive libs can sniff + random-access it.
+    tmp = tempfile.NamedTemporaryFile(prefix="cf-import-", delete=False)
+    try:
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            tmp.write(chunk)
+        tmp.close()
+        try:
+            paths = imports.extract_archive(session.workspace_path, tmp.name)
+        except imports.ImportArchiveError as exc:
+            raise HTTPException(status_code=exc.status, detail=exc.detail)
+    finally:
+        try:
+            os.remove(tmp.name)
+        except OSError:
+            pass
+
+    commit_sha = await ws.commit_paths(
+        session.workspace_path, message=f"import: {len(paths)} files from {file.filename or 'archive'}"
+    )
+    session.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    return ImportOut(paths=paths, count=len(paths), commit_sha=commit_sha)
+
+
+@app.post("/api/sessions/{session_id}/import/git", response_model=ImportOut,
+          status_code=201, tags=["sessions"])
+async def import_session_git(
+    session_id: str,
+    body: GitImportIn,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """
+    Import a site by shallow-cloning a public https git URL into the workspace
+    (structure preserved; the repo's .git is dropped — the session keeps its own
+    history). SSRF-guarded (public hosts only); private repos fail fast (no creds).
+    """
+    from app.sessions import imports, workspace as ws
+
+    session = await _owned_session(session_id, owner_id, db)
+    try:
+        paths = await imports.clone_repo(session.workspace_path, body.url, body.branch)
+    except imports.ImportArchiveError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail)
+
+    commit_sha = await ws.commit_paths(
+        session.workspace_path, message=f"import: {len(paths)} files from {body.url}"
+    )
+    session.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    return ImportOut(paths=paths, count=len(paths), commit_sha=commit_sha)
+
+
 @app.get("/api/sessions/{session_id}/preview/{token}/{path:path}", tags=["sessions"])
 @app.get("/api/sessions/{session_id}/preview/{token}", tags=["sessions"])
 async def session_preview(
@@ -850,6 +932,38 @@ async def revoke_publish(
     return PublishOut(published=False)
 
 
+@app.post("/api/sessions/{session_id}/publish/cloudflare", response_model=CloudflareDeployOut,
+          tags=["sessions"])
+async def publish_session_cloudflare(
+    session_id: str,
+    body: CloudflareDeployIn = CloudflareDeployIn(),
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """
+    Deploy the session's current build to the owner's Cloudflare Pages project
+    (D-0009 host connector). Backend-side: the deploy token is read from the
+    encrypted credential store and used only by a trusted wrangler subprocess —
+    it never enters the agent sandbox.
+    """
+    from app.sessions import cf_pages
+
+    session = await _owned_session(session_id, owner_id, db)
+    config = await cf_pages.get_config(db, owner_id)
+    if config is None:
+        raise HTTPException(status_code=400, detail="Cloudflare is not configured")
+    # Project is per-session: explicit override → remembered project → title default.
+    project = (body.project_name or session.cf_project or cf_pages.slug_project(session.title))
+    try:
+        result = await cf_pages.deploy(session.workspace_path, config, project)
+    except cf_pages.CloudflareError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    # Remember where this session deploys so later deploys default to the same site.
+    session.cf_project = result["project"]
+    await db.commit()
+    return CloudflareDeployOut(**result)
+
+
 @app.get("/api/sessions/{session_id}/download", tags=["sessions"])
 async def download_session(
     session_id: str,
@@ -989,6 +1103,55 @@ async def delete_credential_route(
     deleted = await delete_credential(db, owner_id, provider)
     if not deleted:
         raise HTTPException(status_code=404, detail="Credential not found")
+
+
+# ── /api/integrations/cloudflare (host connector, D-0009) ─────────────────────
+# Stores the Cloudflare Pages deploy config (token encrypted; account/project as
+# config). Used only by the backend-side deploy route — never an agent sandbox.
+
+@app.get("/api/integrations/cloudflare", response_model=CloudflareStatusOut, tags=["integrations"])
+async def get_cloudflare_config(
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """Connector status for the UI — reports account/project, never the token."""
+    from app.sessions import cf_pages
+
+    cfg = await cf_pages.get_config(db, owner_id)
+    if cfg is None:
+        return CloudflareStatusOut(configured=False)
+    return CloudflareStatusOut(configured=True, account_id=cfg["account_id"])
+
+
+@app.put("/api/integrations/cloudflare", response_model=CloudflareStatusOut, tags=["integrations"])
+async def set_cloudflare_config(
+    body: CloudflareConfigIn,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """Store/replace the Cloudflare Pages connector config (token encrypted at rest)."""
+    from app.sessions import cf_pages
+
+    try:
+        await cf_pages.set_config(
+            db, owner_id, api_token=body.api_token, account_id=body.account_id,
+        )
+    except cf_pages.CloudflareError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return CloudflareStatusOut(configured=True, account_id=body.account_id.strip())
+
+
+@app.delete("/api/integrations/cloudflare", status_code=204, tags=["integrations"])
+async def delete_cloudflare_config(
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """Remove the Cloudflare connector config."""
+    from app.sessions import cf_pages
+
+    deleted = await cf_pages.clear_config(db, owner_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Cloudflare is not configured")
 
 
 # ── /api/providers ────────────────────────────────────────────────────────────

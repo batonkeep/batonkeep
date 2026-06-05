@@ -174,6 +174,8 @@ export interface Session {
   // unguessable token that gates the live preview (M1.2).
   preview_token: string;
   status: SessionStatus;
+  // Cloudflare Pages project this session deploys to (D-0009); null until first deploy.
+  cf_project?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -235,11 +237,33 @@ export interface Upload {
   commit_sha: string | null;
 }
 
+// Result of importing an existing site (zip/tar) into a session.
+export interface ImportResult {
+  paths: string[];
+  count: number;
+  commit_sha: string | null;
+}
+
 // One workspace file in the session file browser (P-0016 b).
 export interface FileEntry {
   path: string;
   size: number;
   modified: number;
+}
+
+// Cloudflare Pages host connector (D-0009). Token + account are owner-level;
+// the project is per-session (passed at deploy time).
+export interface CloudflareConfig {
+  api_token: string;
+  account_id: string;
+}
+export interface CloudflareStatus {
+  configured: boolean;
+  account_id?: string | null;
+}
+export interface CloudflareDeploy {
+  url: string;
+  project: string;
 }
 
 // A session task type (P-0010 / D-0011) offered as a starter card.

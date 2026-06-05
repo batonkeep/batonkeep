@@ -170,6 +170,10 @@ class Session(Base):
     preview_token: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     # "active" | "archived"
     status: Mapped[str] = mapped_column(String(16), default="active", index=True)
+    # Cloudflare Pages project this session deploys to (D-0009). The token+account
+    # are owner-level (encrypted store); the *project* is per-session so each build
+    # gets its own site. Remembered after the first deploy; defaults from the title.
+    cf_project: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

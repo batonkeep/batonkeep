@@ -7,12 +7,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
 import hljs from "highlight.js/lib/common";
 import "highlight.js/styles/github-dark.css";
-import { Activity, Check, ChevronLeft, ChevronRight, Copy, Download, FileCode, Globe, History, Link2, Loader2, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, X } from "lucide-react";
-import type { ProviderHealth, Publish, Session, SessionTemplate, SessionTurn, Version } from "../types";
+import { Activity, Archive, Check, ChevronLeft, ChevronRight, Cloud, Copy, Download, FileCode, Globe, History, Link2, Loader2, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, X } from "lucide-react";
+import type { CloudflareStatus, ProviderHealth, Publish, Session, SessionTemplate, SessionTurn, Version } from "../types";
 import { api } from "../api";
 import { useSessionEvents, type SessionEvent } from "../useLiveFeed";
 import { fmtTime } from "../format";
-import { Badge, Button, Card, Select, StatusDot, Tabs, type Tone } from "../ui";
+import { Badge, Button, Card, Field, Input, Modal, Select, StatusDot, Tabs, type Tone } from "../ui";
 
 function renderMarkdown(src: string): string {
   return marked.parse(src, { async: false }) as string;
@@ -40,6 +40,12 @@ function highlightCode(content: string, path: string): { html: string; lang: str
     const esc = content.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     return { html: esc, lang: "text" };
   }
+}
+
+// Default a Cloudflare Pages project name from a session title (mirrors the backend).
+function slugProject(title: string): string {
+  const s = (title || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 58);
+  return s || "batonkeep-site";
 }
 
 // A file the user opened from a chat link, shown in the Preview pane.
@@ -130,10 +136,26 @@ export default function SessionView({
   const [mobilePane, setMobilePane] = useState<"chat" | "preview">("chat");
   const [openFile, setOpenFile] = useState<OpenFile | null>(null); // file viewed in Preview pane
   const [fileCopied, setFileCopied] = useState(false);
+  // Cloudflare Pages connector (D-0009): owner-level config + per-session deploy.
+  const [cf, setCf] = useState<CloudflareStatus | null>(null);
+  const [cfModalOpen, setCfModalOpen] = useState(false); // credentials setup
+  const [cfForm, setCfForm] = useState({ api_token: "", account_id: "" });
+  const [cfSaving, setCfSaving] = useState(false);
+  const [cfDeployModalOpen, setCfDeployModalOpen] = useState(false); // per-session project + deploy
+  const [cfProject, setCfProject] = useState("");
+  const [cfDeploying, setCfDeploying] = useState(false);
+  const [cfUrl, setCfUrl] = useState<string | null>(null);
+  const [cfError, setCfError] = useState<string | null>(null);
 
   const { events, streamingText, lastTurn } = useSessionEvents(selectedId);
   const streamRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const importInputRef = useRef<HTMLInputElement>(null);
+  const [importing, setImporting] = useState(false);
+  const [importModalOpen, setImportModalOpen] = useState(false);
+  const [gitUrl, setGitUrl] = useState("");
+  const [gitBranch, setGitBranch] = useState("");
+  const [importError, setImportError] = useState<string | null>(null);
 
   // Distinct provider instance ids for the switcher (grouped by what's healthy).
   const providerIds = useMemo(
@@ -177,6 +199,8 @@ export default function SessionView({
     setMessage("");
     setMobilePane("chat");
     setOpenFile(null);
+    setCfUrl(null);
+    setCfError(null);
     if (!selectedId) return;
     api.getSession(selectedId).then(setDetail).catch(() => {});
     loadTurns();
@@ -277,6 +301,48 @@ export default function SessionView({
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = ""; // allow re-selecting the same file
+    }
+  };
+
+  // Shared post-import wiring: surface the new site + record the new version.
+  const afterImport = (count: number) => {
+    setMessage((m) => (m.trim() ? m : `Imported ${count} files — continue from this site.`));
+    setPreviewNonce((n) => n + 1); // reflect the imported site in the preview
+    onSessionsChanged();           // import landed as a new version
+    setImportModalOpen(false);
+  };
+
+  // Import an existing site from an archive (zip/tar), preserving structure.
+  const handleImport = async (files: FileList | null) => {
+    const f = files?.[0];
+    if (!selectedId || !f || importing) return;
+    setImportError(null);
+    setImporting(true);
+    try {
+      const res = await api.importArchive(selectedId, f);
+      afterImport(res.count);
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : "Could not import the archive");
+    } finally {
+      setImporting(false);
+      if (importInputRef.current) importInputRef.current.value = "";
+    }
+  };
+
+  // Import an existing site by cloning a public git URL.
+  const handleGitImport = async () => {
+    if (!selectedId || !gitUrl.trim() || importing) return;
+    setImportError(null);
+    setImporting(true);
+    try {
+      const res = await api.importGit(selectedId, gitUrl.trim(), gitBranch.trim() || undefined);
+      setGitUrl("");
+      setGitBranch("");
+      afterImport(res.count);
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : "Could not clone the repository");
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -405,6 +471,71 @@ export default function SessionView({
       setTimeout(() => setFileCopied(false), 1500);
     } catch {
       /* clipboard unavailable */
+    }
+  };
+
+  // Cloudflare connector: load owner-level status once on mount.
+  useEffect(() => {
+    api.getCloudflare().then(setCf).catch(() => setCf({ configured: false }));
+  }, []);
+
+  const handleSaveCloudflare = async () => {
+    setCfSaving(true);
+    setCfError(null);
+    try {
+      const st = await api.setCloudflare(cfForm);
+      setCf(st);
+      setCfModalOpen(false);
+      setCfForm({ api_token: "", account_id: "" });
+      // Credentials in place — proceed to the per-session project + deploy step.
+      openDeployModal();
+    } catch (e) {
+      setCfError(e instanceof Error ? e.message : "Could not save Cloudflare settings");
+    } finally {
+      setCfSaving(false);
+    }
+  };
+
+  const handleRemoveCloudflare = async () => {
+    try {
+      await api.clearCloudflare();
+    } catch {
+      /* already gone */
+    }
+    setCf({ configured: false });
+    setCfModalOpen(false);
+    setCfUrl(null);
+  };
+
+  // Open the deploy step with the project prefilled: remembered project → title default.
+  const openDeployModal = () => {
+    setCfProject(detail?.cf_project || slugProject(detail?.title || ""));
+    setCfError(null);
+    setCfDeployModalOpen(true);
+  };
+
+  // Clicking "Cloudflare": set up credentials first if missing, else go to deploy.
+  const handleCloudflareClick = () => {
+    if (!selectedId) return;
+    if (!cf?.configured) setCfModalOpen(true);
+    else openDeployModal();
+  };
+
+  // Deploy this session's build to the chosen Cloudflare Pages project.
+  const handleDeployCloudflare = async () => {
+    if (!selectedId) return;
+    setCfDeploying(true);
+    setCfError(null);
+    setCfUrl(null);
+    try {
+      const res = await api.deployCloudflare(selectedId, cfProject.trim() || undefined);
+      setCfUrl(res.url);
+      setCfDeployModalOpen(false);
+      if (detail) setDetail({ ...detail, cf_project: res.project }); // remember per-session
+    } catch (e) {
+      setCfError(e instanceof Error ? e.message : "Deploy failed");
+    } finally {
+      setCfDeploying(false);
     }
   };
 
@@ -800,6 +931,13 @@ export default function SessionView({
                   className="hidden"
                   onChange={(e) => handleUpload(e.target.files)}
                 />
+                <input
+                  ref={importInputRef}
+                  type="file"
+                  accept=".zip,.tar,.gz,.tgz,.bz2,.xz,application/zip,application/x-tar,application/gzip"
+                  className="hidden"
+                  onChange={(e) => handleImport(e.target.files)}
+                />
                 <Button
                   variant="ghost"
                   size="sm"
@@ -808,6 +946,15 @@ export default function SessionView({
                   onClick={() => fileInputRef.current?.click()}
                   disabled={uploading || sending}
                   title="Attach a file (image, CSV, PDF…) — drop into the box too"
+                />
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="shrink-0 px-2 py-2"
+                  icon={importing ? <Loader2 size={15} className="animate-spin" /> : <Archive size={15} />}
+                  onClick={() => { setImportError(null); setImportModalOpen(true); }}
+                  disabled={importing || sending}
+                  title="Import an existing site (.zip / .tar, or a git URL)"
                 />
                 <textarea
                   value={message}
@@ -873,6 +1020,29 @@ export default function SessionView({
               </a>
             )}
             <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5 px-2"
+              icon={cfDeploying ? <Loader2 size={13} className="animate-spin" /> : <Cloud size={13} />}
+              onClick={handleCloudflareClick}
+              disabled={!selectedId || cfDeploying}
+              title={cf?.configured
+                ? "Deploy this session to Cloudflare Pages"
+                : "Set up Cloudflare Pages publishing"}
+            >
+              <span className="text-[11px]">Cloudflare</span>
+            </Button>
+            {cf?.configured && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="px-1.5"
+                icon={<Pencil size={12} />}
+                onClick={() => setCfModalOpen(true)}
+                title="Edit Cloudflare credentials"
+              />
+            )}
+            <Button
               variant={publish?.published ? "outline" : "primary"}
               size="sm"
               className="gap-1.5 px-2"
@@ -885,6 +1055,27 @@ export default function SessionView({
             </Button>
           </div>
         </div>
+
+        {/* Cloudflare deploy result / error bar. */}
+        {cfUrl && (
+          <div className="flex items-center gap-2 border-b border-edge bg-base/60 px-3 py-1.5">
+            <Cloud size={13} className="shrink-0 text-ok" />
+            <a
+              href={cfUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex-1 truncate font-mono text-[11px] text-brand hover:underline"
+              title={cfUrl}
+            >
+              {cfUrl}
+            </a>
+          </div>
+        )}
+        {cfError && (
+          <div className="border-b border-edge bg-bad/5 px-3 py-1.5 text-[11px] text-bad">
+            {cfError}
+          </div>
+        )}
 
         {/* Share-link bar — shown once published. */}
         {publish?.published && shareUrl && (
@@ -940,6 +1131,162 @@ export default function SessionView({
           </div>
         )}
       </Card>
+
+      {/* Import an existing site — archive (zip/tar) or a public git URL. */}
+      <Modal
+        open={importModalOpen}
+        onClose={() => setImportModalOpen(false)}
+        title="Import an existing site"
+      >
+        <div className="space-y-4">
+          <p className="text-xs text-muted">
+            Bring an existing site into this session, preserving its folder structure. Git
+            history isn't carried — the session keeps its own version history.
+          </p>
+
+          <div className="space-y-1.5">
+            <span className="font-mono text-[11px] font-medium uppercase tracking-wider text-muted">
+              From an archive
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full"
+              icon={importing ? <Loader2 size={14} className="animate-spin" /> : <Archive size={14} />}
+              onClick={() => importInputRef.current?.click()}
+              disabled={importing}
+            >
+              Choose a .zip / .tar file…
+            </Button>
+          </div>
+
+          <div className="flex items-center gap-2 text-[11px] text-muted">
+            <span className="h-px flex-1 bg-edge" /> or <span className="h-px flex-1 bg-edge" />
+          </div>
+
+          <div className="space-y-2">
+            <Field label="From a git URL" hint="Public https repositories only.">
+              <Input
+                value={gitUrl}
+                onChange={(e) => setGitUrl(e.target.value)}
+                placeholder="https://github.com/owner/repo.git"
+              />
+            </Field>
+            <Field label="Branch (optional)">
+              <Input
+                value={gitBranch}
+                onChange={(e) => setGitBranch(e.target.value)}
+                placeholder="main"
+              />
+            </Field>
+            <Button
+              variant="primary"
+              size="sm"
+              className="w-full"
+              icon={importing ? <Loader2 size={14} className="animate-spin" /> : <Globe size={14} />}
+              onClick={handleGitImport}
+              disabled={importing || !gitUrl.trim()}
+            >
+              Clone & import
+            </Button>
+          </div>
+
+          {importError && <p className="text-xs text-bad">{importError}</p>}
+        </div>
+      </Modal>
+
+      {/* Cloudflare Pages connector setup (D-0009). Token is write-only — the
+          backend stores it encrypted and never returns it; the agent never sees it. */}
+      <Modal
+        open={cfModalOpen}
+        onClose={() => setCfModalOpen(false)}
+        title="Cloudflare Pages"
+        footer={
+          <>
+            {cf?.configured && (
+              <Button variant="ghost" size="sm" className="mr-auto text-bad" onClick={handleRemoveCloudflare}>
+                Remove
+              </Button>
+            )}
+            <Button variant="ghost" size="sm" onClick={() => setCfModalOpen(false)}>Cancel</Button>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={handleSaveCloudflare}
+              disabled={cfSaving || !cfForm.api_token || !cfForm.account_id}
+              icon={cfSaving ? <Loader2 size={13} className="animate-spin" /> : undefined}
+            >
+              Save
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <p className="text-xs text-muted">
+            Connect Cloudflare once for your account. The API token is stored encrypted on the
+            backend and used only to publish — it is never exposed to the build agent. You pick
+            the Pages project per session when you deploy.
+          </p>
+          {cf?.configured && (
+            <p className="text-[11px] text-muted">
+              Connected to account <span className="font-mono text-ink">{cf.account_id}</span>.
+              Saving replaces the stored token.
+            </p>
+          )}
+          <Field label="API token" hint="Cloudflare → My Profile → API Tokens (Pages: Edit).">
+            <Input
+              type="password"
+              autoComplete="off"
+              value={cfForm.api_token}
+              onChange={(e) => setCfForm((f) => ({ ...f, api_token: e.target.value }))}
+              placeholder="••••••••••••"
+            />
+          </Field>
+          <Field label="Account ID" hint="Cloudflare dashboard → Workers & Pages → Account ID.">
+            <Input
+              value={cfForm.account_id}
+              onChange={(e) => setCfForm((f) => ({ ...f, account_id: e.target.value }))}
+            />
+          </Field>
+          {cfError && <p className="text-xs text-bad">{cfError}</p>}
+        </div>
+      </Modal>
+
+      {/* Per-session deploy: choose the Pages project (defaults from the title). */}
+      <Modal
+        open={cfDeployModalOpen}
+        onClose={() => setCfDeployModalOpen(false)}
+        title="Deploy to Cloudflare Pages"
+        footer={
+          <>
+            <Button variant="ghost" size="sm" onClick={() => setCfDeployModalOpen(false)}>Cancel</Button>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={handleDeployCloudflare}
+              disabled={cfDeploying || !cfProject.trim()}
+              icon={cfDeploying ? <Loader2 size={13} className="animate-spin" /> : <Cloud size={13} />}
+            >
+              Deploy
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <p className="text-xs text-muted">
+            Each session deploys to its own Cloudflare Pages project. The project is created if it
+            doesn't exist; re-deploying updates the same site.
+          </p>
+          <Field label="Project name" hint="Lowercase letters, digits and hyphens.">
+            <Input
+              value={cfProject}
+              onChange={(e) => setCfProject(e.target.value)}
+              placeholder="my-site"
+            />
+          </Field>
+          {cfError && <p className="text-xs text-bad">{cfError}</p>}
+        </div>
+      </Modal>
     </div>
   );
 }

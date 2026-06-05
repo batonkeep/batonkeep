@@ -26,17 +26,14 @@ from app.providers.registry import ProviderDef, ProviderInstance
 logger = logging.getLogger(__name__)
 
 # ── Tool registry ─────────────────────────────────────────────────────────────
+# Tools are reached only through the MCP-shaped registry (P-0017). The executor
+# never imports a tool module directly — it lists schemas and dispatches calls
+# through the registry, so a future external-MCP-server provider drops in
+# transparently.
 
-from app.providers.tools import web_search, web_fetch, flights, file_write
+from app.providers.tools.registry import get_tool_registry
 
-_TOOLS = {
-    "web_search": web_search,
-    "web_fetch": web_fetch,
-    "flights": flights,
-    "file_write": file_write,
-}
-
-TOOL_SCHEMAS = [t.TOOL_SCHEMA for t in _TOOLS.values()]
+TOOL_SCHEMAS = get_tool_registry().function_schemas()
 
 _SYSTEM_PROMPT = (
     "You are an autonomous research agent. "
@@ -312,13 +309,4 @@ class ModelExecutor(Executor):
     # ── Tool dispatch ─────────────────────────────────────────────────────────
 
     async def _call_tool(self, name: str, args_json: str, *, workdir: str) -> str:
-        module = _TOOLS.get(name)
-        if module is None:
-            return f"[unknown tool: {name}]"
-        try:
-            args = json.loads(args_json) if args_json else {}
-            if name == "file_write":
-                return await module.run(**args, workdir=workdir)
-            return await module.run(**args)
-        except Exception as exc:
-            return f"[{name} error] {exc}"
+        return await get_tool_registry().call(name, args_json, workdir=workdir)

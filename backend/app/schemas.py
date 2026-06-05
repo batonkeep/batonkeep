@@ -126,6 +126,16 @@ class SessionCreate(BaseModel):
     goal: Optional[str] = None
     # initial provider instance id (e.g. "grok", "agy", "mock")
     provider: Optional[str] = None
+    # optional task-type template id (D-0011): seeds goal + guidance in SESSION.md
+    template: Optional[str] = None
+
+
+class SessionTemplateOut(BaseModel):
+    """A session task type (P-0010 / D-0011) the UI offers as a starter card."""
+
+    id: str
+    label: str
+    description: str
 
 
 class SessionUpdate(BaseModel):

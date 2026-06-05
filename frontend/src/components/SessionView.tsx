@@ -5,8 +5,8 @@
 // D-track: composed from ui/ primitives (Button, Badge, Card, StatusDot, Select).
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
-import { Activity, Check, ChevronRight, Copy, Download, Globe, History, Link2, Loader2, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Send, X } from "lucide-react";
-import type { ProviderHealth, Publish, Session, SessionTurn, Version } from "../types";
+import { Activity, Check, ChevronRight, Copy, Download, Globe, History, Link2, Loader2, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, X } from "lucide-react";
+import type { ProviderHealth, Publish, Session, SessionTemplate, SessionTurn, Version } from "../types";
 import { api } from "../api";
 import { useSessionEvents, type SessionEvent } from "../useLiveFeed";
 import { fmtTime } from "../format";
@@ -90,6 +90,7 @@ export default function SessionView({
   const [copied, setCopied] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploaded, setUploaded] = useState<string[]>([]); // paths dropped this session, for chips
+  const [templates, setTemplates] = useState<SessionTemplate[]>([]); // task-type starters
 
   const { events, streamingText, lastTurn } = useSessionEvents(selectedId);
   const streamRef = useRef<HTMLDivElement>(null);
@@ -164,10 +165,16 @@ export default function SessionView({
     if (historyOpen && streamRef.current) streamRef.current.scrollTop = 0;
   }, [historyOpen]);
 
-  const handleCreate = async () => {
+  // Task-type starters (P-0010 / D-0011). Loaded once; rendered as cards in the
+  // empty state. A blank session is always available via the header + button.
+  useEffect(() => {
+    api.listSessionTemplates().then(setTemplates).catch(() => {});
+  }, []);
+
+  const handleCreate = async (template?: string) => {
     setCreating(true);
     try {
-      const s = await api.createSession({ title: "Untitled session" });
+      const s = await api.createSession(template ? { template } : { title: "Untitled session" });
       onSessionsChanged();
       onSelect(s.id);
     } finally {
@@ -338,7 +345,7 @@ export default function SessionView({
             size="sm"
             className="px-2"
             icon={<Plus size={13} />}
-            onClick={handleCreate}
+            onClick={() => handleCreate()}
             disabled={creating}
             title="New build session"
           />
@@ -370,8 +377,37 @@ export default function SessionView({
       {/* ── Chat: provider switcher, input, turn history + live events ──── */}
       <Card className="flex h-[70vh] flex-col p-0">
         {!selectedId ? (
-          <div className="flex flex-1 items-center justify-center p-6 text-center text-sm text-muted">
-            Select a session, or create one to start building.
+          <div className="flex flex-1 flex-col items-center justify-center gap-5 p-6">
+            <p className="text-sm text-muted">Start a session</p>
+            <div className="grid w-full max-w-2xl gap-3 sm:grid-cols-3">
+              {/* Flagship build session (D-0007) + the retention task types (D-0011). */}
+              <button
+                onClick={() => handleCreate()}
+                disabled={creating}
+                className="flex flex-col gap-1 rounded-lg border border-edge bg-base p-4 text-left transition-colors hover:border-brand/60 disabled:opacity-50"
+              >
+                <span className="flex items-center gap-2 font-mono text-sm text-ink">
+                  <Globe size={14} /> Build a page
+                </span>
+                <span className="text-xs text-muted">
+                  Describe a site or app in plain English and publish it.
+                </span>
+              </button>
+              {templates.map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => handleCreate(t.id)}
+                  disabled={creating}
+                  className="flex flex-col gap-1 rounded-lg border border-edge bg-base p-4 text-left transition-colors hover:border-brand/60 disabled:opacity-50"
+                >
+                  <span className="flex items-center gap-2 font-mono text-sm text-ink">
+                    {t.id === "summarize" ? <Activity size={14} /> : t.id === "research" ? <Search size={14} /> : <Pencil size={14} />} {t.label}
+                  </span>
+                  <span className="text-xs text-muted">{t.description}</span>
+                </button>
+              ))}
+            </div>
+            <p className="text-xs text-muted">…or pick an existing session from the list.</p>
           </div>
         ) : (
           <>

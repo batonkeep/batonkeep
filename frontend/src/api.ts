@@ -18,6 +18,7 @@ import type {
   TaskInput,
   TurnInput,
   Publish,
+  SessionTemplate,
   Upload,
   Version,
   VersionDiff,
@@ -87,6 +88,7 @@ export const api = {
     `${BASE}/runs/${id}/output?format=${format}`,
 
   // ── Sessions (M1: build sessions + live preview) ───────────────────────
+  listSessionTemplates: () => req<SessionTemplate[]>("/session-templates"),
   listSessions: () => req<Session[]>("/sessions"),
   getSession: (id: string) => req<Session>(`/sessions/${id}`),
   createSession: (body: SessionInput) =>

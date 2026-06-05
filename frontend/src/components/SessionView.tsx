@@ -5,12 +5,12 @@
 // D-track: composed from ui/ primitives (Button, Badge, Card, StatusDot, Select).
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
-import { Activity, Check, ChevronRight, Copy, Download, Globe, History, Link2, Loader2, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, X } from "lucide-react";
+import { Activity, Check, ChevronLeft, ChevronRight, Copy, Download, Globe, History, Link2, Loader2, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, X } from "lucide-react";
 import type { ProviderHealth, Publish, Session, SessionTemplate, SessionTurn, Version } from "../types";
 import { api } from "../api";
 import { useSessionEvents, type SessionEvent } from "../useLiveFeed";
 import { fmtTime } from "../format";
-import { Badge, Button, Card, Select, StatusDot, type Tone } from "../ui";
+import { Badge, Button, Card, Select, StatusDot, Tabs, type Tone } from "../ui";
 
 function renderMarkdown(src: string): string {
   return marked.parse(src, { async: false }) as string;
@@ -91,6 +91,9 @@ export default function SessionView({
   const [uploading, setUploading] = useState(false);
   const [uploaded, setUploaded] = useState<string[]>([]); // paths dropped this session, for chips
   const [templates, setTemplates] = useState<SessionTemplate[]>([]); // task-type starters
+  // Mobile only: the 3-pane grid can't fit a phone, so a selected session is a
+  // master→detail view with a Chat/Preview tab switch. Desktop ignores this.
+  const [mobilePane, setMobilePane] = useState<"chat" | "preview">("chat");
 
   const { events, streamingText, lastTurn } = useSessionEvents(selectedId);
   const streamRef = useRef<HTMLDivElement>(null);
@@ -136,6 +139,7 @@ export default function SessionView({
     setCopied(false);
     setUploaded([]);
     setMessage("");
+    setMobilePane("chat");
     if (!selectedId) return;
     api.getSession(selectedId).then(setDetail).catch(() => {});
     loadTurns();
@@ -335,9 +339,10 @@ export default function SessionView({
   const shownEvents = rawOpen ? events : curatedEvents;
 
   return (
-    <div className="grid grid-cols-1 gap-4 lg:grid-cols-[15rem_minmax(0,1fr)_minmax(0,1fr)]">
-      {/* ── Session list ───────────────────────────────────────────────── */}
-      <div className="space-y-2">
+    <div className="space-y-4 lg:grid lg:grid-cols-[15rem_minmax(0,1fr)_minmax(0,1fr)] lg:gap-4 lg:space-y-0">
+      {/* ── Session list — on mobile, hidden once a session is selected
+            (master→detail); always shown on desktop. ───────────────────── */}
+      <div className={`space-y-2 ${selectedId ? "hidden lg:block" : ""}`}>
         <div className="flex items-center justify-between">
           <span className="font-mono text-xs uppercase tracking-widest text-muted">Sessions</span>
           <Button
@@ -374,8 +379,36 @@ export default function SessionView({
         })}
       </div>
 
+      {/* ── Mobile detail toolbar: back to the list + Chat/Preview switch.
+            Hidden on desktop, where all three panes are visible at once. ── */}
+      {selectedId && (
+        <div className="flex items-center justify-between gap-2 lg:hidden">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="gap-1 px-2"
+            icon={<ChevronLeft size={15} />}
+            onClick={() => onSelect(null)}
+          >
+            <span className="text-xs">Sessions</span>
+          </Button>
+          <Tabs
+            tabs={[
+              { id: "chat", label: "Chat" },
+              { id: "preview", label: "Preview" },
+            ] as const}
+            active={mobilePane}
+            onChange={setMobilePane}
+          />
+        </div>
+      )}
+
       {/* ── Chat: provider switcher, input, turn history + live events ──── */}
-      <Card className="flex h-[70vh] flex-col p-0">
+      <Card
+        className={`flex h-[70vh] flex-col p-0 ${
+          selectedId && mobilePane === "preview" ? "hidden lg:flex" : "flex"
+        }`}
+      >
         {!selectedId ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-5 p-6">
             <p className="text-sm text-muted">Start a session</p>
@@ -712,8 +745,13 @@ export default function SessionView({
         )}
       </Card>
 
-      {/* ── Live preview ─────────────────────────────────────────────────── */}
-      <Card className="flex h-[70vh] flex-col p-0">
+      {/* ── Live preview — on mobile only when a session is open + Preview
+            tab is active; always visible on desktop. ─────────────────────── */}
+      <Card
+        className={`flex h-[70vh] flex-col p-0 ${
+          !selectedId || mobilePane === "chat" ? "hidden lg:flex" : "flex"
+        }`}
+      >
         <div className="flex items-center justify-between border-b border-edge px-3 py-2">
           <div className="flex items-center gap-2">
             <StatusDot tone={turnRunning ? "live" : "ok"} pulse={turnRunning} />

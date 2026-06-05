@@ -225,9 +225,12 @@ function AppShell() {
           </div>
         </div>
 
-        <div className="mb-6">
-          <StatsBar stats={stats} sparkData={sparkData} />
-        </div>
+        {/* Run/task aggregates — irrelevant to the Build surface, so hide there. */}
+        {view !== "build" && (
+          <div className="mb-6">
+            <StatsBar stats={stats} sparkData={sparkData} />
+          </div>
+        )}
 
         {/* Views */}
         {view === "tasks" && (

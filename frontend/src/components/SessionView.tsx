@@ -5,7 +5,7 @@
 // D-track: composed from ui/ primitives (Button, Badge, Card, StatusDot, Select).
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
-import { Activity, Check, ChevronRight, Copy, Download, Globe, History, Link2, Loader2, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Send, X } from "lucide-react";
+import { Activity, Check, ChevronRight, Copy, Download, Globe, History, Link2, Loader2, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, X } from "lucide-react";
 import type { ProviderHealth, Publish, Session, SessionTemplate, SessionTurn, Version } from "../types";
 import { api } from "../api";
 import { useSessionEvents, type SessionEvent } from "../useLiveFeed";
@@ -401,7 +401,7 @@ export default function SessionView({
                   className="flex flex-col gap-1 rounded-lg border border-edge bg-base p-4 text-left transition-colors hover:border-brand/60 disabled:opacity-50"
                 >
                   <span className="flex items-center gap-2 font-mono text-sm text-ink">
-                    {t.id === "summarize" ? <Activity size={14} /> : <Pencil size={14} />} {t.label}
+                    {t.id === "summarize" ? <Activity size={14} /> : t.id === "research" ? <Search size={14} /> : <Pencil size={14} />} {t.label}
                   </span>
                   <span className="text-xs text-muted">{t.description}</span>
                 </button>

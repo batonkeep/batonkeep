@@ -13,11 +13,10 @@ from app.sessions import templates as tmpl
 
 
 class TestTemplateRegistry:
-    def test_ships_summarize_and_draft(self):
+    def test_ships_summarize_research_and_draft(self):
         ids = {t.id for t in tmpl.list_templates()}
-        assert {"summarize", "draft"} <= ids
-        # #2 web research is deferred (egress decision); not offered yet.
-        assert "research" not in ids
+        # #1 summarize, #2 web research, #3 draft (sandbox has egress by default).
+        assert {"summarize", "research", "draft"} <= ids
 
     def test_get_unknown_is_none(self):
         assert tmpl.get_template("nope") is None

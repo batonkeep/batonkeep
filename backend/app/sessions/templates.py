@@ -8,9 +8,10 @@ guidance block into SESSION.md, which the orchestrator already injects into ever
 turn's context (filesystem-as-context, D-0008 A). So templates need **no engine
 change**: the agent reads the guidance each turn.
 
-Scope (D-0011): ship #1 Summarize + #3 Draft now (workspace-file + model only, no
-network egress). #2 Web research is deferred pending a sandbox egress decision;
-image/video stay out (multimodal gap, D-0008 B).
+Scope (D-0011): ship #1 Summarize, #2 Web research, #3 Draft. The sandbox has
+network egress by default (agents require it to function), so web research is not
+blocked — it relies on the executor's own web tools. Image/video stay out
+(multimodal gap, D-0008 B).
 """
 from __future__ import annotations
 
@@ -45,6 +46,23 @@ _TEMPLATES: list[SessionTemplate] = [
             "structure by section.\n"
             "- Keep it factual — do not invent content that isn't in the source. Ask for the "
             "file if none has been uploaded yet."
+        ),
+    ),
+    SessionTemplate(
+        id="research",
+        label="Research a topic",
+        description="Research a question or topic on the web and synthesize the findings.",
+        goal="Research a topic and produce a synthesized, sourced brief.",
+        guidance=(
+            "This is a **web-research** session.\n"
+            "- Use your web tools to research the user's question across multiple sources; "
+            "the sandbox has network access.\n"
+            "- Write the synthesis to `research.md` in the workspace: the answer up top, then "
+            "the supporting findings as bullets, each with the **source URL** so claims are "
+            "traceable.\n"
+            "- Prefer recent, reputable sources; note disagreement between sources rather than "
+            "papering over it. Distinguish what you found from what you inferred.\n"
+            "- If your executor has no web access, say so plainly instead of inventing sources."
         ),
     ),
     SessionTemplate(

@@ -7,7 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
 import hljs from "highlight.js/lib/common";
 import "highlight.js/styles/github-dark.css";
-import { Activity, Check, ChevronLeft, ChevronRight, Cloud, Copy, Download, FileCode, Globe, History, Link2, Loader2, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, X } from "lucide-react";
+import { Activity, Archive, Check, ChevronLeft, ChevronRight, Cloud, Copy, Download, FileCode, Globe, History, Link2, Loader2, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, X } from "lucide-react";
 import type { CloudflareStatus, ProviderHealth, Publish, Session, SessionTemplate, SessionTurn, Version } from "../types";
 import { api } from "../api";
 import { useSessionEvents, type SessionEvent } from "../useLiveFeed";
@@ -150,6 +150,8 @@ export default function SessionView({
   const { events, streamingText, lastTurn } = useSessionEvents(selectedId);
   const streamRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const importInputRef = useRef<HTMLInputElement>(null);
+  const [importing, setImporting] = useState(false);
 
   // Distinct provider instance ids for the switcher (grouped by what's healthy).
   const providerIds = useMemo(
@@ -295,6 +297,26 @@ export default function SessionView({
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = ""; // allow re-selecting the same file
+    }
+  };
+
+  // Import an existing site (zip/tar) into the session, preserving structure.
+  const handleImport = async (files: FileList | null) => {
+    const f = files?.[0];
+    if (!selectedId || !f || importing) return;
+    setSendError(null);
+    setImporting(true);
+    try {
+      const res = await api.importArchive(selectedId, f);
+      setMessage((m) =>
+        m.trim() ? m : `Imported ${res.count} files — continue from this site.`);
+      setPreviewNonce((n) => n + 1); // reflect the imported site in the preview
+      onSessionsChanged();           // import landed as a new version
+    } catch (err) {
+      setSendError(err instanceof Error ? err.message : "Could not import the archive");
+    } finally {
+      setImporting(false);
+      if (importInputRef.current) importInputRef.current.value = "";
     }
   };
 
@@ -883,6 +905,13 @@ export default function SessionView({
                   className="hidden"
                   onChange={(e) => handleUpload(e.target.files)}
                 />
+                <input
+                  ref={importInputRef}
+                  type="file"
+                  accept=".zip,.tar,.gz,.tgz,.bz2,.xz,application/zip,application/x-tar,application/gzip"
+                  className="hidden"
+                  onChange={(e) => handleImport(e.target.files)}
+                />
                 <Button
                   variant="ghost"
                   size="sm"
@@ -891,6 +920,15 @@ export default function SessionView({
                   onClick={() => fileInputRef.current?.click()}
                   disabled={uploading || sending}
                   title="Attach a file (image, CSV, PDF…) — drop into the box too"
+                />
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="shrink-0 px-2 py-2"
+                  icon={importing ? <Loader2 size={15} className="animate-spin" /> : <Archive size={15} />}
+                  onClick={() => importInputRef.current?.click()}
+                  disabled={importing || sending}
+                  title="Import an existing site (.zip / .tar) — keeps its folder structure"
                 />
                 <textarea
                   value={message}

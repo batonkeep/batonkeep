@@ -212,6 +212,14 @@ class UploadOut(BaseModel):
     commit_sha: Optional[str] = None
 
 
+class ImportOut(BaseModel):
+    """Result of importing an existing site (zip/tar) into a session workspace."""
+
+    paths: list[str]
+    count: int
+    commit_sha: Optional[str] = None
+
+
 class PublishOut(BaseModel):
     """Publish/share state of a session's build (M1.4)."""
 

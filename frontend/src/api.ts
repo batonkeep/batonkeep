@@ -8,6 +8,7 @@ import type {
   CloudflareStatus,
   Credential,
   FileEntry,
+  ImportResult,
   Mode,
   ProviderHealth,
   ProviderLimitsUpdate,
@@ -108,6 +109,13 @@ export const api = {
     const form = new FormData();
     for (const f of files) form.append("files", f, f.name);
     return req<Upload>(`/sessions/${id}/uploads`, { method: "POST", headers: {}, body: form });
+  },
+  // Import an existing site: a .zip / .tar(.gz/.bz2/.xz) extracted into the
+  // workspace root, preserving structure (D-0009 follow-on).
+  importArchive: (id: string, file: File) => {
+    const form = new FormData();
+    form.append("file", file, file.name);
+    return req<ImportResult>(`/sessions/${id}/import`, { method: "POST", headers: {}, body: form });
   },
   // Authenticated live-preview URL for an iframe. The token is a path segment (not a
   // query param) and the base ends in a slash, so the agent's relative asset links

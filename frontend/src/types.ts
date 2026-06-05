@@ -237,6 +237,13 @@ export interface Upload {
   commit_sha: string | null;
 }
 
+// Result of importing an existing site (zip/tar) into a session.
+export interface ImportResult {
+  paths: string[];
+  count: number;
+  commit_sha: string | null;
+}
+
 // One workspace file in the session file browser (P-0016 b).
 export interface FileEntry {
   path: string;

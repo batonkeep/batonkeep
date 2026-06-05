@@ -37,6 +37,7 @@ from app.schemas import (
     CloudflareStatusOut,
     ConsoleConfig,
     FileEntryOut,
+    ImportOut,
     ProviderHealth,
     ProviderLimitsUpdate,
     ProviderModelUpdate,
@@ -598,6 +599,53 @@ async def upload_session_assets(
     session.updated_at = datetime.now(timezone.utc)
     await db.commit()
     return UploadOut(paths=saved, commit_sha=commit_sha)
+
+
+@app.post("/api/sessions/{session_id}/import", response_model=ImportOut,
+          status_code=201, tags=["sessions"])
+async def import_session_archive(
+    session_id: str,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """
+    Import an existing site into the session by extracting a .zip or .tar(.gz/.bz2/.xz)
+    into the workspace root, preserving directory structure (unlike upload-in, which
+    buckets by type). The agent continues from it (filesystem-as-context); the import
+    is committed as one version. A `.git/` in the archive is dropped — the session
+    keeps its own engine-owned history. Nothing leaves the backend.
+    """
+    import tempfile
+    from app.sessions import imports, workspace as ws
+
+    session = await _owned_session(session_id, owner_id, db)
+
+    # Stream the upload to a temp file so the archive libs can sniff + random-access it.
+    tmp = tempfile.NamedTemporaryFile(prefix="cf-import-", delete=False)
+    try:
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            tmp.write(chunk)
+        tmp.close()
+        try:
+            paths = imports.extract_archive(session.workspace_path, tmp.name)
+        except imports.ImportArchiveError as exc:
+            raise HTTPException(status_code=exc.status, detail=exc.detail)
+    finally:
+        try:
+            os.remove(tmp.name)
+        except OSError:
+            pass
+
+    commit_sha = await ws.commit_paths(
+        session.workspace_path, message=f"import: {len(paths)} files from {file.filename or 'archive'}"
+    )
+    session.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    return ImportOut(paths=paths, count=len(paths), commit_sha=commit_sha)
 
 
 @app.get("/api/sessions/{session_id}/preview/{token}/{path:path}", tags=["sessions"])

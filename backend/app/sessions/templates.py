@@ -12,6 +12,10 @@ Scope (D-0011): ship #1 Summarize, #2 Web research, #3 Draft. The sandbox has
 network egress by default (agents require it to function), so web research is not
 blocked — it relies on the executor's own web tools. Image/video stay out
 (multimodal gap, D-0008 B).
+
+P-0016 b adds a **data / scripting** template (fetch → analyze → compile via a
+re-runnable script): it names Build's wider surface as an entry task and carries
+the ephemeral-venv / re-install-with-uv guidance the founder approved.
 """
 from __future__ import annotations
 
@@ -63,6 +67,28 @@ _TEMPLATES: list[SessionTemplate] = [
             "- Prefer recent, reputable sources; note disagreement between sources rather than "
             "papering over it. Distinguish what you found from what you inferred.\n"
             "- If your executor has no web access, say so plainly instead of inventing sources."
+        ),
+    ),
+    SessionTemplate(
+        id="data",
+        label="Fetch & analyze data",
+        description="Pull data from an API or the web, analyze it, and produce a result you can re-run.",
+        goal="Fetch data (API/web), analyze it, and produce a clear result.",
+        guidance=(
+            "This is a **data / scripting** session: fetch → analyze → compile, backed by a "
+            "**re-runnable script** (not just a one-off answer).\n"
+            "- Write a script in the workspace (e.g. `fetch_data.py`) that pulls the data — from "
+            "an open API (`yfinance`, REST endpoints, etc.) or the web — so the work is "
+            "reproducible and can later be scheduled as a recurring task.\n"
+            "- **Dependencies are ephemeral** (the sandbox venv is not persisted): install what "
+            "you need with `uv` at the start of the session, and **re-install if the environment "
+            "was reset** (a missing-module error means re-run the install). Record the deps in a "
+            "`requirements.txt` so the script stays reproducible.\n"
+            "- Cache fetched data in the workspace (e.g. `cache/`) to avoid re-hitting rate limits.\n"
+            "- Produce a clear result: tabulated/markdown output in the chat **and** a workspace "
+            "file (e.g. `result.md` or `data.csv`) the user can open or download.\n"
+            "- Reference any file you create by its workspace path so the user can open it.\n"
+            "- State your sources and any assumptions; don't fabricate data a fetch didn't return."
         ),
     ),
     SessionTemplate(

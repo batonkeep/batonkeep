@@ -4,6 +4,7 @@
 import type {
   ConsoleConfig,
   Credential,
+  FileEntry,
   Mode,
   ProviderHealth,
   ProviderLimitsUpdate,
@@ -131,6 +132,23 @@ export const api = {
   // Absolute URL for the public share link / the download zip (anchor hrefs).
   shareUrl: (sharePath: string) => `${window.location.origin}${sharePath}`,
   downloadUrl: (id: string) => `${BASE}/sessions/${id}/download`,
+
+  // Session file browser (P-0016 b): list workspace files, and the raw-file route
+  // that serves one verbatim. fileRawUrl is the same path agents' rewritten
+  // file:// links point at — used here as an anchor href (download) and as the
+  // viewer fetch target. getFileContent returns the file as text for the in-pane
+  // viewer (syntax-highlighted), so a script opens in Preview instead of navigating.
+  listFiles: (id: string) => req<FileEntry[]>(`/sessions/${id}/files`),
+  fileRawUrl: (id: string, path: string, download = false) => {
+    const rel = path.replace(/^\/+/, "");
+    const base = `${BASE}/sessions/${id}/files/raw/${rel}`;
+    return download ? `${base}?download=1` : base;
+  },
+  getFileContent: async (id: string, path: string): Promise<string> => {
+    const res = await fetch(api.fileRawUrl(id, path));
+    if (!res.ok) throw new ApiError(res.status, res.statusText);
+    return res.text();
+  },
 
   // ── Providers ──────────────────────────────────────────────────────────
   listProviders: () => req<ProviderHealth[]>("/providers"),

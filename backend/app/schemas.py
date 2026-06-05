@@ -167,6 +167,14 @@ class SessionTurnOut(BaseModel):
     finished_at: Optional[datetime]
 
 
+class FileEntryOut(BaseModel):
+    """One workspace file in the session file browser (P-0016 b)."""
+
+    path: str
+    size: int
+    modified: float
+
+
 class VersionOut(BaseModel):
     """One workspace version (commit) — the Undo/History list entry (M1.3)."""
 

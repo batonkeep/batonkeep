@@ -22,6 +22,14 @@ class TestTemplateRegistry:
         assert tmpl.get_template("nope") is None
         assert tmpl.get_template("summarize") is not None
 
+    def test_data_template_covers_scripting_workflow(self):
+        # P-0016 b: the data/scripting use case is offered as an entry template,
+        # and its guidance carries the ephemeral-venv / re-install-with-uv note.
+        t = tmpl.get_template("data")
+        assert t is not None
+        g = t.guidance.lower()
+        assert "uv" in g and "script" in g and "ephemeral" in g
+
 
 class TestTemplateSeedsBrief:
     @pytest.mark.asyncio

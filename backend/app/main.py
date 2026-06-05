@@ -32,6 +32,7 @@ from app.schemas import (
     CredentialOut,
     ModeOut,
     ConsoleConfig,
+    FileEntryOut,
     ProviderHealth,
     ProviderLimitsUpdate,
     ProviderModelUpdate,
@@ -506,13 +507,25 @@ async def list_session_turns(
     db: AsyncSession = Depends(get_db),
     owner_id: str = Depends(_owner_id),
 ):
+    from app.sessions.preview import rewrite_workspace_file_links
+
     session = await db.get(Session, session_id)
     if session is None or session.owner_id != owner_id:
         raise HTTPException(status_code=404, detail="Session not found")
     result = await db.execute(
         select(SessionTurn).where(SessionTurn.session_id == session_id).order_by(SessionTurn.seq)
     )
-    return [SessionTurnOut.model_validate(t) for t in result.scalars().all()]
+    out: list[SessionTurnOut] = []
+    for t in result.scalars().all():
+        item = SessionTurnOut.model_validate(t)
+        # Rewrite file:// links on read too, so turns persisted before this feature
+        # (idempotent for already-rewritten text) also render clickable artifacts.
+        if item.response:
+            item.response = rewrite_workspace_file_links(
+                item.response, session_id, session.workspace_path
+            )
+        out.append(item)
+    return out
 
 
 @app.post("/api/sessions/{session_id}/turns", response_model=SessionTurnOut,
@@ -615,6 +628,59 @@ async def session_preview(
 
     # no-store: preview reflects the latest turn's edits, never a cached version.
     return FileResponse(file_path, media_type=media, headers={"Cache-Control": "no-store"})
+
+
+# ── Session file browser (P-0016 b) ──────────────────────────────────────────
+# A session is more than a website: agents generate scripts/data the preview pane
+# (index.html only) can't surface. These routes list and serve individual
+# workspace files so any artifact is inspectable. Owner-scoped like the other
+# session routes; the raw route serves the exact file (no index.html fallback).
+
+@app.get("/api/sessions/{session_id}/files", response_model=list[FileEntryOut], tags=["sessions"])
+async def list_session_files(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """List the session workspace's files (path/size/mtime), excluding internals."""
+    from app.sessions import workspace as ws
+
+    session = await db.get(Session, session_id)
+    if session is None or session.owner_id != owner_id:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return [FileEntryOut(**e) for e in ws.list_files_meta(session.workspace_path)]
+
+
+@app.get("/api/sessions/{session_id}/files/raw/{path:path}", tags=["sessions"])
+async def get_session_file(
+    session_id: str,
+    path: str,
+    download: bool = False,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """
+    Serve one workspace file verbatim for view/download (P-0016 b). No index.html
+    fallback (so a .py/.csv/.json comes back as-is). `?download=1` forces a save
+    dialog; otherwise the browser renders inline. Path-traversal safe and confined
+    to this session's own workspace.
+    """
+    from app.sessions.preview import resolve_workspace_file, PreviewError
+
+    session = await db.get(Session, session_id)
+    if session is None or session.owner_id != owner_id:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    try:
+        file_path, media = resolve_workspace_file(session.workspace_path, path)
+    except PreviewError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail)
+
+    headers = {"Cache-Control": "no-store"}
+    if download:
+        name = os.path.basename(file_path)
+        headers["Content-Disposition"] = f'attachment; filename="{name}"'
+    return FileResponse(file_path, media_type=media, headers=headers)
 
 
 # ── Versioning: Undo/History (M1.3) ──────────────────────────────────────────

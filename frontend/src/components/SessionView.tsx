@@ -5,7 +5,9 @@
 // D-track: composed from ui/ primitives (Button, Badge, Card, StatusDot, Select).
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
-import { Activity, Check, ChevronLeft, ChevronRight, Copy, Download, Globe, History, Link2, Loader2, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, X } from "lucide-react";
+import hljs from "highlight.js/lib/common";
+import "highlight.js/styles/github-dark.css";
+import { Activity, Check, ChevronLeft, ChevronRight, Copy, Download, FileCode, Globe, History, Link2, Loader2, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, X } from "lucide-react";
 import type { ProviderHealth, Publish, Session, SessionTemplate, SessionTurn, Version } from "../types";
 import { api } from "../api";
 import { useSessionEvents, type SessionEvent } from "../useLiveFeed";
@@ -14,6 +16,38 @@ import { Badge, Button, Card, Select, StatusDot, Tabs, type Tone } from "../ui";
 
 function renderMarkdown(src: string): string {
   return marked.parse(src, { async: false }) as string;
+}
+
+// Map a filename extension to a highlight.js language; fall back to auto-detect.
+const EXT_LANG: Record<string, string> = {
+  py: "python", js: "javascript", jsx: "javascript", ts: "typescript",
+  tsx: "typescript", json: "json", sh: "bash", bash: "bash", md: "markdown",
+  html: "xml", xml: "xml", css: "css", yml: "yaml", yaml: "yaml", sql: "sql",
+  toml: "ini", ini: "ini",
+};
+
+function highlightCode(content: string, path: string): { html: string; lang: string } {
+  const ext = path.split(".").pop()?.toLowerCase() || "";
+  const lang = EXT_LANG[ext];
+  try {
+    if (lang && hljs.getLanguage(lang)) {
+      return { html: hljs.highlight(content, { language: lang }).value, lang };
+    }
+    const auto = hljs.highlightAuto(content);
+    return { html: auto.value, lang: auto.language || "text" };
+  } catch {
+    // Defensive: never let highlighting break the viewer — show escaped plain text.
+    const esc = content.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    return { html: esc, lang: "text" };
+  }
+}
+
+// A file the user opened from a chat link, shown in the Preview pane.
+interface OpenFile {
+  path: string;
+  content: string;
+  loading: boolean;
+  error?: string;
 }
 
 // The live feed shows a curated set of meaningful events by default. `log` frames
@@ -94,6 +128,8 @@ export default function SessionView({
   // Mobile only: the 3-pane grid can't fit a phone, so a selected session is a
   // master→detail view with a Chat/Preview tab switch. Desktop ignores this.
   const [mobilePane, setMobilePane] = useState<"chat" | "preview">("chat");
+  const [openFile, setOpenFile] = useState<OpenFile | null>(null); // file viewed in Preview pane
+  const [fileCopied, setFileCopied] = useState(false);
 
   const { events, streamingText, lastTurn } = useSessionEvents(selectedId);
   const streamRef = useRef<HTMLDivElement>(null);
@@ -140,6 +176,7 @@ export default function SessionView({
     setUploaded([]);
     setMessage("");
     setMobilePane("chat");
+    setOpenFile(null);
     if (!selectedId) return;
     api.getSession(selectedId).then(setDetail).catch(() => {});
     loadTurns();
@@ -324,6 +361,53 @@ export default function SessionView({
     }
   };
 
+  // Open a workspace file in the Preview pane (P-0016 b). Fetches the raw content
+  // for in-pane syntax-highlighted viewing instead of navigating the browser to it.
+  const viewFile = useCallback(
+    async (path: string) => {
+      if (!selectedId) return;
+      setOpenFile({ path, content: "", loading: true });
+      setMobilePane("preview"); // surface it on mobile, where panes are tabbed
+      try {
+        const content = await api.getFileContent(selectedId, path);
+        setOpenFile({ path, content, loading: false });
+      } catch (e) {
+        setOpenFile({ path, content: "", loading: false, error: e instanceof Error ? e.message : "Could not load file" });
+      }
+    },
+    [selectedId]
+  );
+
+  // Intercept clicks on the agent's rewritten artifact links
+  // (/api/sessions/<id>/files/raw/<path>) and open them in the viewer instead of
+  // navigating away. Other links behave normally.
+  const onChatClick = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      if (!selectedId) return;
+      const a = (e.target as HTMLElement).closest("a");
+      if (!a) return;
+      const href = a.getAttribute("href") || "";
+      const marker = `/sessions/${selectedId}/files/raw/`;
+      const i = href.indexOf(marker);
+      if (i === -1) return;
+      e.preventDefault();
+      const rel = decodeURIComponent(href.slice(i + marker.length).split(/[?#]/)[0]);
+      void viewFile(rel);
+    },
+    [selectedId, viewFile]
+  );
+
+  const handleCopyFile = async () => {
+    if (!openFile?.content) return;
+    try {
+      await navigator.clipboard.writeText(openFile.content);
+      setFileCopied(true);
+      setTimeout(() => setFileCopied(false), 1500);
+    } catch {
+      /* clipboard unavailable */
+    }
+  };
+
   // Cache-bust with a query param so relative asset links in the page still resolve
   // against the token base; the backend ignores it (Cache-Control: no-store anyway).
   const previewSrc =
@@ -343,18 +427,23 @@ export default function SessionView({
   // of a fixed 70vh, keeping the composer pinned above the screen bottom. On
   // desktop (lg) all three panes sit in the grid at a fixed height, as before.
   const inSession = !!selectedId;
+  // Landing (no session): on mobile, lead with the "Start a session" CTA and
+  // demote the session list below it (flex + order), instead of stacking the full
+  // list on top of a tall start panel. Desktop keeps the 3-column grid.
   const rootCls = inSession
     ? "flex flex-col gap-2 h-[calc(100dvh-5rem)] lg:grid lg:h-auto lg:grid-cols-[15rem_minmax(0,1fr)_minmax(0,1fr)] lg:gap-4"
-    : "space-y-4 lg:grid lg:grid-cols-[15rem_minmax(0,1fr)_minmax(0,1fr)] lg:gap-4 lg:space-y-0";
-  const paneSize = inSession ? "min-h-0 flex-1 lg:h-[70vh] lg:flex-none" : "h-[70vh]";
-  const chatPaneCls = `flex flex-col p-0 ${paneSize} ${inSession && mobilePane === "preview" ? "hidden lg:flex" : ""}`;
+    : "flex flex-col gap-4 lg:grid lg:grid-cols-[15rem_minmax(0,1fr)_minmax(0,1fr)] lg:gap-4";
+  // On mobile landing the start card sizes to its content (lg:h-[70vh] only on
+  // desktop), so it doesn't reserve 70vh of empty space above the session list.
+  const paneSize = inSession ? "min-h-0 flex-1 lg:h-[70vh] lg:flex-none" : "lg:h-[70vh]";
+  const chatPaneCls = `flex flex-col p-0 ${paneSize} ${inSession && mobilePane === "preview" ? "hidden lg:flex" : ""} ${!inSession ? "order-1 lg:order-none" : ""}`;
   const previewPaneCls = `flex flex-col p-0 ${paneSize} ${!inSession || mobilePane === "chat" ? "hidden lg:flex" : ""}`;
 
   return (
     <div className={rootCls}>
       {/* ── Session list — on mobile, hidden once a session is selected
             (master→detail); always shown on desktop. ───────────────────── */}
-      <div className={`space-y-2 ${selectedId ? "hidden lg:block" : ""}`}>
+      <div className={`space-y-2 ${selectedId ? "hidden lg:block" : "order-2 lg:order-none"}`}>
         <div className="flex items-center justify-between">
           <span className="font-mono text-xs uppercase tracking-widest text-muted">Sessions</span>
           <Button
@@ -420,7 +509,7 @@ export default function SessionView({
         {!selectedId ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-5 p-6">
             <p className="text-sm text-muted">Start a session</p>
-            <div className="grid w-full max-w-2xl gap-3 sm:grid-cols-3">
+            <div className="grid w-full max-w-2xl grid-cols-2 gap-3 sm:grid-cols-3">
               {/* Flagship build session (D-0007) + the retention task types (D-0011). */}
               <button
                 onClick={() => handleCreate()}
@@ -601,6 +690,7 @@ export default function SessionView({
                   {t.response && (
                     <div
                       className="markdown px-1 text-sm text-ink/80"
+                      onClick={onChatClick}
                       dangerouslySetInnerHTML={{ __html: renderMarkdown(t.response) }}
                     />
                   )}
@@ -828,7 +918,15 @@ export default function SessionView({
             />
           </div>
         )}
-        {previewSrc ? (
+        {openFile ? (
+          <FileViewer
+            file={openFile}
+            downloadHref={selectedId ? api.fileRawUrl(selectedId, openFile.path, true) : "#"}
+            copied={fileCopied}
+            onCopy={handleCopyFile}
+            onClose={() => setOpenFile(null)}
+          />
+        ) : previewSrc ? (
           <iframe
             key={previewSrc}
             src={previewSrc}
@@ -842,6 +940,77 @@ export default function SessionView({
           </div>
         )}
       </Card>
+    </div>
+  );
+}
+
+// In-pane viewer for a workspace file opened from a chat link (P-0016 b):
+// syntax-highlighted, with copy + download, and a close back to the live preview.
+function FileViewer({
+  file,
+  downloadHref,
+  copied,
+  onCopy,
+  onClose,
+}: {
+  file: OpenFile;
+  downloadHref: string;
+  copied: boolean;
+  onCopy: () => void;
+  onClose: () => void;
+}) {
+  const { html, lang } = useMemo(
+    () => (file.content ? highlightCode(file.content, file.path) : { html: "", lang: "" }),
+    [file.content, file.path]
+  );
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex items-center justify-between gap-2 border-b border-edge bg-base/60 px-3 py-1.5">
+        <div className="flex min-w-0 items-center gap-2">
+          <FileCode size={13} className="shrink-0 text-brand" />
+          <span className="truncate font-mono text-[11px] text-ink" title={file.path}>
+            {file.path}
+          </span>
+          {lang && lang !== "text" && (
+            <Badge tone="neutral" className="shrink-0 text-[10px] uppercase">{lang}</Badge>
+          )}
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="px-1.5"
+            icon={copied ? <Check size={13} className="text-ok" /> : <Copy size={13} />}
+            onClick={onCopy}
+            disabled={!file.content}
+            title="Copy file content"
+          />
+          <a href={downloadHref} title="Download this file" className="inline-flex">
+            <Button variant="ghost" size="sm" className="px-1.5" icon={<Download size={13} />} />
+          </a>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="px-1.5"
+            icon={<X size={13} />}
+            onClick={onClose}
+            title="Close — back to live preview"
+          />
+        </div>
+      </div>
+      {file.loading ? (
+        <div className="flex flex-1 items-center justify-center text-sm text-muted">
+          <Loader2 size={14} className="mr-2 animate-spin" /> Loading…
+        </div>
+      ) : file.error ? (
+        <div className="flex flex-1 items-center justify-center p-6 text-center text-sm text-bad">
+          {file.error}
+        </div>
+      ) : (
+        <pre className="hljs min-h-0 flex-1 overflow-auto p-3 text-[12px] leading-relaxed">
+          <code dangerouslySetInnerHTML={{ __html: html }} />
+        </pre>
+      )}
     </div>
   );
 }

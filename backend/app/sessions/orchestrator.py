@@ -29,6 +29,7 @@ from app.models import Session, SessionTurn
 from app.providers.base import EventKind, ExecResult, Usage
 from app.providers.registry import get_executor
 from app.sessions import workspace as ws
+from app.sessions.preview import rewrite_workspace_file_links
 from app.ws import ws_manager
 
 logger = logging.getLogger(__name__)
@@ -102,8 +103,13 @@ async def run_turn(
             budget_usd=1.0,
             extra={"session": True, "turn_seq": seq, "user_message": message},
         ):
+            # Rewrite agent file:// links to the raw-file route so the result
+            # renders with clickable artifacts in the live view (P-0016 b).
+            ev_text = ev.text
+            if ev.kind == EventKind.result and ev_text:
+                ev_text = rewrite_workspace_file_links(ev_text, session_id, workspace)
             await _broadcast_event(session_id, turn_id, seq, ev.kind,
-                                   message=ev.message, text=ev.text, phase=ev.phase, data=ev.data)
+                                   message=ev.message, text=ev_text, phase=ev.phase, data=ev.data)
             if ev.kind == EventKind.result:
                 final_result = ev.data.get("result")
             elif ev.kind == EventKind.error:
@@ -114,6 +120,10 @@ async def run_turn(
         error_msg = str(exc)
 
     response_text = final_result.text if final_result else ""
+    if response_text:
+        # Persist with file:// links rewritten so reloads also get clickable
+        # artifacts, not just the live stream (P-0016 b).
+        response_text = rewrite_workspace_file_links(response_text, session_id, workspace)
     version: Optional[dict] = None
     if final_result is not None:
         ws.append_progress(

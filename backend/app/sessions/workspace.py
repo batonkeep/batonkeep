@@ -165,6 +165,30 @@ def list_files(workspace: str) -> list[str]:
     return sorted(out)
 
 
+def list_files_meta(workspace: str) -> list[dict]:
+    """
+    File browser listing (P-0016 b): relative path + size + mtime for each
+    workspace file the user authored or the agent generated. Excludes the .git
+    internals and the SESSION.md brief (an internal agent artifact, not user
+    content — surfaced as History/brief elsewhere, not as a build output).
+    """
+    out: list[dict] = []
+    root = os.path.abspath(workspace)
+    for dirpath, dirnames, filenames in os.walk(root):
+        if ".git" in dirnames:
+            dirnames.remove(".git")
+        for name in filenames:
+            rel = os.path.relpath(os.path.join(dirpath, name), root)
+            if rel == BRIEF_FILENAME:
+                continue
+            try:
+                st = os.stat(os.path.join(dirpath, name))
+            except OSError:
+                continue
+            out.append({"path": rel, "size": st.st_size, "modified": st.st_mtime})
+    return sorted(out, key=lambda e: e["path"])
+
+
 def build_turn_context(workspace: str, user_message: str) -> str:
     """
     Assemble the prompt for a turn from the *workspace*, not a replayed transcript

@@ -36,12 +36,6 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
     catch { /* surfaced via disabled state */ }
   };
 
-  const toggleSeam = async (p: ProviderHealth) => {
-    const next = (p.exec_seam ?? "headless") === "terminal" ? "headless" : "terminal";
-    try { await api.setProviderSeam(p.name, next, consoleToken); onRefresh(); }
-    catch { /* surfaced via disabled state */ }
-  };
-
   const [capturing, setCapturing] = useState<string | null>(null);
   const captureUsage = async (instanceId: string) => {
     setCapturing(instanceId);
@@ -118,22 +112,7 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
                         {p.kind === "cli" ? (
                           <>
                             <Badge tone="neutral">{p.model || "CLI default"}</Badge>
-                            {(p.exec_seam ?? "headless") === "terminal" ? (
-                              <Badge tone="defer">
-                                terminal seam
-                                {canConsole && (
-                                  <button onClick={() => toggleSeam(p)} title="switch to headless"
-                                    className="ml-1 text-muted hover:text-brand"><Terminal size={10} /></button>
-                                )}
-                              </Badge>
-                            ) : canConsole ? (
-                              <button onClick={() => toggleSeam(p)} title="run via PTY terminal seam"
-                                className="font-mono text-[10px] text-muted hover:text-brand">
-                                headless · use terminal seam
-                              </button>
-                            ) : (
-                              <Badge tone="neutral">headless</Badge>
-                            )}
+                            <Badge tone="neutral">headless</Badge>
                           </>
                         ) : editingModel === p.name ? (
                           <span className="flex items-center gap-1">
@@ -181,8 +160,9 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
                     <div className="h-1.5 w-full overflow-hidden rounded-full bg-base">
                       <div className={`h-full ${barColor} transition-all`} style={{ width: `${usedPct == null ? 0 : usedPct}%` }} />
                     </div>
-                    {canConsole && p.kind === "cli" && (p.exec_seam ?? "headless") === "terminal" && (
+                    {canConsole && p.kind === "cli" && (
                       <button onClick={() => captureUsage(p.name)} disabled={capturing === p.name}
+                        title="Drive /usage once via the full-TTY single-shot seam (read-only)"
                         className="mt-1.5 font-mono text-[10px] text-brand hover:text-ink disabled:text-muted">
                         {capturing === p.name ? "capturing /usage…" : "capture /usage quota"}
                       </button>

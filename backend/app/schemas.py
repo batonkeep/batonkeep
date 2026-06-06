@@ -302,7 +302,6 @@ class ProviderHealth(BaseModel):
     last_reset_seen: Optional[datetime]
     est_used_pct: Optional[float]
     mode: str  # plan | api | open | mock
-    exec_seam: Optional[str] = None  # CLI only (D-0015): "headless" (default) | "terminal"
 
 
 class ProviderLimitsUpdate(BaseModel):
@@ -314,11 +313,6 @@ class ProviderLimitsUpdate(BaseModel):
 class ProviderModelUpdate(BaseModel):
     """Set (or clear, when null/empty) an instance's runtime model override."""
     model: Optional[str] = None
-
-
-class ProviderSeamUpdate(BaseModel):
-    """Set a CLI instance's exec seam (D-0015): "headless" (default) or "terminal"."""
-    seam: Optional[str] = None
 
 
 class ConsoleConfig(BaseModel):

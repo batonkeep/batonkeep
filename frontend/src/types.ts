@@ -122,7 +122,6 @@ export interface ProviderHealth {
   last_reset_seen: string | null;
   est_used_pct: number | null;
   mode: string; // plan | api | open | mock
-  exec_seam?: string | null; // CLI only (D-0015): "headless" (default) | "terminal"
 }
 
 export interface ProviderLimitsUpdate {

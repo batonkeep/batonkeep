@@ -44,7 +44,6 @@ from app.schemas import (
     ProviderHealth,
     ProviderLimitsUpdate,
     ProviderModelUpdate,
-    ProviderSeamUpdate,
     PublishOut,
     RestoreOut,
     RestoreRequest,
@@ -1201,7 +1200,6 @@ async def list_providers():
         get_provider_def,
         is_instance_connected,
         effective_model,
-        get_exec_seam,
     )
     from app.quota import quota_tracker
 
@@ -1226,7 +1224,6 @@ async def list_providers():
             last_reset_seen=health.last_reset_seen,
             est_used_pct=health.est_used_pct,
             mode=pdef.mode,
-            exec_seam=get_exec_seam(inst.id) if pdef.kind == "cli" else None,
         ))
     return result
 
@@ -1288,28 +1285,6 @@ async def set_provider_model(
     set_model_override(instance_id, (body.model or "").strip() or None)
     logger.info("Console set model for %s -> %s", instance_id, body.model)
     return {"status": "ok", "instance": instance_id, "model": body.model or None}
-
-
-@app.post("/api/providers/{instance_id}/seam", tags=["console"])
-async def set_provider_seam(
-    instance_id: str,
-    body: ProviderSeamUpdate,
-    _: None = Depends(_require_console),
-):
-    """Set a CLI instance's exec seam: 'headless' (default) or 'terminal' (PTY) (D-0015)."""
-    from app.providers.registry import get_instance, get_provider_def, set_exec_seam, get_exec_seam
-    inst = get_instance(instance_id)
-    if inst is None:
-        raise HTTPException(status_code=404, detail="Unknown provider instance")
-    pdef = get_provider_def(inst.template)
-    if not (pdef and pdef.kind == "cli"):
-        raise HTTPException(status_code=400, detail="Exec seam applies to plan-CLI instances only.")
-    seam = (body.seam or "").strip() or None
-    if seam and seam not in ("headless", "terminal"):
-        raise HTTPException(status_code=400, detail="seam must be 'headless' or 'terminal'")
-    set_exec_seam(instance_id, seam)
-    logger.info("Console set exec seam for %s -> %s", instance_id, seam)
-    return {"status": "ok", "instance": instance_id, "exec_seam": get_exec_seam(instance_id)}
 
 
 @app.post("/api/usage/subscription/{instance_id}", tags=["console"])

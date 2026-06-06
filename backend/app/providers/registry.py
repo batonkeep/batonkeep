@@ -340,44 +340,18 @@ def is_headless_capable(candidate: str) -> bool:
     return template not in _NO_HEADLESS_CLI_TEMPLATES
 
 
-# ── Exec-seam override (D-0015) ─────────────────────────────────────────────────
-# Per-instance choice of how a CLI instance runs: "headless" (cli -p, default) or
-# "terminal" (PTY interactive seam). Persisted as runtime JSON, mirroring the
-# model-override store above — no DB column, no migration.
-
-_EXEC_SEAM_OVERRIDES_PATH = os.environ.get("EXEC_SEAM_OVERRIDES_PATH", "/data/exec-seam-overrides.json")
-_VALID_SEAMS = {"headless", "terminal"}
-_DEFAULT_SEAM = "headless"
-
-
-def _load_exec_seam_overrides() -> dict[str, str]:
-    try:
-        with open(_EXEC_SEAM_OVERRIDES_PATH, encoding="utf-8") as f:
-            data = json.load(f)
-        return {str(k): str(v) for k, v in data.items() if v in _VALID_SEAMS}
-    except (OSError, json.JSONDecodeError):
-        return {}
-
-
-_EXEC_SEAM_OVERRIDES: dict[str, str] = _load_exec_seam_overrides()
-
-
-def get_exec_seam(instance_id: str) -> str:
-    """The exec seam an instance will use: 'headless' (default) or 'terminal'."""
-    return _EXEC_SEAM_OVERRIDES.get(instance_id, _DEFAULT_SEAM)
-
-
-def set_exec_seam(instance_id: str, seam: Optional[str]) -> None:
-    """Set (or reset to default, when seam is falsy/'headless') an instance's seam + persist."""
-    if seam and seam in _VALID_SEAMS and seam != _DEFAULT_SEAM:
-        _EXEC_SEAM_OVERRIDES[instance_id] = seam
-    else:
-        _EXEC_SEAM_OVERRIDES.pop(instance_id, None)
-    try:
-        with open(_EXEC_SEAM_OVERRIDES_PATH, "w", encoding="utf-8") as f:
-            json.dump(_EXEC_SEAM_OVERRIDES, f, indent=2)
-    except OSError as exc:
-        logger.error("[registry] failed to persist exec-seam overrides: %s", exc)
+# ── Execution seams (D-0016 posture) ────────────────────────────────────────────
+# A CLI provider has THREE seams, but they are not user-selectable task lanes:
+#   1. headless `cli -p`  — the ONLY seam for task turns (get_executor below).
+#   2. full-TTY single-shot — drive ONE read-only meta command (e.g. /usage) and
+#      read one screen. Automated + internal only (get_interactive_executor),
+#      never exposed as a task executor a user can flip on.
+#   3. web-TTY — a live PTY the human drives (app/web_tty.py, /ws/tty).
+# The earlier user-facing "exec-seam = terminal" override (D-0015 slice 3) let a
+# user route task turns through seam #2's autonomous TUI driver; that produced
+# scraped agent narration as the "result" and re-crossed the ToS line D-0016 drew.
+# Removed: task execution is always headless; the interactive driver survives only
+# for internal single-shot meta capture.
 
 
 def effective_model(inst: ProviderInstance, pdef: ProviderDef) -> Optional[str]:
@@ -588,13 +562,10 @@ def get_executor(instance_id: str) -> Optional[Executor]:
         return MockExecutor(name=inst.id)
 
     if pdef.kind == "cli":
-        # Wired in P4; seam selectable per-instance (D-0015).
-        if get_exec_seam(inst.id) == "terminal":
-            try:
-                from app.providers.cli_interactive import CLIInteractiveExecutor
-                return CLIInteractiveExecutor(pdef, instance=inst)
-            except ImportError:
-                logger.warning("CLIInteractiveExecutor unavailable; falling back to headless")
+        # Task turns ALWAYS run headless `cli -p` (D-0016 posture). The interactive
+        # full-TTY driver is never a task executor — it's automated-internal only
+        # (get_interactive_executor, for single-shot meta like /usage). Live human
+        # terminals go through the web-TTY lane (app/web_tty.py), not here.
         try:
             from app.providers.cli_executor import CLIExecutor
             return CLIExecutor(pdef, instance=inst)
@@ -612,3 +583,25 @@ def get_executor(instance_id: str) -> Optional[Executor]:
             return None
 
     return None
+
+
+def get_interactive_executor(instance_id: str) -> Optional[Executor]:
+    """The full-TTY single-shot driver for a CLI instance — automated-internal only.
+
+    Used to drive ONE read-only meta command (e.g. /usage) and read one screen
+    (app/subscription_usage.py). NOT a task executor: get_executor() never returns
+    this, so user task turns can't be routed through autonomous TUI driving. Returns
+    None for non-CLI / unknown instances.
+    """
+    inst = get_instance(instance_id)
+    if inst is None:
+        return None
+    pdef = get_provider_def(inst.template)
+    if pdef is None or pdef.kind != "cli":
+        return None
+    try:
+        from app.providers.cli_interactive import CLIInteractiveExecutor
+        return CLIInteractiveExecutor(pdef, instance=inst)
+    except ImportError:
+        logger.warning("CLIInteractiveExecutor unavailable")
+        return None

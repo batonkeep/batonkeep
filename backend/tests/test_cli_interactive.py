@@ -11,10 +11,13 @@ import pytest
 
 from app.cli_policy import TerminalPolicy
 from app.providers.base import EventKind
+import pyte
+
 from app.providers.cli_interactive import (
     CLIInteractiveExecutor,
     TUISpec,
     get_tui_spec,
+    render_screen,
     strip_ansi,
 )
 from app.providers.registry import ProviderDef, ProviderInstance
@@ -39,6 +42,28 @@ class TestStripAnsi:
 
     def test_keeps_newlines_and_tabs(self):
         assert strip_ansi("a\tb\nc") == "a\tb\nc"
+
+
+class TestRenderScreen:
+    def _feed(self, *chunks: bytes) -> str:
+        screen = pyte.Screen(40, 6)
+        stream = pyte.ByteStream(screen)
+        for c in chunks:
+            stream.feed(c)
+        return render_screen(screen)
+
+    def test_renders_final_frame_after_redraw(self):
+        # A redraw-heavy panel: home + clear, then the real content. Naive
+        # concatenation would keep the stale frame; the screen keeps only the last.
+        out = self._feed(
+            b"\x1b[H\x1b[2Jloading...",
+            b"\x1b[H\x1b[2JCredits used: 2,500 / 10,000",
+        )
+        assert out == "Credits used: 2,500 / 10,000"
+
+    def test_trims_blank_padding(self):
+        out = self._feed(b"\x1b[2J\x1b[3;1Hmiddle line")
+        assert out == "middle line"
 
 
 class TestLaunchFlags:

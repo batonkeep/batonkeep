@@ -37,6 +37,24 @@ class TestParseUsagePanel:
         assert u.ok is True
         assert u.used_pct == 0.0
 
+    def test_grok_credits_percentage(self):
+        # grok's live panel (2026-06-06): "Credits used: NN%" — framing-word path.
+        u = parse_usage_panel("Credits used: 9%", "grok")
+        assert u.ok is True
+        assert u.used_pct == pytest.approx(0.09)
+
+    def test_grok_credits_count_fallback(self):
+        # Defensive: count/total variant → used = count / total.
+        u = parse_usage_panel("Credits used: 2,500 / 10,000", "grok")
+        assert u.ok is True
+        assert u.used_pct == pytest.approx(0.25)
+
+    def test_grok_credits_remaining_framing_is_inverted(self):
+        # "remaining" counts the unused credits → used = (total - count) / total.
+        u = parse_usage_panel("Credits remaining: 7,500 of 10,000", "grok")
+        assert u.ok is True
+        assert u.used_pct == pytest.approx(0.25)
+
     def test_extracts_reset_hint(self):
         text = "Weekly limit 80% used\nResets Mon Jun 9 at 10:00"
         u = parse_usage_panel(text, "claude")

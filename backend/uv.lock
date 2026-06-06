@@ -3,82 +3,6 @@ revision = 3
 requires-python = ">=3.12"
 
 [[package]]
-name = "batonkeep-backend"
-version = "0.1.0"
-source = { virtual = "." }
-dependencies = [
-    { name = "aiofiles" },
-    { name = "aiosqlite" },
-    { name = "alembic" },
-    { name = "anthropic" },
-    { name = "apscheduler" },
-    { name = "cryptography" },
-    { name = "fastapi" },
-    { name = "greenlet" },
-    { name = "httpx" },
-    { name = "openai" },
-    { name = "pydantic" },
-    { name = "pydantic-settings" },
-    { name = "python-multipart" },
-    { name = "sqlalchemy" },
-    { name = "uvicorn", extra = ["standard"] },
-    { name = "websockets" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "anyio" },
-    { name = "mypy" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "ruff" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "anyio" },
-    { name = "mypy" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aiofiles", specifier = "==24.1.0" },
-    { name = "aiosqlite", specifier = "==0.20.0" },
-    { name = "alembic", specifier = "==1.14.0" },
-    { name = "anthropic", specifier = "==0.40.0" },
-    { name = "anyio", marker = "extra == 'dev'", specifier = "==4.7.0" },
-    { name = "apscheduler", specifier = "==3.10.4" },
-    { name = "cryptography", specifier = "==44.0.0" },
-    { name = "fastapi", specifier = "==0.115.6" },
-    { name = "greenlet", specifier = "==3.1.1" },
-    { name = "httpx", specifier = "==0.28.1" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = "==1.14.0" },
-    { name = "openai", specifier = "==1.58.1" },
-    { name = "pydantic", specifier = "==2.10.3" },
-    { name = "pydantic-settings", specifier = "==2.7.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = "==8.3.4" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = "==0.24.0" },
-    { name = "python-multipart", specifier = "==0.0.20" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = "==0.8.6" },
-    { name = "sqlalchemy", specifier = "==2.0.36" },
-    { name = "uvicorn", extras = ["standard"], specifier = "==0.32.1" },
-    { name = "websockets", specifier = "==14.1" },
-]
-provides-extras = ["dev"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "anyio", specifier = "==4.7.0" },
-    { name = "mypy", specifier = "==1.14.0" },
-    { name = "pytest", specifier = "==8.3.4" },
-    { name = "pytest-asyncio", specifier = "==0.24.0" },
-    { name = "ruff", specifier = "==0.8.6" },
-]
-
-[[package]]
 name = "aiofiles"
 version = "24.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -166,6 +90,84 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/5e/34/5dcb368cf89f93132d9a31bd3747962a9dc874480e54333b0c09fa7d56ac/APScheduler-3.10.4.tar.gz", hash = "sha256:e6df071b27d9be898e486bc7940a7be50b4af2e9da7c08f0744a96d4bd4cef4a", size = 100832, upload-time = "2023-08-19T16:44:58.293Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/13/b5/7af0cb920a476dccd612fbc9a21a3745fb29b1fcd74636078db8f7ba294c/APScheduler-3.10.4-py3-none-any.whl", hash = "sha256:fb91e8a768632a4756a585f79ec834e0e27aad5860bac7eaa523d9ccefd87661", size = 59303, upload-time = "2023-08-19T16:44:56.814Z" },
+]
+
+[[package]]
+name = "batonkeep-backend"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "aiofiles" },
+    { name = "aiosqlite" },
+    { name = "alembic" },
+    { name = "anthropic" },
+    { name = "apscheduler" },
+    { name = "cryptography" },
+    { name = "fastapi" },
+    { name = "greenlet" },
+    { name = "httpx" },
+    { name = "openai" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "pyte" },
+    { name = "python-multipart" },
+    { name = "sqlalchemy" },
+    { name = "uvicorn", extra = ["standard"] },
+    { name = "websockets" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "anyio" },
+    { name = "mypy" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "anyio" },
+    { name = "mypy" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiofiles", specifier = "==24.1.0" },
+    { name = "aiosqlite", specifier = "==0.20.0" },
+    { name = "alembic", specifier = "==1.14.0" },
+    { name = "anthropic", specifier = "==0.40.0" },
+    { name = "anyio", marker = "extra == 'dev'", specifier = "==4.7.0" },
+    { name = "apscheduler", specifier = "==3.10.4" },
+    { name = "cryptography", specifier = "==44.0.0" },
+    { name = "fastapi", specifier = "==0.115.6" },
+    { name = "greenlet", specifier = "==3.1.1" },
+    { name = "httpx", specifier = "==0.28.1" },
+    { name = "mypy", marker = "extra == 'dev'", specifier = "==1.14.0" },
+    { name = "openai", specifier = "==1.58.1" },
+    { name = "pydantic", specifier = "==2.10.3" },
+    { name = "pydantic-settings", specifier = "==2.7.0" },
+    { name = "pyte", specifier = ">=0.8.2" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = "==8.3.4" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = "==0.24.0" },
+    { name = "python-multipart", specifier = "==0.0.20" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = "==0.8.6" },
+    { name = "sqlalchemy", specifier = "==2.0.36" },
+    { name = "uvicorn", extras = ["standard"], specifier = "==0.32.1" },
+    { name = "websockets", specifier = "==14.1" },
+]
+provides-extras = ["dev"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "anyio", specifier = "==4.7.0" },
+    { name = "mypy", specifier = "==1.14.0" },
+    { name = "pytest", specifier = "==8.3.4" },
+    { name = "pytest-asyncio", specifier = "==0.24.0" },
+    { name = "ruff", specifier = "==0.8.6" },
 ]
 
 [[package]]
@@ -725,6 +727,18 @@ wheels = [
 ]
 
 [[package]]
+name = "pyte"
+version = "0.8.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "wcwidth" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ab/ab/b599762933eba04de7dc5b31ae083112a6c9a9db15b01d3109ad797559d9/pyte-0.8.2.tar.gz", hash = "sha256:5af970e843fa96a97149d64e170c984721f20e52227a2f57f0a54207f08f083f", size = 92301, upload-time = "2023-11-12T09:33:43.217Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/59/d0/bb522283b90853afbf506cd5b71c650cf708829914efd0003d615cf426cd/pyte-0.8.2-py3-none-any.whl", hash = "sha256:85db42a35798a5aafa96ac4d8da78b090b2c933248819157fc0e6f78876a0135", size = 31627, upload-time = "2023-11-12T09:33:41.096Z" },
+]
+
+[[package]]
 name = "pytest"
 version = "8.3.4"
 source = { registry = "https://pypi.org/simple" }
@@ -1090,6 +1104,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/56/fe/cb8ef3d6f929d14158fdaaad9925985b7310abc9384dcd4d82dd0016fb59/watchfiles-1.2.0-cp315-cp315-manylinux_2_31_riscv64.whl", hash = "sha256:cee9d5efd929efdac5f7e58f72b3376f676b64050a91c5b99a7094c5b2317488", size = 465096, upload-time = "2026-05-18T04:31:30.384Z" },
     { url = "https://files.pythonhosted.org/packages/25/91/80908e835e100527a9267147b08c0eee1fa6ab0ffec15edc04d1d44885f7/watchfiles-1.2.0-cp315-cp315-musllinux_1_1_aarch64.whl", hash = "sha256:b718bf356bbc15e559bd8ef41782b573b8ae0e3f177ab244b440568d7ea02cfb", size = 630638, upload-time = "2026-05-18T04:30:49.89Z" },
     { url = "https://files.pythonhosted.org/packages/46/4b/95ab2f256bb4af3cb2eb23b9317bda984ee6e0f11733a5c004a6c95b06e3/watchfiles-1.2.0-cp315-cp315-musllinux_1_1_x86_64.whl", hash = "sha256:922c0e019fe68b3ae392965a766b02a71ba1168c932cebc3733cd52c5fe5b377", size = 657684, upload-time = "2026-05-18T04:31:32.027Z" },
+]
+
+[[package]]
+name = "wcwidth"
+version = "0.8.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/af/44/c833e6b746ffb654e9abacf7ad6c2480a9c8c42e9637c1ae849964fb4dde/wcwidth-0.8.0.tar.gz", hash = "sha256:68a882ff6d14e3d14e0cae590b96a0551be64ce4905408112a8254434a1bdf69", size = 1305357, upload-time = "2026-06-05T21:19:35.667Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fb/17/c68b6cbcfeadbf420b3c3edaf8fda51335bc9c38732adb2d3ba8984dc607/wcwidth-0.8.0-py3-none-any.whl", hash = "sha256:8c75e6099cefd197c4bcc67a486f70b5dbc68f997c05f34a811d853910450d64", size = 324935, upload-time = "2026-06-05T21:19:33.999Z" },
 ]
 
 [[package]]

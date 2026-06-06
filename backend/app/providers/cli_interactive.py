@@ -5,8 +5,15 @@ The headless seam (cli_executor.py:CLIExecutor) runs `cli -p "<prompt>"` and rea
 a structured stream. That can't drive interactive-only surfaces: probed live
 (2026-06-06) only `claude -p "/usage"` returns anything; grok/agy block and
 codex `-p` means `--profile`. This seam instead spawns the *real* TUI inside a
-pseudo-terminal, types the prompt and control commands, scrapes the ANSI screen,
-and parses it into ExecEvents — same Executor interface as the headless path.
+pseudo-terminal, types the prompt and control commands, renders the ANSI stream
+through a virtual-terminal screen buffer (pyte), and parses the final rendered
+screen into ExecEvents — same Executor interface as the headless path.
+
+Why an emulated screen rather than concatenating stripped chunks: TUIs that
+redraw continuously (grok's async credit panel especially) bury their final
+content under a stream of full-screen repaints, so naive concatenation captures
+noise. Feeding the raw bytes into pyte applies the cursor moves/clears exactly as
+a real terminal would, leaving only the *final* on-screen state to read back.
 
 Because a PTY-driven TUI is a much wider surface than `cli -p`, every control
 command the seam sends is checked against the config allow-policy
@@ -37,6 +44,8 @@ import struct
 import termios
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Optional
+
+import pyte
 
 from app.cli_policy import get_policy
 from app.config import get_settings
@@ -74,6 +83,21 @@ _ANSI_RE = re.compile(
 def strip_ansi(text: str) -> str:
     """Remove ANSI escape sequences and stray control chars from PTY output."""
     return _ANSI_RE.sub("", text)
+
+
+def render_screen(screen: "pyte.Screen") -> str:
+    """Read back the final rendered state of an emulated terminal screen.
+
+    pyte pads every line to the full screen width and keeps cleared rows blank,
+    so we rstrip each line and trim leading/trailing blank rows — leaving the
+    panel content as it actually appears, redraws already collapsed into the
+    final frame."""
+    lines = [ln.rstrip() for ln in screen.display]
+    while lines and not lines[0]:
+        lines.pop(0)
+    while lines and not lines[-1]:
+        lines.pop()
+    return "\n".join(lines)
 
 
 # ── Per-provider TUI adapters ──────────────────────────────────────────────────
@@ -246,27 +270,35 @@ class CLIInteractiveExecutor(Executor):
                 os.fdopen(master_fd, "rb", buffering=0),
             )
 
+            # Emulated terminal: raw PTY bytes are fed here so cursor moves and
+            # screen clears are applied exactly as a real terminal would, instead
+            # of being concatenated. We read the rendered screen back on capture.
+            screen = pyte.Screen(_PTY_COLS, _PTY_ROWS)
+            vt_stream = pyte.ByteStream(screen)
+
             def _write(s: str) -> None:
                 os.write(master_fd, s.encode("utf-8"))
 
             async def _drain_until_idle(*, capture: bool, first_timeout: float = idle_timeout) -> None:
-                """Read PTY output until it goes idle. When capture, collect the
-                scraped text (the TUI's response); otherwise discard it (startup
-                banner / echoed input we don't want in the result)."""
+                """Read PTY output until it goes idle, feeding every byte into the
+                emulated screen. When capture, snapshot the final rendered screen
+                (the TUI's response) once idle; otherwise just advance the screen
+                state (startup banner / echoed input we don't keep)."""
                 nonlocal accumulated
                 timeout = first_timeout
                 while True:
                     try:
                         chunk = await asyncio.wait_for(reader.read(4096), timeout=timeout)
                     except asyncio.TimeoutError:
-                        return  # idle → turn done
+                        break  # idle → turn done
                     if not chunk:
-                        return  # EOF
+                        break  # EOF
                     timeout = idle_timeout
-                    if capture:
-                        text = strip_ansi(chunk.decode("utf-8", errors="replace"))
-                        if text:
-                            accumulated.append(text)
+                    vt_stream.feed(chunk)
+                if capture:
+                    snapshot = render_screen(screen)
+                    if snapshot:
+                        accumulated.append(snapshot)
 
             async def _send(text: str) -> None:
                 """Type text, let the TUI render it, then submit per the spec."""
@@ -302,8 +334,8 @@ class CLIInteractiveExecutor(Executor):
             finally:
                 transport.close()
 
-            # Surface the scraped screen as a single token + a result event.
-            text = "".join(accumulated)
+            # Surface the rendered screen(s) as a single token + a result event.
+            text = "\n".join(accumulated)
             if text:
                 yield ExecEvent(kind=EventKind.token, text=text)
             usage = Usage()  # subscription TUI — no per-token charge metered here

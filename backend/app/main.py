@@ -1397,7 +1397,7 @@ async def web_tty_websocket(websocket: WebSocket):
     {"token","session","instance"}; thereafter {"type":"input"|"resize",...}.
     Server emits {"type":"output"|"exit"|"error",...}.
     """
-    from app.web_tty import WebTtyError, build_web_tty_session
+    from app.web_tty import WebTtyError, build_web_tty_session, strip_sync_output
 
     await websocket.accept()
     if not settings.web_console_available:
@@ -1434,11 +1434,14 @@ async def web_tty_websocket(websocket: WebSocket):
     await session.start(rows=_dim("rows", 30, 4, 200), cols=_dim("cols", 100, 20, 400))
 
     async def _pump_output() -> None:
+        carry = b""  # short tail held back when a 2026 marker straddles two reads
         while True:
             data = await session.read()
             if data is None:
                 break
-            await websocket.send_json({"type": "output", "data": data.decode("utf-8", "replace")})
+            clean, carry = strip_sync_output(data, carry)
+            if clean:
+                await websocket.send_json({"type": "output", "data": clean.decode("utf-8", "replace")})
 
     out_task = asyncio.create_task(_pump_output())
     try:

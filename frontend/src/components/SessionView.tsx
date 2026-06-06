@@ -1004,8 +1004,30 @@ export default function SessionView({
               )}
             </div>
 
-            {/* Composer */}
+            </>
+            )}
+
+            {/* Composer — the agent selector + attach/import stay in BOTH modes
+                (switch the CLI or drop workspace files while in Terminal); the
+                message box + Send are Chat-only, since in Terminal the live CLI
+                is the input. */}
             <div className="space-y-2 border-t border-edge p-3">
+              {/* Hidden file inputs — always mounted so the buttons can trigger them. */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept=".png,.jpg,.jpeg,.svg,.webp,.csv,.pdf,.txt,.md,image/*"
+                className="hidden"
+                onChange={(e) => handleUpload(e.target.files)}
+              />
+              <input
+                ref={importInputRef}
+                type="file"
+                accept=".zip,.tar,.gz,.tgz,.bz2,.xz,application/zip,application/x-tar,application/gzip"
+                className="hidden"
+                onChange={(e) => handleImport(e.target.files)}
+              />
               <div className="flex items-center gap-2">
                 <span className="font-mono text-[11px] text-muted">agent</span>
                 <Select
@@ -1024,6 +1046,26 @@ export default function SessionView({
                     </option>
                   ))}
                 </Select>
+                <div className="ml-auto flex items-center gap-0.5">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="px-2 py-1.5"
+                    icon={uploading ? <Loader2 size={15} className="animate-spin" /> : <Paperclip size={15} />}
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={uploading || sending}
+                    title="Attach a file (image, CSV, PDF…) into the workspace"
+                  />
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="px-2 py-1.5"
+                    icon={importing ? <Loader2 size={15} className="animate-spin" /> : <Archive size={15} />}
+                    onClick={() => { setImportError(null); setImportModalOpen(true); }}
+                    disabled={importing || sending}
+                    title="Import an existing site (.zip / .tar, or a git URL)"
+                  />
+                </div>
               </div>
               {uploaded.length > 0 && (
                 <div className="flex flex-wrap gap-1.5">
@@ -1038,74 +1080,39 @@ export default function SessionView({
                   ))}
                 </div>
               )}
-              <div className="flex items-start gap-2">
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  multiple
-                  accept=".png,.jpg,.jpeg,.svg,.webp,.csv,.pdf,.txt,.md,image/*"
-                  className="hidden"
-                  onChange={(e) => handleUpload(e.target.files)}
-                />
-                <input
-                  ref={importInputRef}
-                  type="file"
-                  accept=".zip,.tar,.gz,.tgz,.bz2,.xz,application/zip,application/x-tar,application/gzip"
-                  className="hidden"
-                  onChange={(e) => handleImport(e.target.files)}
-                />
-                <div className="flex shrink-0 flex-col gap-0.5">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="px-2 py-2"
-                    icon={uploading ? <Loader2 size={15} className="animate-spin" /> : <Paperclip size={15} />}
-                    onClick={() => fileInputRef.current?.click()}
-                    disabled={uploading || sending}
-                    title="Attach a file (image, CSV, PDF…) — drop into the box too"
-                  />
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="px-2 py-2"
-                    icon={importing ? <Loader2 size={15} className="animate-spin" /> : <Archive size={15} />}
-                    onClick={() => { setImportError(null); setImportModalOpen(true); }}
-                    disabled={importing || sending}
-                    title="Import an existing site (.zip / .tar, or a git URL)"
-                  />
-                </div>
-                <textarea
-                  value={message}
-                  onChange={(e) => setMessage(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+              {mode === "chat" && (
+                <div className="flex items-start gap-2">
+                  <textarea
+                    value={message}
+                    onChange={(e) => setMessage(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                        e.preventDefault();
+                        handleSend();
+                      }
+                    }}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => {
                       e.preventDefault();
-                      handleSend();
-                    }
-                  }}
-                  onDragOver={(e) => e.preventDefault()}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    handleUpload(e.dataTransfer.files);
-                  }}
-                  rows={2}
-                  placeholder="Describe the next change…  (drop files here · ⌘/Ctrl+Enter to send)"
-                  className="flex-1 resize-none rounded-md border border-edge bg-base px-3 py-2 text-sm text-ink placeholder:text-muted focus-visible:border-brand/60 focus-visible:outline-none"
-                />
-                <Button
-                  variant="primary"
-                  size="sm"
-                  className="shrink-0"
-                  icon={<Send size={14} />}
-                  onClick={handleSend}
-                  disabled={!message.trim() || sending}
-                >
-                  Send
-                </Button>
-              </div>
+                      handleUpload(e.dataTransfer.files);
+                    }}
+                    rows={2}
+                    placeholder="Describe the next change…  (drop files here · ⌘/Ctrl+Enter to send)"
+                    className="flex-1 resize-none rounded-md border border-edge bg-base px-3 py-2 text-sm text-ink placeholder:text-muted focus-visible:border-brand/60 focus-visible:outline-none"
+                  />
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    className="shrink-0"
+                    icon={<Send size={14} />}
+                    onClick={handleSend}
+                    disabled={!message.trim() || sending}
+                  >
+                    Send
+                  </Button>
+                </div>
+              )}
             </div>
-            </>
-            )}
           </>
         )}
       </Card>

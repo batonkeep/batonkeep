@@ -34,6 +34,40 @@ class WebTtyError(ValueError):
     """Raised when a web-TTY target can't be resolved into a launchable session."""
 
 
+# DEC private mode 2026 = synchronized output (BSU/ESU): a CLI brackets each frame
+# in \e[?2026h … \e[?2026l so the terminal paints it atomically. agy (Antigravity)
+# does this *only when the terminal advertises 2026 support* — which xterm.js does,
+# by answering agy's `\e[?2026$p` query. If the batched frame isn't flushed/painted
+# the screen stays blank with just the cursor (the agy symptom; claude/grok/codex
+# don't use 2026, so they're fine). Stripping the markers makes xterm render frames
+# directly — identical content, no batching. The query/response is harmless; only
+# the h/l brackets matter, so we drop just those.
+_SYNC_MARKERS = (b"\x1b[?2026h", b"\x1b[?2026l")
+_SYNC_MAX = max(len(m) for m in _SYNC_MARKERS)
+
+
+def strip_sync_output(data: bytes, carry: bytes = b"") -> tuple[bytes, bytes]:
+    """Remove mode-2026 (synchronized-output) brackets from a PTY chunk.
+
+    Returns (clean, carry): `clean` is safe to forward now; `carry` is a short tail
+    held back because it could be the start of a marker split across two reads —
+    prepend it to the next chunk. Markers share the prefix b"\\x1b[?2026", so at
+    most 7 bytes are ever held.
+    """
+    buf = carry + data
+    for m in _SYNC_MARKERS:
+        buf = buf.replace(m, b"")
+    # Hold back the longest trailing run that is a *proper* prefix of a marker.
+    hold = 0
+    for n in range(1, min(_SYNC_MAX, len(buf))):
+        suffix = buf[-n:]
+        if any(m.startswith(suffix) and len(suffix) < len(m) for m in _SYNC_MARKERS):
+            hold = n
+    if hold:
+        return buf[:-hold], buf[-hold:]
+    return buf, b""
+
+
 def build_web_tty_session(session_id: str, instance_id: str) -> PtySession:
     """Resolve (session × provider instance) into a launchable PtySession.
 

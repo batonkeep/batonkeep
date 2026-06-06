@@ -100,7 +100,7 @@ async def test_capture_feeds_quota_tracker(monkeypatch):
         ExecEvent(kind=EventKind.token, text="Current week 55% used\nResets Tue"),
         ExecEvent(kind=EventKind.result, text="", data={"result": ExecResult("", Usage(), "claude", "claude")}),
     ]
-    monkeypatch.setattr("app.subscription_usage.get_executor", lambda _id: _FakeExecutor(events))
+    monkeypatch.setattr("app.subscription_usage.get_interactive_executor", lambda _id: _FakeExecutor(events))
     u = await capture_subscription_usage("claude")
     assert u.ok is True
     assert u.used_pct == 0.55
@@ -109,16 +109,16 @@ async def test_capture_feeds_quota_tracker(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_capture_unknown_instance(monkeypatch):
-    monkeypatch.setattr("app.subscription_usage.get_executor", lambda _id: None)
+    monkeypatch.setattr("app.subscription_usage.get_interactive_executor", lambda _id: None)
     u = await capture_subscription_usage("nope")
     assert u.ok is False
-    assert "unavailable" in (u.error or "")
+    assert "no interactive CLI" in (u.error or "")
 
 
 @pytest.mark.asyncio
 async def test_capture_surfaces_seam_error(monkeypatch):
     events = [ExecEvent(kind=EventKind.error, message="terminal seam disabled")]
-    monkeypatch.setattr("app.subscription_usage.get_executor", lambda _id: _FakeExecutor(events))
+    monkeypatch.setattr("app.subscription_usage.get_interactive_executor", lambda _id: _FakeExecutor(events))
     u = await capture_subscription_usage("claude")
     assert u.ok is False
     assert "disabled" in (u.error or "")

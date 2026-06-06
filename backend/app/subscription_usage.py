@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from app.providers.base import EventKind
-from app.providers.registry import get_executor, get_instance, get_provider_def
+from app.providers.registry import get_instance, get_interactive_executor, get_provider_def
 from app.quota import quota_tracker
 
 logger = logging.getLogger(__name__)
@@ -151,9 +151,12 @@ async def capture_subscription_usage(instance_id: str, *, timeout_hint: float = 
     quota tracker so ProviderHealth/​/api/usage reflect the subscription quota.
     Errors (seam off, /usage not allowed, executor missing) come back as ok=False.
     """
-    executor = get_executor(instance_id)
+    # Full-TTY single-shot driver directly (automated-internal) — NOT get_executor,
+    # so /usage capture never depends on a user-facing seam toggle (removed) and
+    # task turns stay headless.
+    executor = get_interactive_executor(instance_id)
     if executor is None:
-        return SubscriptionUsage(instance_id=instance_id, error="unknown or unavailable instance")
+        return SubscriptionUsage(instance_id=instance_id, error="no interactive CLI for this instance")
 
     # Pick the usage-panel command for this provider (differs per CLI).
     inst = get_instance(instance_id)

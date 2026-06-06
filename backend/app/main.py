@@ -1411,6 +1411,87 @@ async def console_websocket(websocket: WebSocket):
             pass
 
 
+@app.websocket("/ws/tty")
+async def web_tty_websocket(websocket: WebSocket):
+    """
+    Token-gated PTY bridge for a human-driven provider CLI session (D-0016 seam #3).
+
+    Unlike /ws/console (fixed auth.sh), this launches the provider's interactive
+    TUI in the session's workspace and forwards the user's keystrokes — a human
+    drives every turn (no prompt injection). First client message must be
+    {"token","session","instance"}; thereafter {"type":"input"|"resize",...}.
+    Server emits {"type":"output"|"exit"|"error",...}.
+    """
+    from app.web_tty import WebTtyError, build_web_tty_session
+
+    await websocket.accept()
+    if not settings.web_console_available:
+        await websocket.send_json({"type": "error", "message": "web-tty disabled"})
+        await websocket.close()
+        return
+
+    try:
+        init = await websocket.receive_json()
+    except Exception:
+        await websocket.close()
+        return
+
+    if init.get("token") != settings.web_console_token:
+        await websocket.send_json({"type": "error", "message": "invalid token"})
+        await websocket.close()
+        return
+
+    try:
+        session = build_web_tty_session(
+            str(init.get("session", "")), str(init.get("instance", ""))
+        )
+    except WebTtyError as exc:
+        await websocket.send_json({"type": "error", "message": str(exc)})
+        await websocket.close()
+        return
+
+    def _dim(key: str, default: int, lo: int, hi: int) -> int:
+        try:
+            return max(lo, min(hi, int(init.get(key, default))))
+        except (TypeError, ValueError):
+            return default
+
+    await session.start(rows=_dim("rows", 30, 4, 200), cols=_dim("cols", 100, 20, 400))
+
+    async def _pump_output() -> None:
+        while True:
+            data = await session.read()
+            if data is None:
+                break
+            await websocket.send_json({"type": "output", "data": data.decode("utf-8", "replace")})
+
+    out_task = asyncio.create_task(_pump_output())
+    try:
+        while True:
+            msg = await websocket.receive_json()
+            mtype = msg.get("type")
+            if mtype == "input":
+                session.write(str(msg.get("data", "")))
+            elif mtype == "resize":
+                try:
+                    session.resize(rows=int(msg["rows"]), cols=int(msg["cols"]))
+                except (KeyError, TypeError, ValueError):
+                    pass
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        logger.debug("web-tty ws error: %s", exc)
+    finally:
+        out_task.cancel()
+        code = session.exit_code()
+        session.close()
+        try:
+            await websocket.send_json({"type": "exit", "code": code})
+            await websocket.close()
+        except Exception:
+            pass
+
+
 # ── /me/mode ──────────────────────────────────────────────────────────────────
 
 @app.get("/api/me/mode", response_model=ModeOut, tags=["meta"])

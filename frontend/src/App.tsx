@@ -313,6 +313,8 @@ function AppShell() {
             onSelect={setSelectedSessionId}
             onSessionsChanged={loadSessions}
             providers={providers}
+            consoleAvailable={consoleAvailable}
+            consoleToken={consoleToken}
           />
         )}
 

@@ -314,6 +314,23 @@ def set_model_override(instance_id: str, model: Optional[str]) -> None:
         logger.error("[registry] failed to persist model overrides: %s", exc)
 
 
+# ── Headless capability (D-0016 / P-0019) ──────────────────────────────────────
+# Plan-CLI templates that do not ship a documented headless `-p` mode (probed
+# live 2026-06-06). Scheduled/cron tasks ride the headless lane (sanctioned +
+# provider-metered where it exists), so these templates are filtered out of
+# scheduled candidate rotation by default — see settings.cron_allow_no_headless_providers
+# for the user ToS-risk opt-in. Manual/interactive runs aren't affected.
+_NO_HEADLESS_CLI_TEMPLATES: frozenset[str] = frozenset({"grok"})
+
+
+def is_headless_capable(candidate: str) -> bool:
+    """True if the candidate (provider template or instance id like 'claude:work')
+    supports headless `cli -p` execution. The check is on the template part, so
+    multi-account instances inherit their template's capability."""
+    template = str(candidate).split(":", 1)[0]
+    return template not in _NO_HEADLESS_CLI_TEMPLATES
+
+
 # ── Exec-seam override (D-0015) ─────────────────────────────────────────────────
 # Per-instance choice of how a CLI instance runs: "headless" (cli -p, default) or
 # "terminal" (PTY interactive seam). Persisted as runtime JSON, mirroring the

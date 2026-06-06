@@ -48,7 +48,7 @@ from typing import Any, AsyncIterator, Optional
 import pyte
 
 from app.cli_policy import get_policy
-from app.config import get_settings
+from app.config import DeploymentMode, get_settings
 from app.providers.base import (
     EventKind,
     ExecEvent,
@@ -60,6 +60,30 @@ from app.providers.registry import ProviderDef, ProviderInstance
 
 logger = logging.getLogger(__name__)
 _settings = get_settings()
+
+# Single-shot, read-only meta commands the seam may auto-send in *any* deployment
+# mode (D-0016 / P-0019). A run that types only these (and no task prompt) is a
+# human-clicked subscription-info query, not autonomous task driving — it's the
+# subscription_usage.py + planned `/model` capture path. Anything beyond this set
+# (a task prompt, an arbitrary control command) is *autonomous driving* and is
+# personal-mode only. Allow-policy still bounds *which* commands are reachable
+# at all (TerminalPolicy.allowed_commands); this is the orthogonal mode gate.
+_META_COMMANDS = frozenset({"/usage", "/model", "/status", "/cost"})
+
+
+def _is_autonomous_driving(prompt: str, control_commands: list[str]) -> bool:
+    """A run is 'autonomous driving' (D-0016 prohibited outside personal mode)
+    if it submits a real task prompt or any control command that isn't a
+    single-shot meta query. Empty-prompt + meta-only is single-shot and allowed."""
+    if prompt.strip():
+        return True
+    for cmd in control_commands:
+        # Match on the head token so "/usage show" (grok) counts as meta.
+        head = cmd.strip().split()[0] if cmd.strip() else ""
+        if head not in _META_COMMANDS:
+            return True
+    return False
+
 
 # Seconds of silence on the PTY that we treat as "the turn finished". TUIs render
 # continuously while working, so a gap this long means it's waiting on us.
@@ -247,6 +271,33 @@ class CLIInteractiveExecutor(Executor):
                     data={"command": cmd, "reason": reason},
                 )
                 return
+
+        # D-0016 mode gate: autonomous full-TTY driving (task prompt or a non-meta
+        # control command) is *personal-mode only* — that pattern (bot types in a
+        # loop) is the one the web-TTY ToS posture moves off consumer plan CLIs.
+        # Single-shot meta queries (the /usage capture path) are allowed in all
+        # modes since they're human-clicked, read-only, one-screen reads.
+        # `managed` already hard-refuses plan-CLI at config load (config.py §1a),
+        # so in practice this gate fires for `oss`.
+        if (
+            _is_autonomous_driving(prompt, control_commands)
+            and _settings.deployment_mode != DeploymentMode.personal
+        ):
+            mode = _settings.deployment_mode.value
+            logger.warning(
+                "[%s] terminal seam refused autonomous driving in %s mode (D-0016)",
+                self.name, mode,
+            )
+            yield ExecEvent(
+                kind=EventKind.error,
+                message=(
+                    f"[{self.name}] autonomous full-TTY driving is personal-mode only "
+                    f"(DEPLOYMENT_MODE={mode}); use headless `cli -p`, the web-TTY UX, "
+                    f"or single-shot meta commands ({sorted(_META_COMMANDS)})"
+                ),
+                data={"mode": mode, "reason": "D-0016 autonomous driving"},
+            )
+            return
 
         launch = self._build_launch(allow_shell=policy.allow_shell)
 

@@ -81,6 +81,31 @@ async def _do_execute(run_id: int, task: Task) -> None:
 
         # ── 2. Route ─────────────────────────────────────────────────────────
         routing = task.routing or {}
+
+        # D-0016 cron rule (P-0019): scheduled runs ride the headless `cli -p`
+        # lane. Providers without a documented headless mode (currently {grok})
+        # are filtered out of the scheduled candidate rotation by default;
+        # cron_allow_no_headless_providers opts the user into the ToS risk
+        # (personal/self-host). Manual runs aren't affected.
+        if run.trigger == "schedule" and not _settings.cron_allow_no_headless_providers:
+            from app.providers.registry import is_headless_capable
+            raw_candidates = list(routing.get("candidates") or _settings.candidates_list)
+            cron_candidates = [c for c in raw_candidates if is_headless_capable(c)]
+            dropped = [c for c in raw_candidates if c not in cron_candidates]
+            if dropped:
+                logger.info(
+                    "[orchestrator] run %d (scheduled): filtered no-headless candidates %s (D-0016)",
+                    run_id, dropped,
+                )
+                await _emit_event(
+                    db, run, EventKind.route, "cron_no_headless_filter",
+                    data={"dropped": dropped,
+                          "reason": "no headless `cli -p` mode (D-0016/P-0019)"},
+                )
+                # Rebuild routing with the filtered list. If the task pinned
+                # candidates via routing, preserve everything else.
+                routing = {**routing, "candidates": cron_candidates}
+
         # Budget gate (P-0009 #2): if the owner is over the daily cap, tell the
         # router to degrade to zero-marginal-cost providers instead of spending.
         from app.cost import over_daily_budget

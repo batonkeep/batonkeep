@@ -29,8 +29,8 @@ def _executor(binary: str = "claude") -> CLIInteractiveExecutor:
     return CLIInteractiveExecutor(pdef, instance=inst)
 
 
-async def _collect(executor, **kw):
-    return [ev async for ev in executor.run_stream("hi", workdir="/tmp", **kw)]
+async def _collect(executor, *, prompt: str = "hi", **kw):
+    return [ev async for ev in executor.run_stream(prompt, workdir="/tmp", **kw)]
 
 
 class TestStripAnsi:
@@ -137,6 +137,127 @@ class TestPolicyGate:
 
     @pytest.mark.asyncio
     async def test_missing_binary_errors(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.providers.cli_interactive.get_policy",
+            lambda: TerminalPolicy(enabled=True, allowed_commands=frozenset({"/usage"})),
+        )
+        pdef = ProviderDef(name="x", kind="cli", tier="agent", cli_binary=None)
+        ex = CLIInteractiveExecutor(pdef, instance=ProviderInstance(id="x", template="x", label="x"))
+        evs = await _collect(ex)
+        assert evs[-1].kind == EventKind.error
+        assert "No CLI binary" in evs[-1].message
+
+
+# Helper to drive the D-0016 mode gate without touching the global settings
+# cache: just stub the deployment_mode on the seam's settings handle.
+def _set_mode(monkeypatch, mode: str) -> None:
+    # Settings is a frozen pydantic model; mutate the field in its __dict__ via
+    # setitem so monkeypatch auto-restores it (mirrors the orchestrator tests).
+    from app.config import DeploymentMode
+    from app.providers import cli_interactive as ci
+    monkeypatch.setitem(ci._settings.__dict__, "deployment_mode", DeploymentMode(mode))
+
+
+class TestIsAutonomousDriving:
+    """The autonomous-driving classifier is the load-bearing predicate of the
+    D-0016 mode gate — empty prompt + meta-only is single-shot (allowed);
+    anything else is autonomous (personal-only)."""
+
+    def test_empty_prompt_no_commands_is_single_shot(self):
+        from app.providers.cli_interactive import _is_autonomous_driving
+        assert _is_autonomous_driving("", []) is False
+
+    def test_empty_prompt_only_meta_commands_is_single_shot(self):
+        from app.providers.cli_interactive import _is_autonomous_driving
+        assert _is_autonomous_driving("", ["/usage"]) is False
+        assert _is_autonomous_driving("", ["/model", "/usage"]) is False
+
+    def test_grok_usage_show_head_matches_meta(self):
+        # Tail args don't disqualify meta — only the head token is checked.
+        from app.providers.cli_interactive import _is_autonomous_driving
+        assert _is_autonomous_driving("", ["/usage show"]) is False
+
+    def test_non_empty_prompt_is_autonomous(self):
+        from app.providers.cli_interactive import _is_autonomous_driving
+        assert _is_autonomous_driving("do the thing", []) is True
+
+    def test_non_meta_control_command_is_autonomous(self):
+        from app.providers.cli_interactive import _is_autonomous_driving
+        assert _is_autonomous_driving("", ["/exec ls"]) is True
+        assert _is_autonomous_driving("", ["/usage", "/exec ls"]) is True
+
+
+class TestModeGate:
+    """D-0016: autonomous full-TTY driving is personal-mode only; single-shot
+    meta queries are allowed in every mode."""
+
+    @pytest.mark.asyncio
+    async def test_oss_refuses_autonomous_task_prompt(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.providers.cli_interactive.get_policy",
+            lambda: TerminalPolicy(enabled=True, allowed_commands=frozenset({"/usage"})),
+        )
+        _set_mode(monkeypatch, "oss")
+        evs = await _collect(_executor(), prompt="research AI news")
+        err = evs[-1]
+        assert err.kind == EventKind.error
+        assert "personal-mode only" in err.message
+        assert err.data["mode"] == "oss"
+        assert err.data["reason"] == "D-0016 autonomous driving"
+
+    @pytest.mark.asyncio
+    async def test_oss_refuses_non_meta_control_command(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.providers.cli_interactive.get_policy",
+            lambda: TerminalPolicy(
+                enabled=True,
+                allowed_commands=frozenset({"/usage", "/exec"}),  # allow-policy
+            ),
+        )
+        _set_mode(monkeypatch, "oss")
+        # Allow-policy lets `/exec` through; mode gate must still refuse it,
+        # since it isn't a single-shot meta command.
+        evs = await _collect(
+            _executor(), prompt="",
+            extra={"control_commands": ["/exec ls"]},
+        )
+        err = evs[-1]
+        assert err.kind == EventKind.error
+        assert "personal-mode only" in err.message
+
+    @pytest.mark.asyncio
+    async def test_oss_allows_single_shot_meta(self, monkeypatch):
+        # Empty prompt + meta-only must pass the mode gate. The seam will then
+        # fail on missing binary (we don't actually spawn) — the assertion is
+        # that the failure isn't the D-0016 refusal.
+        monkeypatch.setattr(
+            "app.providers.cli_interactive.get_policy",
+            lambda: TerminalPolicy(enabled=True, allowed_commands=frozenset({"/usage"})),
+        )
+        _set_mode(monkeypatch, "oss")
+        pdef = ProviderDef(name="x", kind="cli", tier="agent", cli_binary=None)
+        ex = CLIInteractiveExecutor(pdef, instance=ProviderInstance(id="x", template="x", label="x"))
+        evs = await _collect(ex, prompt="", extra={"control_commands": ["/usage"]})
+        # Should fail on missing-binary (passed the mode gate) — not "personal-mode only".
+        assert evs[-1].kind == EventKind.error
+        assert "personal-mode only" not in evs[-1].message
+
+    @pytest.mark.asyncio
+    async def test_personal_allows_autonomous_driving(self, monkeypatch):
+        # personal mode is the only place autonomous full-TTY driving lives;
+        # the seam should reach the spawn path (and fail on missing binary
+        # since we don't have a real CLI here).
+        monkeypatch.setattr(
+            "app.providers.cli_interactive.get_policy",
+            lambda: TerminalPolicy(enabled=True, allowed_commands=frozenset({"/usage"})),
+        )
+        _set_mode(monkeypatch, "personal")
+        pdef = ProviderDef(name="x", kind="cli", tier="agent", cli_binary=None)
+        ex = CLIInteractiveExecutor(pdef, instance=ProviderInstance(id="x", template="x", label="x"))
+        evs = await _collect(ex, prompt="task prompt that would drive autonomously")
+        assert evs[-1].kind == EventKind.error
+        # Reaches the missing-binary error, not the D-0016 refusal.
+        assert "personal-mode only" not in evs[-1].message
         monkeypatch.setattr(
             "app.providers.cli_interactive.get_policy",
             lambda: TerminalPolicy(enabled=True, allowed_commands=frozenset({"/usage"})),

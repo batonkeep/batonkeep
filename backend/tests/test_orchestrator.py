@@ -204,6 +204,34 @@ class TestFailoverLogic:
         assert diff < 2
 
 
+# ── D-0016 cron headless-capability filter ──────────────────────────────────
+
+class TestHeadlessCapability:
+    """D-0016/P-0019: scheduled tasks ride the headless `cli -p` lane; providers
+    without a headless mode are filtered from scheduled rotation."""
+
+    def test_headless_clis_are_capable(self):
+        from app.providers.registry import is_headless_capable
+        for p in ("claude", "codex", "agy"):
+            assert is_headless_capable(p) is True
+
+    def test_grok_is_not_headless_capable(self):
+        from app.providers.registry import is_headless_capable
+        assert is_headless_capable("grok") is False
+
+    def test_capability_checks_template_not_instance(self):
+        # Multi-account instance ids inherit their template's capability.
+        from app.providers.registry import is_headless_capable
+        assert is_headless_capable("grok:work") is False
+        assert is_headless_capable("claude:personal") is True
+
+    def test_non_cli_candidates_are_capable(self):
+        # mock / api / local providers aren't plan-CLIs → unaffected.
+        from app.providers.registry import is_headless_capable
+        for p in ("mock", "claude-api", "ollama", "openai-api"):
+            assert is_headless_capable(p) is True
+
+
 # ── Orchestrator smoke test (in-process with mock, patched DB) ───────────────
 
 @pytest.fixture
@@ -299,6 +327,70 @@ class TestOrchestratorSmoke:
             orch_mod.AsyncSessionLocal = orig_session_local
             if "outputs_dir" in orch_mod._settings.__dict__:
                 del orch_mod._settings.__dict__["outputs_dir"]
+
+    @pytest.mark.asyncio
+    async def test_scheduled_run_filters_no_headless_candidate(self, fresh_db, tmp_path, monkeypatch):
+        """D-0016: a scheduled run drops grok (no headless mode) from candidate
+        rotation and proceeds on the remaining headless-capable provider, emitting
+        a cron_no_headless_filter route event."""
+        engine, Session, base_path = fresh_db
+        import app.orchestrator as orch_mod
+        from app.config import DeploymentMode
+
+        # monkeypatch.setitem auto-restores frozen-Settings fields (vs. del, which
+        # would remove the field entirely and break later tests).
+        monkeypatch.setattr(orch_mod, "AsyncSessionLocal", Session)
+        monkeypatch.setitem(orch_mod._settings.__dict__, "outputs_dir", str(base_path / "outputs"))
+        monkeypatch.setitem(orch_mod._settings.__dict__, "cron_allow_no_headless_providers", False)
+        monkeypatch.setitem(orch_mod._settings.__dict__, "deployment_mode", DeploymentMode.personal)
+
+        from app.models import Task, Run, RunEvent
+        from sqlalchemy import select
+        async with Session() as db:
+            task = Task(
+                owner_id="local",
+                name="Scheduled task",
+                prompt_template="Tell me about {topic}",
+                params={"topic": "AI"},
+                schedule_kind="cron",
+                schedule_expr="0 7 * * *",
+                routing={
+                    "strategy": "fixed",
+                    "candidates": ["grok", "mock"],  # grok has no headless mode
+                    "failover": True,
+                    "max_attempts": 2,
+                },
+                want_markdown=True,
+            )
+            db.add(task)
+            await db.commit()
+            await db.refresh(task)
+            task_id = task.id
+
+        # trigger="schedule" is what activates the cron filter.
+        run = await orch_mod.enqueue_run(task_id, trigger="schedule")
+        run_id = run.id
+        bg = orch_mod._cancel_handles.get(run_id)
+        if bg:
+            try:
+                await asyncio.wait_for(asyncio.shield(bg), timeout=8.0)
+            except asyncio.TimeoutError:
+                pass
+        await asyncio.sleep(0.3)
+
+        async with Session() as db:
+            run = await db.get(Run, run_id)
+            assert run is not None
+            # Filtered to mock → succeeds on the headless-capable provider.
+            assert run.status == "succeeded", f"status={run.status} error={run.error}"
+            assert run.provider == "mock"
+
+            events = (await db.execute(
+                select(RunEvent).where(RunEvent.run_id == run_id)
+            )).scalars().all()
+            filt = [e for e in events if e.phase == "cron_no_headless_filter"]
+            assert filt, "expected a cron_no_headless_filter route event"
+            assert filt[0].data["dropped"] == ["grok"]
 
     @pytest.mark.asyncio
     async def test_run_deferred_when_all_cooling(self, fresh_db, tmp_path):

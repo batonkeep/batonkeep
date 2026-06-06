@@ -67,9 +67,20 @@ class Settings(BaseSettings):
     #       no-auto-approve mode so model-generated shell stays gated.
     #   terminal_policy_path     — optional JSON file to extend the above at runtime.
     terminal_seam_enabled: bool = False
-    terminal_allowed_commands: str = "/usage,/status,/cost"
+    # Default allowlist covers all D-0016 single-shot meta commands so the
+    # subscription-info / model-info read-only paths work out of the box.
+    terminal_allowed_commands: str = "/usage,/status,/cost,/model"
     terminal_allow_shell: bool = False
     terminal_policy_path: str = ""
+
+    # ── Cron / scheduled-task seam rule (D-0016 / P-0019) ────────────────────
+    # Scheduled tasks ride the headless `cli -p` lane (the sanctioned, provider-
+    # metered automation seam). Providers without a documented headless mode
+    # (currently {grok}) are filtered from scheduled candidate rotation by
+    # default — they're available for *manual* and interactive runs, just not
+    # for autonomous cron. Flip this on to opt the user into the ToS risk and
+    # keep no-headless providers in scheduled rotation (personal/self-host).
+    cron_allow_no_headless_providers: bool = False
 
     # ── Behaviour ─────────────────────────────────────────────────────────────
     autonomous_tools: bool = True

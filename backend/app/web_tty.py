@@ -69,6 +69,15 @@ def build_web_tty_session(session_id: str, instance_id: str) -> PtySession:
     if instance.cli_config_dir and instance.cli_config_env:
         env[instance.cli_config_env] = instance.cli_config_dir
 
+    # Filesystem-as-context seeding (D-0017): write the session ledger into the
+    # CLI's convention file so it auto-loads context on launch — no prompt
+    # injection. Best-effort: a failure here must not block the terminal.
+    try:
+        from app.sessions.session_context import seed_provider_context
+        seed_provider_context(workspace, pdef.name)
+    except Exception as exc:  # noqa: BLE001 — seeding is best-effort
+        logger.warning("web-tty context seeding failed for %s: %s", instance.id, exc)
+
     argv = [pdef.cli_binary]
     logger.info(
         "web-tty session: %s in workspace %s (%s)",

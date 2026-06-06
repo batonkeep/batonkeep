@@ -23,12 +23,15 @@ from typing import Optional
 
 from app.config import get_settings
 from app.sessions import workspace as ws
+from app.sessions.session_context import context_filenames
 
 logger = logging.getLogger(__name__)
 _settings = get_settings()
 
-# Workspace entries never included in a publish/download (internal, not site assets).
-_EXCLUDED_TOP = {".git", ws.BRIEF_FILENAME}
+# Workspace entries never included in a publish/download (internal, not site assets):
+# git internals, the agent brief, and the terminal-context convention files
+# (CLAUDE.md / AGENTS.md / GEMINI.md) we seed for the web-TTY lane (D-0017).
+_EXCLUDED_TOP = {".git", ws.BRIEF_FILENAME} | context_filenames()
 
 
 def _publishable_files(workspace: str) -> list[str]:

@@ -315,12 +315,21 @@ def set_model_override(instance_id: str, model: Optional[str]) -> None:
 
 
 # ── Headless capability (D-0016 / P-0019) ──────────────────────────────────────
-# Plan-CLI templates that do not ship a documented headless `-p` mode (probed
-# live 2026-06-06). Scheduled/cron tasks ride the headless lane (sanctioned +
-# provider-metered where it exists), so these templates are filtered out of
-# scheduled candidate rotation by default — see settings.cron_allow_no_headless_providers
-# for the user ToS-risk opt-in. Manual/interactive runs aren't affected.
-_NO_HEADLESS_CLI_TEMPLATES: frozenset[str] = frozenset({"grok"})
+# Plan-CLI templates that do NOT ship a documented headless `-p` mode. Scheduled/
+# cron tasks ride the headless lane (sanctioned + provider-metered), so any such
+# template is filtered out of scheduled candidate rotation by default — see
+# settings.cron_allow_no_headless_providers for the user ToS-risk opt-in.
+#
+# As of 2026-06-06 this set is EMPTY: all four plan CLIs have first-party headless
+# modes — claude `-p`, codex `exec`, agy `-p`, and **grok `-p/--single`** (verified
+# live: `--output-format plain|json|streaming-json`, `--best-of-n`/`--check`
+# "headless only"; xAI officially promotes it for scripts/automation, SuperGrok +
+# X Premium Plus). The earlier "grok has no headless mode" read was an overreach
+# from the D-0015 probe, which only showed that grok can't run *slash commands*
+# (e.g. `/usage`) via `-p` — task *prompts* run headless fine. Slash-command meta
+# still uses the full-TTY single-shot path; that's orthogonal to this set.
+# The mechanism stays in place for any future provider that genuinely lacks `-p`.
+_NO_HEADLESS_CLI_TEMPLATES: frozenset[str] = frozenset()
 
 
 def is_headless_capable(candidate: str) -> bool:

@@ -9,16 +9,18 @@ interface Props {
   instance: string; // provider instance id, e.g. "claude" / "claude:work"
   token: string; // console token (gates the privileged PTY spawn)
   onClose: () => void;
+  embedded?: boolean; // inline (in-session Terminal mode) vs overlay modal
 }
 
-export default function WebTtyConsole({ session, instance, token, onClose }: Props) {
+export default function WebTtyConsole({ session, instance, token, onClose, embedded }: Props) {
   return (
     <PtyTerminal
       wsPath="/ws/tty"
       init={{ token, session, instance }}
       title={<>terminal · <span className="text-brand">{instance}</span></>}
-      subtitle="live CLI in this session's workspace — you drive every turn"
+      subtitle="you drive every turn"
       onClose={onClose}
+      embedded={embedded}
     />
   );
 }

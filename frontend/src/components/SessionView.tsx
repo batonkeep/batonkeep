@@ -115,7 +115,7 @@ export default function SessionView({
   consoleAvailable,
   consoleToken,
 }: Props) {
-  const [ttyOpen, setTtyOpen] = useState(false); // web-TTY terminal overlay
+  const [mode, setMode] = useState<"chat" | "terminal">("chat"); // center-pane lane
   const [detail, setDetail] = useState<Session | null>(null);
   const [turns, setTurns] = useState<SessionTurn[]>([]);
   const [message, setMessage] = useState("");
@@ -171,6 +171,25 @@ export default function SessionView({
     () => Array.from(new Set(providers.map((p) => p.name))),
     [providers]
   );
+  // Which instances are CLI-backed → can be driven as a live terminal (the `>_`
+  // marker + the Terminal-mode gate). API/mock can only Chat.
+  const providerKind = useMemo(() => {
+    const m: Record<string, string> = {};
+    providers.forEach((p) => { m[p.name] = p.kind; });
+    return m;
+  }, [providers]);
+  // The instance the composer/terminal acts as: explicit switch → session's →
+  // first available.
+  const activeInstance = providerSwitch || detail?.provider || providerIds[0] || "";
+  const terminalCapable = providerKind[activeInstance] === "cli";
+  // Terminal mode needs the web console unlocked (it spawns a CLI) + a CLI provider.
+  const terminalReady = consoleAvailable && consoleToken.trim().length > 0 && !!selectedId && terminalCapable;
+
+  // Never strand the user in Terminal mode when it stops being available (provider
+  // switched to API/mock, session closed, console locked).
+  useEffect(() => {
+    if (mode === "terminal" && !terminalReady) setMode("chat");
+  }, [mode, terminalReady]);
 
   const loadTurns = useCallback(() => {
     if (!selectedId) return;
@@ -207,6 +226,7 @@ export default function SessionView({
     setUploaded([]);
     setMessage("");
     setMobilePane("chat");
+    setMode("chat");
     setOpenFile(null);
     setCfUrl(null);
     setCfError(null);
@@ -775,6 +795,54 @@ export default function SessionView({
               )}
             </div>
 
+            {/* Chat | Terminal — two ways to work the same workspace, one at a
+                time. Terminal swaps the transcript+composer for a live CLI you
+                drive yourself (web-TTY). Only CLI providers (`>_`) can. */}
+            {consoleAvailable && (
+              <div className="flex items-center gap-2 border-b border-edge px-4 py-1.5">
+                <div className="inline-flex rounded-md border border-edge p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setMode("chat")}
+                    className={`rounded px-2 py-0.5 font-mono text-[11px] ${mode === "chat" ? "bg-brand/15 text-brand" : "text-muted hover:text-ink"}`}
+                  >
+                    Chat
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => terminalReady && setMode("terminal")}
+                    disabled={!terminalReady}
+                    title={terminalReady
+                      ? "Drive this provider's CLI live in the session workspace"
+                      : terminalCapable
+                        ? "Unlock the web console (token in Providers) to use Terminal"
+                        : "Terminal needs a CLI provider (›_) — switch the agent below"}
+                    className={`inline-flex items-center gap-1 rounded px-2 py-0.5 font-mono text-[11px] disabled:opacity-40 ${mode === "terminal" ? "bg-brand/15 text-brand" : "text-muted hover:text-ink"}`}
+                  >
+                    <SquareTerminal size={11} /> Terminal
+                  </button>
+                </div>
+                {mode === "terminal" && (
+                  <span className="font-mono text-[11px] text-muted">{activeInstance} · live · you drive every turn</span>
+                )}
+              </div>
+            )}
+
+            {mode === "terminal" && terminalReady ? (
+              <div className="flex-1 overflow-hidden p-2">
+                <Suspense fallback={<div className="p-4 text-xs text-muted">loading terminal…</div>}>
+                  <WebTtyConsole
+                    key={`${selectedId}:${activeInstance}`}
+                    embedded
+                    session={selectedId}
+                    instance={activeInstance}
+                    token={consoleToken}
+                    onClose={() => setMode("chat")}
+                  />
+                </Suspense>
+              </div>
+            ) : (
+            <>
             <div
               ref={streamRef}
               className="flex-1 space-y-3 overflow-y-auto p-4"
@@ -946,24 +1014,16 @@ export default function SessionView({
                   className="h-7 text-xs"
                 >
                   <option value="">
-                    {detail?.provider ? `current (${detail.provider})` : "default"}
+                    {detail?.provider
+                      ? `current (${detail.provider})${providerKind[detail.provider] === "cli" ? " ›_" : ""}`
+                      : "default"}
                   </option>
                   {providerIds.map((id) => (
                     <option key={id} value={id}>
-                      {id}
+                      {id}{providerKind[id] === "cli" ? " ›_" : ""}
                     </option>
                   ))}
                 </Select>
-                {consoleAvailable && consoleToken.trim().length > 0 && selectedId && (
-                  <button
-                    type="button"
-                    onClick={() => setTtyOpen(true)}
-                    title="Open a live terminal: drive this provider's CLI in the session workspace (you type each turn)"
-                    className="ml-auto inline-flex items-center gap-1 rounded border border-edge px-2 py-1 font-mono text-[11px] text-muted hover:text-ink"
-                  >
-                    <SquareTerminal size={12} /> terminal
-                  </button>
-                )}
               </div>
               {uploaded.length > 0 && (
                 <div className="flex flex-wrap gap-1.5">
@@ -1044,6 +1104,8 @@ export default function SessionView({
                 </Button>
               </div>
             </div>
+            </>
+            )}
           </>
         )}
       </Card>
@@ -1345,19 +1407,6 @@ export default function SessionView({
           {cfError && <p className="text-xs text-bad">{cfError}</p>}
         </div>
       </Modal>
-
-      {/* Web-TTY: live provider CLI in this session's workspace, human-driven
-          (D-0016 seam #3 / D-0017). Lazy so xterm.js loads only on open. */}
-      {ttyOpen && selectedId && (
-        <Suspense fallback={null}>
-          <WebTtyConsole
-            session={selectedId}
-            instance={providerSwitch || detail?.provider || providerIds[0] || "claude"}
-            token={consoleToken}
-            onClose={() => setTtyOpen(false)}
-          />
-        </Suspense>
-      )}
     </div>
   );
 }

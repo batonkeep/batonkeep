@@ -19,6 +19,9 @@ interface Props {
   title: React.ReactNode;
   subtitle?: string;
   onClose: () => void;
+  // embedded: render inline (fills its parent), no modal chrome — for the
+  // in-session Terminal mode. Default false = a centered overlay modal (auth).
+  embedded?: boolean;
 }
 
 // Mission-control palette (matches the app's near-black + brand theme).
@@ -29,7 +32,7 @@ const THEME = {
   brightBlack: "#5a5e66",
 };
 
-export default function PtyTerminal({ wsPath, init, title, subtitle, onClose }: Props) {
+export default function PtyTerminal({ wsPath, init, title, subtitle, onClose, embedded = false }: Props) {
   const [status, setStatus] = useState<PtyStatus>("connecting");
   const mountRef = useRef<HTMLDivElement | null>(null);
   // Keep the latest init without re-opening the socket on every render.
@@ -94,6 +97,20 @@ export default function PtyTerminal({ wsPath, init, title, subtitle, onClose }: 
 
   const statusColor =
     status === "running" ? "text-live" : status === "error" ? "text-bad" : status === "done" ? "text-ok" : "text-muted";
+
+  // Embedded: fill the parent (in-session Terminal mode) with a slim status strip
+  // and no close button — the host's Chat/Terminal toggle owns leaving the mode.
+  if (embedded) {
+    return (
+      <div className="flex h-full flex-col overflow-hidden rounded-lg border border-edge bg-[#0a0b0d]">
+        <div className="flex items-center justify-between border-b border-edge px-3 py-1.5">
+          <span className="font-mono text-[11px] text-ink">{title}</span>
+          <span className={`font-mono text-[10px] ${statusColor}`}>{status}{subtitle ? ` · ${subtitle}` : ""}</span>
+        </div>
+        <div ref={mountRef} className="flex-1 overflow-hidden p-2" />
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/70 p-0 backdrop-blur-sm md:items-center md:p-4">

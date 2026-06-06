@@ -208,21 +208,20 @@ class TestFailoverLogic:
 
 class TestHeadlessCapability:
     """D-0016/P-0019: scheduled tasks ride the headless `cli -p` lane; providers
-    without a headless mode are filtered from scheduled rotation."""
+    without a headless mode are filtered from scheduled rotation. As of 2026-06-06
+    all four plan CLIs (incl. grok `-p/--single`) have first-party headless modes,
+    so the no-headless set is empty — but the mechanism stays for future providers."""
 
-    def test_headless_clis_are_capable(self):
+    def test_all_plan_clis_are_headless_capable(self):
         from app.providers.registry import is_headless_capable
-        for p in ("claude", "codex", "agy"):
+        # grok `-p/--single` is first-party (verified live 2026-06-06).
+        for p in ("claude", "codex", "agy", "grok"):
             assert is_headless_capable(p) is True
-
-    def test_grok_is_not_headless_capable(self):
-        from app.providers.registry import is_headless_capable
-        assert is_headless_capable("grok") is False
 
     def test_capability_checks_template_not_instance(self):
         # Multi-account instance ids inherit their template's capability.
         from app.providers.registry import is_headless_capable
-        assert is_headless_capable("grok:work") is False
+        assert is_headless_capable("grok:work") is True
         assert is_headless_capable("claude:personal") is True
 
     def test_non_cli_candidates_are_capable(self):
@@ -230,6 +229,15 @@ class TestHeadlessCapability:
         from app.providers.registry import is_headless_capable
         for p in ("mock", "claude-api", "ollama", "openai-api"):
             assert is_headless_capable(p) is True
+
+    def test_filter_mechanism_works_for_a_hypothetical_no_headless_provider(self, monkeypatch):
+        # Guard the mechanism itself even though the set is currently empty:
+        # if a future provider lacks `-p`, it must be reported incapable.
+        import app.providers.registry as reg
+        monkeypatch.setattr(reg, "_NO_HEADLESS_CLI_TEMPLATES", frozenset({"futurecli"}))
+        assert reg.is_headless_capable("futurecli") is False
+        assert reg.is_headless_capable("futurecli:acct") is False
+        assert reg.is_headless_capable("grok") is True
 
 
 # ── Orchestrator smoke test (in-process with mock, patched DB) ───────────────
@@ -330,11 +338,13 @@ class TestOrchestratorSmoke:
 
     @pytest.mark.asyncio
     async def test_scheduled_run_filters_no_headless_candidate(self, fresh_db, tmp_path, monkeypatch):
-        """D-0016: a scheduled run drops grok (no headless mode) from candidate
-        rotation and proceeds on the remaining headless-capable provider, emitting
-        a cron_no_headless_filter route event."""
+        """D-0016: a scheduled run drops a no-headless candidate from rotation and
+        proceeds on a headless-capable provider, emitting a cron_no_headless_filter
+        route event. All real plan CLIs now have headless modes, so we patch the
+        no-headless set to a hypothetical template to exercise the filter path."""
         engine, Session, base_path = fresh_db
         import app.orchestrator as orch_mod
+        import app.providers.registry as reg
         from app.config import DeploymentMode
 
         # monkeypatch.setitem auto-restores frozen-Settings fields (vs. del, which
@@ -343,6 +353,8 @@ class TestOrchestratorSmoke:
         monkeypatch.setitem(orch_mod._settings.__dict__, "outputs_dir", str(base_path / "outputs"))
         monkeypatch.setitem(orch_mod._settings.__dict__, "cron_allow_no_headless_providers", False)
         monkeypatch.setitem(orch_mod._settings.__dict__, "deployment_mode", DeploymentMode.personal)
+        # No real CLI lacks headless anymore, so simulate one to test the filter.
+        monkeypatch.setattr(reg, "_NO_HEADLESS_CLI_TEMPLATES", frozenset({"nohead"}))
 
         from app.models import Task, Run, RunEvent
         from sqlalchemy import select
@@ -356,7 +368,7 @@ class TestOrchestratorSmoke:
                 schedule_expr="0 7 * * *",
                 routing={
                     "strategy": "fixed",
-                    "candidates": ["grok", "mock"],  # grok has no headless mode
+                    "candidates": ["nohead", "mock"],  # nohead has no headless mode
                     "failover": True,
                     "max_attempts": 2,
                 },
@@ -390,7 +402,7 @@ class TestOrchestratorSmoke:
             )).scalars().all()
             filt = [e for e in events if e.phase == "cron_no_headless_filter"]
             assert filt, "expected a cron_no_headless_filter route event"
-            assert filt[0].data["dropped"] == ["grok"]
+            assert filt[0].data["dropped"] == ["nohead"]
 
     @pytest.mark.asyncio
     async def test_run_deferred_when_all_cooling(self, fresh_db, tmp_path):

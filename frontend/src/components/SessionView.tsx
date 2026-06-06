@@ -3,11 +3,11 @@
 // with the live event stream. Right: the live preview <iframe> pointed at the
 // session's token-authenticated workspace, refreshed when a turn completes.
 // D-track: composed from ui/ primitives (Button, Badge, Card, StatusDot, Select).
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
 import hljs from "highlight.js/lib/common";
 import "highlight.js/styles/github-dark.css";
-import { Activity, Archive, Check, ChevronLeft, ChevronRight, Cloud, Copy, Download, FileCode, Globe, History, Link2, Loader2, Lock, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, Shield, X } from "lucide-react";
+import { Activity, Archive, Check, ChevronLeft, ChevronRight, Cloud, Copy, Download, FileCode, Globe, History, Link2, Loader2, Lock, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, Shield, SquareTerminal, X } from "lucide-react";
 import type { CloudflareStatus, ProviderHealth, Publish, Session, SessionTemplate, SessionTurn, Version } from "../types";
 import { api } from "../api";
 import { useSessionEvents, type SessionEvent } from "../useLiveFeed";
@@ -77,12 +77,17 @@ function GeneratingIndicator({ latest }: { latest?: string }) {
   );
 }
 
+// Lazy so xterm.js only loads when a web-TTY session is actually opened.
+const WebTtyConsole = lazy(() => import("./WebTtyConsole"));
+
 interface Props {
   sessions: Session[];
   selectedId: string | null;
   onSelect: (id: string | null) => void;
   onSessionsChanged: () => void; // reload the session list in the parent
   providers: ProviderHealth[];
+  consoleAvailable: boolean; // web console enabled (gates the web-TTY launcher)
+  consoleToken: string; // token presented to /ws/tty
 }
 
 const TURN_TONE: Record<SessionTurn["status"], Tone> = {
@@ -107,7 +112,10 @@ export default function SessionView({
   onSelect,
   onSessionsChanged,
   providers,
+  consoleAvailable,
+  consoleToken,
 }: Props) {
+  const [mode, setMode] = useState<"chat" | "terminal">("chat"); // center-pane lane
   const [detail, setDetail] = useState<Session | null>(null);
   const [turns, setTurns] = useState<SessionTurn[]>([]);
   const [message, setMessage] = useState("");
@@ -163,6 +171,25 @@ export default function SessionView({
     () => Array.from(new Set(providers.map((p) => p.name))),
     [providers]
   );
+  // Which instances are CLI-backed → can be driven as a live terminal (the `>_`
+  // marker + the Terminal-mode gate). API/mock can only Chat.
+  const providerKind = useMemo(() => {
+    const m: Record<string, string> = {};
+    providers.forEach((p) => { m[p.name] = p.kind; });
+    return m;
+  }, [providers]);
+  // The instance the composer/terminal acts as: explicit switch → session's →
+  // first available.
+  const activeInstance = providerSwitch || detail?.provider || providerIds[0] || "";
+  const terminalCapable = providerKind[activeInstance] === "cli";
+  // Terminal mode needs the web console unlocked (it spawns a CLI) + a CLI provider.
+  const terminalReady = consoleAvailable && consoleToken.trim().length > 0 && !!selectedId && terminalCapable;
+
+  // Never strand the user in Terminal mode when it stops being available (provider
+  // switched to API/mock, session closed, console locked).
+  useEffect(() => {
+    if (mode === "terminal" && !terminalReady) setMode("chat");
+  }, [mode, terminalReady]);
 
   const loadTurns = useCallback(() => {
     if (!selectedId) return;
@@ -199,6 +226,7 @@ export default function SessionView({
     setUploaded([]);
     setMessage("");
     setMobilePane("chat");
+    setMode("chat");
     setOpenFile(null);
     setCfUrl(null);
     setCfError(null);
@@ -767,6 +795,54 @@ export default function SessionView({
               )}
             </div>
 
+            {/* Chat | Terminal — two ways to work the same workspace, one at a
+                time. Terminal swaps the transcript+composer for a live CLI you
+                drive yourself (web-TTY). Only CLI providers (`>_`) can. */}
+            {consoleAvailable && (
+              <div className="flex items-center gap-2 border-b border-edge px-4 py-1.5">
+                <div className="inline-flex rounded-md border border-edge p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setMode("chat")}
+                    className={`rounded px-2 py-0.5 font-mono text-[11px] ${mode === "chat" ? "bg-brand/15 text-brand" : "text-muted hover:text-ink"}`}
+                  >
+                    Chat
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => terminalReady && setMode("terminal")}
+                    disabled={!terminalReady}
+                    title={terminalReady
+                      ? "Drive this provider's CLI live in the session workspace"
+                      : terminalCapable
+                        ? "Unlock the web console (token in Providers) to use Terminal"
+                        : "Terminal needs a CLI provider (›_) — switch the agent below"}
+                    className={`inline-flex items-center gap-1 rounded px-2 py-0.5 font-mono text-[11px] disabled:opacity-40 ${mode === "terminal" ? "bg-brand/15 text-brand" : "text-muted hover:text-ink"}`}
+                  >
+                    <SquareTerminal size={11} /> Terminal
+                  </button>
+                </div>
+                {mode === "terminal" && (
+                  <span className="font-mono text-[11px] text-muted">{activeInstance} · live · you drive every turn</span>
+                )}
+              </div>
+            )}
+
+            {mode === "terminal" && terminalReady ? (
+              <div className="flex-1 overflow-hidden p-2">
+                <Suspense fallback={<div className="p-4 text-xs text-muted">loading terminal…</div>}>
+                  <WebTtyConsole
+                    key={`${selectedId}:${activeInstance}`}
+                    embedded
+                    session={selectedId}
+                    instance={activeInstance}
+                    token={consoleToken}
+                    onClose={() => setMode("chat")}
+                  />
+                </Suspense>
+              </div>
+            ) : (
+            <>
             <div
               ref={streamRef}
               className="flex-1 space-y-3 overflow-y-auto p-4"
@@ -928,8 +1004,30 @@ export default function SessionView({
               )}
             </div>
 
-            {/* Composer */}
+            </>
+            )}
+
+            {/* Composer — the agent selector + attach/import stay in BOTH modes
+                (switch the CLI or drop workspace files while in Terminal); the
+                message box + Send are Chat-only, since in Terminal the live CLI
+                is the input. */}
             <div className="space-y-2 border-t border-edge p-3">
+              {/* Hidden file inputs — always mounted so the buttons can trigger them. */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept=".png,.jpg,.jpeg,.svg,.webp,.csv,.pdf,.txt,.md,image/*"
+                className="hidden"
+                onChange={(e) => handleUpload(e.target.files)}
+              />
+              <input
+                ref={importInputRef}
+                type="file"
+                accept=".zip,.tar,.gz,.tgz,.bz2,.xz,application/zip,application/x-tar,application/gzip"
+                className="hidden"
+                onChange={(e) => handleImport(e.target.files)}
+              />
               <div className="flex items-center gap-2">
                 <span className="font-mono text-[11px] text-muted">agent</span>
                 <Select
@@ -938,14 +1036,36 @@ export default function SessionView({
                   className="h-7 text-xs"
                 >
                   <option value="">
-                    {detail?.provider ? `current (${detail.provider})` : "default"}
+                    {detail?.provider
+                      ? `current (${detail.provider})${providerKind[detail.provider] === "cli" ? " ›_" : ""}`
+                      : "default"}
                   </option>
                   {providerIds.map((id) => (
                     <option key={id} value={id}>
-                      {id}
+                      {id}{providerKind[id] === "cli" ? " ›_" : ""}
                     </option>
                   ))}
                 </Select>
+                <div className="ml-auto flex items-center gap-0.5">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="px-2 py-1.5"
+                    icon={uploading ? <Loader2 size={15} className="animate-spin" /> : <Paperclip size={15} />}
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={uploading || sending}
+                    title="Attach a file (image, CSV, PDF…) into the workspace"
+                  />
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="px-2 py-1.5"
+                    icon={importing ? <Loader2 size={15} className="animate-spin" /> : <Archive size={15} />}
+                    onClick={() => { setImportError(null); setImportModalOpen(true); }}
+                    disabled={importing || sending}
+                    title="Import an existing site (.zip / .tar, or a git URL)"
+                  />
+                </div>
               </div>
               {uploaded.length > 0 && (
                 <div className="flex flex-wrap gap-1.5">
@@ -960,71 +1080,38 @@ export default function SessionView({
                   ))}
                 </div>
               )}
-              <div className="flex items-start gap-2">
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  multiple
-                  accept=".png,.jpg,.jpeg,.svg,.webp,.csv,.pdf,.txt,.md,image/*"
-                  className="hidden"
-                  onChange={(e) => handleUpload(e.target.files)}
-                />
-                <input
-                  ref={importInputRef}
-                  type="file"
-                  accept=".zip,.tar,.gz,.tgz,.bz2,.xz,application/zip,application/x-tar,application/gzip"
-                  className="hidden"
-                  onChange={(e) => handleImport(e.target.files)}
-                />
-                <div className="flex shrink-0 flex-col gap-0.5">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="px-2 py-2"
-                    icon={uploading ? <Loader2 size={15} className="animate-spin" /> : <Paperclip size={15} />}
-                    onClick={() => fileInputRef.current?.click()}
-                    disabled={uploading || sending}
-                    title="Attach a file (image, CSV, PDF…) — drop into the box too"
-                  />
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="px-2 py-2"
-                    icon={importing ? <Loader2 size={15} className="animate-spin" /> : <Archive size={15} />}
-                    onClick={() => { setImportError(null); setImportModalOpen(true); }}
-                    disabled={importing || sending}
-                    title="Import an existing site (.zip / .tar, or a git URL)"
-                  />
-                </div>
-                <textarea
-                  value={message}
-                  onChange={(e) => setMessage(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+              {mode === "chat" && (
+                <div className="flex items-start gap-2">
+                  <textarea
+                    value={message}
+                    onChange={(e) => setMessage(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                        e.preventDefault();
+                        handleSend();
+                      }
+                    }}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => {
                       e.preventDefault();
-                      handleSend();
-                    }
-                  }}
-                  onDragOver={(e) => e.preventDefault()}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    handleUpload(e.dataTransfer.files);
-                  }}
-                  rows={2}
-                  placeholder="Describe the next change…  (drop files here · ⌘/Ctrl+Enter to send)"
-                  className="flex-1 resize-none rounded-md border border-edge bg-base px-3 py-2 text-sm text-ink placeholder:text-muted focus-visible:border-brand/60 focus-visible:outline-none"
-                />
-                <Button
-                  variant="primary"
-                  size="sm"
-                  className="shrink-0"
-                  icon={<Send size={14} />}
-                  onClick={handleSend}
-                  disabled={!message.trim() || sending}
-                >
-                  Send
-                </Button>
-              </div>
+                      handleUpload(e.dataTransfer.files);
+                    }}
+                    rows={2}
+                    placeholder="Describe the next change…  (drop files here · ⌘/Ctrl+Enter to send)"
+                    className="flex-1 resize-none rounded-md border border-edge bg-base px-3 py-2 text-sm text-ink placeholder:text-muted focus-visible:border-brand/60 focus-visible:outline-none"
+                  />
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    className="shrink-0"
+                    icon={<Send size={14} />}
+                    onClick={handleSend}
+                    disabled={!message.trim() || sending}
+                  >
+                    Send
+                  </Button>
+                </div>
+              )}
             </div>
           </>
         )}

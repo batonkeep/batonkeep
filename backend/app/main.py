@@ -44,7 +44,6 @@ from app.schemas import (
     ProviderHealth,
     ProviderLimitsUpdate,
     ProviderModelUpdate,
-    ProviderSeamUpdate,
     PublishOut,
     RestoreOut,
     RestoreRequest,
@@ -1201,7 +1200,6 @@ async def list_providers():
         get_provider_def,
         is_instance_connected,
         effective_model,
-        get_exec_seam,
     )
     from app.quota import quota_tracker
 
@@ -1226,7 +1224,6 @@ async def list_providers():
             last_reset_seen=health.last_reset_seen,
             est_used_pct=health.est_used_pct,
             mode=pdef.mode,
-            exec_seam=get_exec_seam(inst.id) if pdef.kind == "cli" else None,
         ))
     return result
 
@@ -1288,28 +1285,6 @@ async def set_provider_model(
     set_model_override(instance_id, (body.model or "").strip() or None)
     logger.info("Console set model for %s -> %s", instance_id, body.model)
     return {"status": "ok", "instance": instance_id, "model": body.model or None}
-
-
-@app.post("/api/providers/{instance_id}/seam", tags=["console"])
-async def set_provider_seam(
-    instance_id: str,
-    body: ProviderSeamUpdate,
-    _: None = Depends(_require_console),
-):
-    """Set a CLI instance's exec seam: 'headless' (default) or 'terminal' (PTY) (D-0015)."""
-    from app.providers.registry import get_instance, get_provider_def, set_exec_seam, get_exec_seam
-    inst = get_instance(instance_id)
-    if inst is None:
-        raise HTTPException(status_code=404, detail="Unknown provider instance")
-    pdef = get_provider_def(inst.template)
-    if not (pdef and pdef.kind == "cli"):
-        raise HTTPException(status_code=400, detail="Exec seam applies to plan-CLI instances only.")
-    seam = (body.seam or "").strip() or None
-    if seam and seam not in ("headless", "terminal"):
-        raise HTTPException(status_code=400, detail="seam must be 'headless' or 'terminal'")
-    set_exec_seam(instance_id, seam)
-    logger.info("Console set exec seam for %s -> %s", instance_id, seam)
-    return {"status": "ok", "instance": instance_id, "exec_seam": get_exec_seam(instance_id)}
 
 
 @app.post("/api/usage/subscription/{instance_id}", tags=["console"])
@@ -1400,6 +1375,87 @@ async def console_websocket(websocket: WebSocket):
         pass
     except Exception as exc:
         logger.debug("console ws error: %s", exc)
+    finally:
+        out_task.cancel()
+        code = session.exit_code()
+        session.close()
+        try:
+            await websocket.send_json({"type": "exit", "code": code})
+            await websocket.close()
+        except Exception:
+            pass
+
+
+@app.websocket("/ws/tty")
+async def web_tty_websocket(websocket: WebSocket):
+    """
+    Token-gated PTY bridge for a human-driven provider CLI session (D-0016 seam #3).
+
+    Unlike /ws/console (fixed auth.sh), this launches the provider's interactive
+    TUI in the session's workspace and forwards the user's keystrokes — a human
+    drives every turn (no prompt injection). First client message must be
+    {"token","session","instance"}; thereafter {"type":"input"|"resize",...}.
+    Server emits {"type":"output"|"exit"|"error",...}.
+    """
+    from app.web_tty import WebTtyError, build_web_tty_session
+
+    await websocket.accept()
+    if not settings.web_console_available:
+        await websocket.send_json({"type": "error", "message": "web-tty disabled"})
+        await websocket.close()
+        return
+
+    try:
+        init = await websocket.receive_json()
+    except Exception:
+        await websocket.close()
+        return
+
+    if init.get("token") != settings.web_console_token:
+        await websocket.send_json({"type": "error", "message": "invalid token"})
+        await websocket.close()
+        return
+
+    try:
+        session = build_web_tty_session(
+            str(init.get("session", "")), str(init.get("instance", ""))
+        )
+    except WebTtyError as exc:
+        await websocket.send_json({"type": "error", "message": str(exc)})
+        await websocket.close()
+        return
+
+    def _dim(key: str, default: int, lo: int, hi: int) -> int:
+        try:
+            return max(lo, min(hi, int(init.get(key, default))))
+        except (TypeError, ValueError):
+            return default
+
+    await session.start(rows=_dim("rows", 30, 4, 200), cols=_dim("cols", 100, 20, 400))
+
+    async def _pump_output() -> None:
+        while True:
+            data = await session.read()
+            if data is None:
+                break
+            await websocket.send_json({"type": "output", "data": data.decode("utf-8", "replace")})
+
+    out_task = asyncio.create_task(_pump_output())
+    try:
+        while True:
+            msg = await websocket.receive_json()
+            mtype = msg.get("type")
+            if mtype == "input":
+                session.write(str(msg.get("data", "")))
+            elif mtype == "resize":
+                try:
+                    session.resize(rows=int(msg["rows"]), cols=int(msg["cols"]))
+                except (KeyError, TypeError, ValueError):
+                    pass
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        logger.debug("web-tty ws error: %s", exc)
     finally:
         out_task.cancel()
         code = session.exit_code()

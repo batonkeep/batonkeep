@@ -42,6 +42,14 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
     catch { /* surfaced via disabled state */ }
   };
 
+  const [capturing, setCapturing] = useState<string | null>(null);
+  const captureUsage = async (instanceId: string) => {
+    setCapturing(instanceId);
+    try { await api.captureSubscriptionUsage(instanceId, consoleToken); onRefresh(); }
+    catch { /* surfaced via disabled state */ }
+    finally { setCapturing(null); }
+  };
+
   const canConsole = consoleAvailable && consoleToken.trim().length > 0;
 
   const groups: { template: string; instances: ProviderHealth[] }[] = [];
@@ -173,6 +181,12 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
                     <div className="h-1.5 w-full overflow-hidden rounded-full bg-base">
                       <div className={`h-full ${barColor} transition-all`} style={{ width: `${usedPct == null ? 0 : usedPct}%` }} />
                     </div>
+                    {canConsole && p.kind === "cli" && (p.exec_seam ?? "headless") === "terminal" && (
+                      <button onClick={() => captureUsage(p.name)} disabled={capturing === p.name}
+                        className="mt-1.5 font-mono text-[10px] text-brand hover:text-ink disabled:text-muted">
+                        {capturing === p.name ? "capturing /usage…" : "capture /usage quota"}
+                      </button>
+                    )}
                   </div>
 
                   {p.mode === "plan" && (

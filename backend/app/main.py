@@ -1312,6 +1312,28 @@ async def set_provider_seam(
     return {"status": "ok", "instance": instance_id, "exec_seam": get_exec_seam(instance_id)}
 
 
+@app.post("/api/usage/subscription/{instance_id}", tags=["console"])
+async def capture_subscription_usage_endpoint(
+    instance_id: str,
+    _: None = Depends(_require_console),
+):
+    """Capture a plan-CLI's /usage panel via the terminal seam and surface the
+    subscription quota on the cost surface (D-0015 #4, closes P-0009 #2).
+
+    Requires the instance's exec seam = 'terminal' and '/usage' on the allow-policy.
+    """
+    from app.providers.registry import get_instance, get_provider_def
+    from app.subscription_usage import capture_subscription_usage
+    inst = get_instance(instance_id)
+    if inst is None:
+        raise HTTPException(status_code=404, detail="Unknown provider instance")
+    pdef = get_provider_def(inst.template)
+    if not (pdef and pdef.kind == "cli"):
+        raise HTTPException(status_code=400, detail="Subscription usage applies to plan-CLI instances only.")
+    usage = await capture_subscription_usage(instance_id)
+    return usage.to_dict()
+
+
 @app.websocket("/ws/console")
 async def console_websocket(websocket: WebSocket):
     """

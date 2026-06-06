@@ -138,6 +138,65 @@ class TestCredentials:
         finally:
             settings.__dict__["app_secret"] = orig_secret
 
+    @pytest.mark.asyncio
+    async def test_key_hint_is_last4_and_never_plaintext(self, fresh_db):
+        """P-0009 #3: store records a masked last-4 hint, never the full key."""
+        engine, Session, _ = fresh_db
+        from app.credentials import store_credential, list_credentials
+
+        async with Session() as db:
+            await store_credential(db, "local", "openai", "sk-secret-wxyz")
+            rows = await list_credentials(db, "local")
+
+        assert rows[0]["key_hint"] == "…wxyz"
+        assert "secret" not in (rows[0]["key_hint"] or "")
+
+    @pytest.mark.asyncio
+    async def test_resolve_touches_last_used_at(self, fresh_db, monkeypatch):
+        """P-0009 #3: resolving a stored key records last_used_at observability."""
+        engine, Session, _ = fresh_db
+        import app.credentials as cred_mod
+        from app.credentials import store_credential, resolve_api_key, list_credentials
+
+        monkeypatch.setattr(cred_mod, "AsyncSessionLocal", Session, raising=False)
+        # resolve_api_key imports AsyncSessionLocal from app.db at call time.
+        import app.db as db_mod
+        monkeypatch.setattr(db_mod, "AsyncSessionLocal", Session, raising=False)
+
+        async with Session() as db:
+            await store_credential(db, "local", "openai", "sk-abcd")
+            assert (await list_credentials(db, "local"))[0]["last_used_at"] is None
+
+        assert await resolve_api_key("openai", None, owner_id="local") == "sk-abcd"
+
+        async with Session() as db:
+            assert (await list_credentials(db, "local"))[0]["last_used_at"] is not None
+
+    @pytest.mark.asyncio
+    async def test_secrets_status_classifies_stored_env_missing(self, fresh_db, monkeypatch):
+        """P-0009 #3: the named surface reports stored / env / missing per provider."""
+        engine, Session, _ = fresh_db
+        from app.credentials import store_credential, secrets_status
+
+        async with Session() as db:
+            await store_credential(db, "local", "openai-api", "sk-stored-key1")
+            rows = await secrets_status(db, "local")
+
+        by_provider = {r["provider"]: r for r in rows}
+        # Every key-backed provider appears; CLI/mock providers are omitted.
+        assert "openai-api" in by_provider
+        assert by_provider["openai-api"]["source"] == "stored"
+        assert by_provider["openai-api"]["key_hint"] == "…key1"
+
+        # A provider with neither a stored key nor its env var set → "missing".
+        for r in rows:
+            if r["source"] == "env":
+                monkeypatch.delenv(r["env_key"], raising=False)
+        async with Session() as db:
+            rows2 = await secrets_status(db, "local")
+        sources = {r["source"] for r in rows2}
+        assert sources <= {"stored", "env", "missing"}
+
 
 # ── Scheduler ─────────────────────────────────────────────────────────────────
 

@@ -30,6 +30,7 @@ from app.models import Artifact, Credential, Owner, Session, SessionTurn, Task, 
 from app.schemas import (
     CredentialCreate,
     CredentialOut,
+    SecretStatusOut,
     ModeOut,
     CloudflareConfigIn,
     CloudflareDeployIn,
@@ -1106,6 +1107,20 @@ async def delete_credential_route(
     deleted = await delete_credential(db, owner_id, provider)
     if not deleted:
         raise HTTPException(status_code=404, detail="Credential not found")
+
+
+@app.get("/api/secrets", response_model=list[SecretStatusOut], tags=["credentials"])
+async def secrets_status_route(
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """
+    Named secrets-management surface (P-0009 #3): for every key-backed provider,
+    report whether its credential resolves from the encrypted store, the deployment
+    env, or is missing — with a masked hint + last-used, never any plaintext.
+    """
+    from app.credentials import secrets_status
+    return await secrets_status(db, owner_id)
 
 
 # ── /api/integrations/cloudflare (host connector, D-0009) ─────────────────────

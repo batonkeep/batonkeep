@@ -16,6 +16,7 @@ import base64
 import hashlib
 import logging
 import os
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -64,12 +65,19 @@ def _decrypt(ciphertext: str) -> str:
         raise
 
 
+def _key_hint(api_key: str) -> str:
+    """Non-secret last-4 fingerprint for display ('…wxyz'). Never the full key."""
+    tail = api_key.strip()[-4:]
+    return f"…{tail}" if tail else ""
+
+
 async def store_credential(
     db: AsyncSession, owner_id: str, provider: str, api_key: str,
     label: Optional[str] = None,
 ) -> Credential:
     """Encrypt and upsert a BYO key for owner+provider (provider may be an instance id)."""
     ciphertext = _encrypt(api_key)
+    hint = _key_hint(api_key)
 
     result = await db.execute(
         select(Credential).where(
@@ -80,10 +88,14 @@ async def store_credential(
     cred = result.scalar_one_or_none()
     if cred:
         cred.ciphertext = ciphertext
+        cred.key_hint = hint
         if label is not None:
             cred.label = label
     else:
-        cred = Credential(owner_id=owner_id, provider=provider, ciphertext=ciphertext, label=label)
+        cred = Credential(
+            owner_id=owner_id, provider=provider, ciphertext=ciphertext,
+            label=label, key_hint=hint,
+        )
         db.add(cred)
 
     await db.commit()
@@ -138,8 +150,18 @@ async def resolve_api_key(
     try:
         from app.db import AsyncSessionLocal
         async with AsyncSessionLocal() as db:
-            stored = await get_credential(db, oid, provider)
-            if stored:
+            result = await db.execute(
+                select(Credential).where(
+                    Credential.owner_id == oid,
+                    Credential.provider == provider,
+                )
+            )
+            cred = result.scalar_one_or_none()
+            if cred is not None:
+                stored = _decrypt(cred.ciphertext)
+                # Observability: record that this stored key was actually used.
+                cred.last_used_at = datetime.now(timezone.utc)
+                await db.commit()
                 return stored
     except Exception as exc:  # DB unavailable (e.g. unit context) — fall back to env
         logger.debug("[credentials] store lookup failed for %s: %s", provider, exc)
@@ -154,11 +176,53 @@ async def resolve_api_key(
 async def list_credentials(db: AsyncSession, owner_id: str) -> list[dict]:
     """Return provider names that have keys stored (no plaintext values)."""
     result = await db.execute(
-        select(Credential.provider, Credential.label, Credential.created_at).where(
-            Credential.owner_id == owner_id
-        )
+        select(
+            Credential.provider, Credential.label, Credential.key_hint,
+            Credential.created_at, Credential.last_used_at,
+        ).where(Credential.owner_id == owner_id)
     )
     return [
-        {"provider": row.provider, "label": row.label, "created_at": row.created_at}
+        {
+            "provider": row.provider, "label": row.label, "key_hint": row.key_hint,
+            "created_at": row.created_at, "last_used_at": row.last_used_at,
+        }
         for row in result.all()
     ]
+
+
+async def secrets_status(db: AsyncSession, owner_id: str) -> list[dict]:
+    """
+    The named secrets-management surface (P-0009 #3): for every key-backed provider
+    template, report where its credential resolves from, in resolve_api_key order:
+      - "stored": a BYO key is in the encrypted store (with hint + last-used).
+      - "env":    no stored key, but the provider's deployment env var is set.
+      - "missing": neither — the provider can't authenticate.
+    Plan-CLI providers (no api key) and the local mock are omitted; they don't take
+    a secret. Never returns any plaintext or ciphertext.
+    """
+    from app.providers.registry import list_providers
+
+    # Stored keys for this owner, indexed by credential provider id.
+    stored = {row["provider"]: row for row in await list_credentials(db, owner_id)}
+
+    rows: list[dict] = []
+    for pdef in list_providers():
+        if pdef.kind not in ("openai_compatible", "anthropic") or not pdef.env_key:
+            continue  # CLI/mock providers don't authenticate with a stored secret
+        cred = stored.get(pdef.name)
+        if cred is not None:
+            source = "stored"
+        elif os.environ.get(pdef.env_key):
+            source = "env"
+        else:
+            source = "missing"
+        rows.append({
+            "provider": pdef.name,
+            "tier": pdef.tier,
+            "env_key": pdef.env_key,
+            "local": pdef.local,
+            "source": source,
+            "key_hint": cred["key_hint"] if cred else None,
+            "last_used_at": cred["last_used_at"] if cred else None,
+        })
+    return rows

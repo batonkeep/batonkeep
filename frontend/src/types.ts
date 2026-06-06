@@ -149,7 +149,21 @@ export interface Credential {
   owner_id: string;
   provider: string; // template name or instance id ("openai-api" / "openai-api:team")
   label: string | null;
+  key_hint: string | null; // non-secret last-4 ("…wxyz"), never the full key
   created_at: string;
+  last_used_at: string | null;
+}
+
+// One row of the named secrets-management surface (P-0009 #3). Mirrors
+// SecretStatusOut in backend/app/schemas.py. Never carries any plaintext.
+export interface SecretStatus {
+  provider: string;
+  tier: string;
+  env_key: string | null;
+  local: boolean;
+  source: "stored" | "env" | "missing";
+  key_hint: string | null;
+  last_used_at: string | null;
 }
 
 export interface Mode {

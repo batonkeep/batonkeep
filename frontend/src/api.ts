@@ -14,6 +14,7 @@ import type {
   ProviderLimitsUpdate,
   Run,
   RunEvent,
+  SecretStatus,
   Session,
   SessionInput,
   SessionTurn,
@@ -209,6 +210,9 @@ export const api = {
     }),
   deleteCredential: (provider: string) =>
     req<void>(`/credentials/${provider}`, { method: "DELETE" }),
+
+  // ── Secrets surface (P-0009 #3): key posture across all providers ─────────
+  getSecretsStatus: () => req<SecretStatus[]>("/secrets"),
 };
 
 export { ApiError };

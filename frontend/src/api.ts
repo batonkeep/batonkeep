@@ -49,8 +49,12 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     ? {}
     : { "Content-Type": "application/json" };
   const res = await fetch(`${BASE}${path}`, {
-    headers: { ...baseHeaders, ...(init?.headers || {}) },
     ...init,
+    // Spread init FIRST, then set merged headers LAST — otherwise init's own
+    // headers ({"X-Console-Token": ...}) clobber the whole headers object and
+    // drop Content-Type: application/json, so a JSON string body is sent as
+    // text/plain and FastAPI 422s ("Input should be a valid dictionary").
+    headers: { ...baseHeaders, ...(init?.headers || {}) },
   });
   if (!res.ok) {
     let detail = res.statusText;

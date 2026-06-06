@@ -35,6 +35,7 @@ import re
 import signal
 import struct
 import termios
+from dataclasses import dataclass
 from typing import Any, AsyncIterator, Optional
 
 from app.cli_policy import get_policy
@@ -73,6 +74,49 @@ _ANSI_RE = re.compile(
 def strip_ansi(text: str) -> str:
     """Remove ANSI escape sequences and stray control chars from PTY output."""
     return _ANSI_RE.sub("", text)
+
+
+# ── Per-provider TUI adapters ──────────────────────────────────────────────────
+# Each CLI's TUI behaves differently (probed live 2026-06-06): claude takes a
+# typed command + Enter directly; grok opens a startup modal that must be
+# dismissed first; agy is autocomplete-menu-driven (type filters, Enter selects);
+# codex needs the typed text to render before Enter registers as submit. A spec
+# captures those differences so the generic driver stays uniform.
+
+_ESC = "\x1b"
+_ENTER = "\r"
+
+
+@dataclass(frozen=True)
+class TUISpec:
+    # Seconds to let the first frame paint before we touch the keyboard.
+    startup_grace: float = _STARTUP_GRACE
+    # Keystrokes to clear a startup modal/dialog before the prompt is usable.
+    startup_keys: tuple[str, ...] = ()
+    # Pause after typing a command so the TUI renders it (and any autocomplete
+    # menu) before we submit — without this, Enter races ahead of the render.
+    type_settle: float = 0.0
+    # The keystroke that submits a typed command.
+    submit: str = _ENTER
+    # Extra keystrokes after submit (e.g. a second Enter to confirm a menu pick).
+    post_submit_keys: tuple[str, ...] = ()
+
+
+# Default spec works for claude. Others override only what differs.
+_TUI_SPECS: dict[str, TUISpec] = {
+    "claude": TUISpec(),
+    # Dismiss the "New worktree / Resume / Quit" startup modal, then settle so the
+    # typed command lands in the prompt rather than the dialog.
+    "grok": TUISpec(startup_grace=3.0, startup_keys=(_ESC,), type_settle=1.0),
+    # Autocomplete menu: type filters the list, Enter selects + runs the match.
+    "agy": TUISpec(startup_grace=2.0, type_settle=1.0),
+    # Enter only registers once the typed text has rendered.
+    "codex": TUISpec(startup_grace=2.0, type_settle=1.0),
+}
+
+
+def get_tui_spec(provider: str) -> TUISpec:
+    return _TUI_SPECS.get(provider, TUISpec())
 
 
 def _set_winsize(fd: int, rows: int, cols: int) -> None:
@@ -151,6 +195,7 @@ class CLIInteractiveExecutor(Executor):
         control_commands: list[str] = list(extra.get("control_commands") or [])
         idle_timeout = float(extra.get("idle_timeout") or _DEFAULT_IDLE_TIMEOUT)
         hard_timeout = _settings.run_timeout_seconds
+        spec = get_tui_spec(self._def.name)  # per-provider TUI adapter
 
         # Policy gate: every control command must pass BEFORE we spawn anything.
         for cmd in control_commands:
@@ -223,16 +268,29 @@ class CLIInteractiveExecutor(Executor):
                         if text:
                             accumulated.append(text)
 
+            async def _send(text: str) -> None:
+                """Type text, let the TUI render it, then submit per the spec."""
+                _write(text)
+                if spec.type_settle:
+                    await asyncio.sleep(spec.type_settle)
+                _write(spec.submit)
+                for k in spec.post_submit_keys:
+                    _write(k)
+
             # Bound the whole interaction by the hard run timeout.
             async def _interact() -> None:
                 # Let the TUI paint + settle; discard the banner.
-                await _drain_until_idle(capture=False, first_timeout=_STARTUP_GRACE)
+                await _drain_until_idle(capture=False, first_timeout=spec.startup_grace)
+                # Clear any startup modal/dialog so input lands in the prompt.
+                for k in spec.startup_keys:
+                    _write(k)
+                    await _drain_until_idle(capture=False)
                 if prompt.strip():
-                    _write(prompt + "\r")
+                    await _send(prompt)
                     await _drain_until_idle(capture=True)
                 for cmd in control_commands:
                     # Already policy-checked above; safe to send.
-                    _write(cmd + "\r")
+                    await _send(cmd)
                     await _drain_until_idle(capture=True)
 
             try:

@@ -11,7 +11,12 @@ import pytest
 
 from app.cli_policy import TerminalPolicy
 from app.providers.base import EventKind
-from app.providers.cli_interactive import CLIInteractiveExecutor, strip_ansi
+from app.providers.cli_interactive import (
+    CLIInteractiveExecutor,
+    TUISpec,
+    get_tui_spec,
+    strip_ansi,
+)
 from app.providers.registry import ProviderDef, ProviderInstance
 
 
@@ -48,6 +53,28 @@ class TestLaunchFlags:
     def test_grok_uses_always_approve(self):
         ex = _executor("grok")
         assert ex._build_launch(allow_shell=True) == ["grok", "--always-approve"]
+
+
+class TestTUISpec:
+    def test_known_providers_have_specs(self):
+        for p in ("claude", "grok", "agy", "codex"):
+            assert isinstance(get_tui_spec(p), TUISpec)
+
+    def test_unknown_provider_gets_default(self):
+        assert get_tui_spec("nope") == TUISpec()
+
+    def test_grok_dismisses_startup_modal(self):
+        # grok opens a startup dialog that must be cleared before input lands.
+        assert get_tui_spec("grok").startup_keys == ("\x1b",)
+
+    def test_menu_driven_clis_settle_before_submit(self):
+        # agy/codex need the typed text to render before Enter registers.
+        assert get_tui_spec("agy").type_settle > 0
+        assert get_tui_spec("codex").type_settle > 0
+
+    def test_claude_default_no_settle(self):
+        # claude takes a command + Enter directly.
+        assert get_tui_spec("claude").type_settle == 0.0
 
 
 class TestPolicyGate:

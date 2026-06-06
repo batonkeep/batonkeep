@@ -18,30 +18,52 @@ from app.subscription_usage import (
 
 
 class TestParseUsagePanel:
-    def test_extracts_highest_percentage(self):
+    def test_claude_used_framing_takes_highest(self):
+        # claude frames as "% used"; the binding constraint is the highest.
         text = "Current session 12% used\nCurrent week (all models) 67% used"
         u = parse_usage_panel(text, "claude")
         assert u.ok is True
         assert u.used_pct == 0.67
+
+    def test_codex_left_framing_is_inverted(self):
+        # codex frames as "% left" → used = 100 - left.
+        u = parse_usage_panel("Monthly limit: 87% left (resets 13:53 on 2 Jul)", "codex")
+        assert u.ok is True
+        assert u.used_pct == pytest.approx(0.13)
+
+    def test_agy_available_framing_is_inverted(self):
+        # agy frames as "% available" per model → 100% available = 0% used.
+        u = parse_usage_panel("Gemini 3.5 Flash\n100% Quota available", "agy")
+        assert u.ok is True
+        assert u.used_pct == 0.0
 
     def test_extracts_reset_hint(self):
         text = "Weekly limit 80% used\nResets Mon Jun 9 at 10:00"
         u = parse_usage_panel(text, "claude")
         assert u.reset_hint and u.reset_hint.startswith("Mon Jun 9")
 
+    def test_reset_hint_trims_box_glyphs(self):
+        u = parse_usage_panel("87% left (resets 13:53 on 2 Jul) │", "codex")
+        assert u.reset_hint == "13:53 on 2 Jul)"
+
+    def test_bare_percentage_without_framing_is_ignored(self):
+        # No "used"/"left"/"available" near the % → not a quota gauge.
+        u = parse_usage_panel("Loaded in 100% of cases. Welcome!", "claude")
+        assert u.ok is False
+        assert "no quota percentage" in (u.error or "")
+
     def test_no_percentage_is_not_ok(self):
         u = parse_usage_panel("Welcome to the CLI. Type /help.", "claude")
         assert u.ok is False
-        assert "no percentage" in (u.error or "")
 
     def test_empty_panel(self):
         u = parse_usage_panel("", "claude")
         assert u.ok is False
         assert u.error == "empty panel"
 
-    def test_ignores_out_of_range_numbers(self):
-        # 200% is not a valid usage fraction; 45% is.
-        u = parse_usage_panel("port 8000, 45% used, 200%", "claude")
+    def test_ignores_out_of_range_and_unframed_numbers(self):
+        # "200%" is out of range; "8000" has no %; only "45% used" is a real gauge.
+        u = parse_usage_panel("port 8000, 45% used, 200% used", "claude")
         assert u.used_pct == 0.45
 
 

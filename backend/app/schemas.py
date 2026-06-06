@@ -353,6 +353,17 @@ class CredentialOut(BaseModel):
     last_used_at: Optional[datetime] = None
 
 
+class UsageSummaryOut(BaseModel):
+    """Owner spend surface (P-0009 #2) — today / 7d / by-provider + budget cap."""
+
+    spend_today_usd: float
+    spend_7d_usd: float
+    by_provider_today: dict[str, float]
+    daily_budget_usd: float           # 0 = unlimited
+    remaining_today_usd: Optional[float] = None  # None when unlimited
+    over_budget: bool
+
+
 class SecretStatusOut(BaseModel):
     """One row of the named secrets-management surface (P-0009 #3)."""
 

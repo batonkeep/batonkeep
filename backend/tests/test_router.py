@@ -205,6 +205,59 @@ class TestRoundRobin:
 
 # ── Managed mode gating ────────────────────────────────────────────────────────
 
+class TestBudgetDegradation:
+    """P-0009 #2: over-budget runs degrade to zero-marginal-cost providers."""
+
+    def test_degrade_keeps_only_free_providers(self):
+        """claude (plan-CLI, free) survives; openai-api (paid) is dropped."""
+        q = fresh_quota()
+        result = resolve(
+            _routing(candidates=["openai-api", "claude"], tags=[]),
+            q,
+            degrade_to_free=True,
+        )
+        assert isinstance(result, CandidatePlan)
+        assert result.candidates == ["claude"]
+
+    def test_degrade_keeps_local_provider(self):
+        """ollama (local, free) survives an over-budget run."""
+        q = fresh_quota()
+        result = resolve(
+            _routing(candidates=["openai-api", "ollama"], tags=[]),
+            q,
+            degrade_to_free=True,
+        )
+        assert isinstance(result, CandidatePlan)
+        assert result.candidates == ["ollama"]
+
+    def test_degrade_defers_when_no_free_provider(self):
+        """All-paid candidate set over budget → deferred, never spends."""
+        q = fresh_quota()
+        result = resolve(
+            _routing(candidates=["openai-api", "gemini-api"], tags=[]),
+            q,
+            degrade_to_free=True,
+        )
+        assert isinstance(result, DeferredResult)
+
+    def test_degrade_forbids_overflow_off_free_set(self):
+        q = fresh_quota()
+        result = resolve(
+            _routing(candidates=["claude"], tags=[], overflow_to="openai-api"),
+            q,
+            degrade_to_free=True,
+        )
+        assert isinstance(result, CandidatePlan)
+        assert result.overflow_to is None
+
+    def test_not_degraded_includes_paid(self):
+        """Sanity: without the flag, paid providers route normally."""
+        q = fresh_quota()
+        result = resolve(_routing(candidates=["openai-api"], tags=[]), q)
+        assert isinstance(result, CandidatePlan)
+        assert "openai-api" in result.candidates
+
+
 class TestManagedMode:
     def test_managed_mode_excludes_plan_cli(self):
         """With deployment_mode=managed, claude/grok/agy must be excluded."""

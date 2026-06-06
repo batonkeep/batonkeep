@@ -49,6 +49,13 @@ class Settings(BaseSettings):
     max_concurrent_runs: int = 4
     run_timeout_seconds: int = 1800
 
+    # ── Budget (P-0009 #2) ────────────────────────────────────────────────────
+    # Daily spend cap in USD across all of an owner's runs. 0 = unlimited.
+    # When today's metered spend reaches the cap, the router gracefully degrades
+    # to zero-marginal-cost providers (subscription plan-CLIs + local models)
+    # instead of hard-failing; it defers only if none are available.
+    daily_budget_usd: float = 0.0
+
     # ── Behaviour ─────────────────────────────────────────────────────────────
     autonomous_tools: bool = True
     seed_examples: bool = True

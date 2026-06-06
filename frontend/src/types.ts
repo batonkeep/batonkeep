@@ -154,6 +154,16 @@ export interface Credential {
   last_used_at: string | null;
 }
 
+// Owner spend surface (P-0009 #2). Mirrors UsageSummaryOut in schemas.py.
+export interface UsageSummary {
+  spend_today_usd: number;
+  spend_7d_usd: number;
+  by_provider_today: Record<string, number>;
+  daily_budget_usd: number; // 0 = unlimited
+  remaining_today_usd: number | null; // null when unlimited
+  over_budget: boolean;
+}
+
 // One row of the named secrets-management surface (P-0009 #3). Mirrors
 // SecretStatusOut in backend/app/schemas.py. Never carries any plaintext.
 export interface SecretStatus {

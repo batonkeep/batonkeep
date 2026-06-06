@@ -57,6 +57,7 @@ def resolve(
     quota: QuotaTracker,
     *,
     deployment_mode: Optional[str] = None,
+    degrade_to_free: bool = False,
 ) -> CandidatePlan | DeferredResult:
     """
     Resolve a routing policy dict into an ordered candidate plan.
@@ -65,6 +66,10 @@ def resolve(
         routing: The task's routing JSON (§4.3). Defaults are applied for missing keys.
         quota: The quota tracker to check cooldown state.
         deployment_mode: Override for testing; defaults to settings value.
+        degrade_to_free: Budget policy layer (P-0009 #2). When True (owner over the
+            daily cap), restrict candidates to zero-marginal-cost providers
+            (subscription plan-CLIs + local models) and forbid overflow. Defers if
+            none are available — graceful degradation, never a silent over-spend.
 
     Returns:
         CandidatePlan or DeferredResult.
@@ -90,6 +95,20 @@ def resolve(
         if not raw_candidates:
             logger.warning("[router] confidential task, no local provider available — deferring")
             return DeferredResult(deferred_until=None, cooling_providers=[])
+
+    # Budget boundary (P-0009 #2): when the owner is over the daily cap, degrade to
+    # zero-marginal-cost providers only — subscription plan-CLIs + local models —
+    # and forbid overflow off the free set. Applied *after* the confidential layer
+    # so sovereignty always wins; a confidential candidate set is already local
+    # (hence free) so this only narrows further among free providers, never widens.
+    if degrade_to_free:
+        free = [c for c in raw_candidates if _is_free_candidate(c)]
+        overflow_to = None
+        logger.info("[router] over budget — degrading to free providers only: %s", free)
+        if not free:
+            logger.warning("[router] over budget, no free provider available — deferring")
+            return DeferredResult(deferred_until=None, cooling_providers=[])
+        raw_candidates = free
 
     mode = deployment_mode or _settings.deployment_mode.value
     plan_cli_allowed = mode != "managed"
@@ -175,6 +194,17 @@ def resolve(
         ordered = ordered[:max_attempts]
 
     return CandidatePlan(candidates=ordered, overflow_to=overflow_to)
+
+
+def _is_free_candidate(candidate_id: str) -> bool:
+    """True iff a candidate instance resolves to a zero-marginal-cost provider
+    (subscription plan-CLI or local model). Mirrors cost.is_free_provider but
+    keyed by instance id so the router stays DB-free."""
+    inst = get_instance(candidate_id)
+    if inst is None:
+        return False
+    pdef = get_provider_def(inst.template)
+    return bool(pdef and (pdef.kind == "cli" or pdef.local))
 
 
 def _resolve_capability(

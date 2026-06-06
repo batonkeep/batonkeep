@@ -31,6 +31,7 @@ from app.schemas import (
     CredentialCreate,
     CredentialOut,
     SecretStatusOut,
+    UsageSummaryOut,
     ModeOut,
     CloudflareConfigIn,
     CloudflareDeployIn,
@@ -1107,6 +1108,20 @@ async def delete_credential_route(
     deleted = await delete_credential(db, owner_id, provider)
     if not deleted:
         raise HTTPException(status_code=404, detail="Credential not found")
+
+
+@app.get("/api/usage", response_model=UsageSummaryOut, tags=["meta"])
+async def get_usage(
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """
+    Owner spend surface (P-0009 #2): today / last-7-day metered cost, per-provider
+    breakdown, the configured daily cap, remaining headroom, and whether the budget
+    gate is degrading new runs to zero-cost providers. API + log, not a dashboard.
+    """
+    from app.cost import usage_summary
+    return UsageSummaryOut(**await usage_summary(db, owner_id))
 
 
 @app.get("/api/secrets", response_model=list[SecretStatusOut], tags=["credentials"])

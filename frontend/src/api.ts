@@ -25,6 +25,7 @@ import type {
   TurnInput,
   Publish,
   SessionTemplate,
+  UsageSummary,
   Upload,
   Version,
   VersionDiff,
@@ -199,6 +200,7 @@ export const api = {
 
   // ── Stats / meta ─────────────────────────────────────────────────────────
   getStats: () => req<Stats>("/stats"),
+  getUsage: () => req<UsageSummary>("/usage"),
   getMode: () => req<Mode>("/me/mode"),
 
   // ── Credentials (BYO-key) ─────────────────────────────────────────────────

@@ -81,13 +81,26 @@ async def _do_execute(run_id: int, task: Task) -> None:
 
         # ── 2. Route ─────────────────────────────────────────────────────────
         routing = task.routing or {}
-        route_result = resolve(routing, quota_tracker)
+        # Budget gate (P-0009 #2): if the owner is over the daily cap, tell the
+        # router to degrade to zero-marginal-cost providers instead of spending.
+        from app.cost import over_daily_budget
+        degrade = await over_daily_budget(db, run.owner_id)
+        if degrade:
+            await _emit_event(db, run, EventKind.route, "budget_degraded",
+                              data={"daily_budget_usd": _settings.daily_budget_usd})
+            logger.info("[orchestrator] run %d over daily budget — degrading to free providers", run_id)
+        route_result = resolve(routing, quota_tracker, degrade_to_free=degrade)
 
         if isinstance(route_result, DeferredResult):
             run.status = "deferred"
             run.deferred_until = route_result.deferred_until
             if route_result.cooling_providers:
                 run.error = f"All candidates cooling: {route_result.cooling_providers}"
+            elif degrade:
+                run.error = (
+                    f"Over daily budget (${_settings.daily_budget_usd:.2f}) and no "
+                    f"zero-cost provider (plan-CLI/local) available — deferred."
+                )
             else:
                 routing_candidates = routing.get("candidates", _settings.candidates_list)
                 run.error = (

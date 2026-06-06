@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Moon, Plus, Settings2, Sun } from "lucide-react";
 import { api } from "./api";
 import { useLiveFeed } from "./useLiveFeed";
-import type { Credential, Mode, ProviderHealth, Run, Session, Stats, Task, TaskInput } from "./types";
+import type { Credential, Mode, ProviderHealth, Run, Session, Stats, Task, TaskInput, UsageSummary } from "./types";
 import Sidebar, { View } from "./components/Sidebar";
 import StatsBar from "./components/StatsBar";
 import TaskList from "./components/TaskList";
@@ -50,6 +50,7 @@ function AppShell() {
   const [runs, setRuns] = useState<Run[]>([]);
   const [providers, setProviders] = useState<ProviderHealth[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
+  const [usage, setUsage] = useState<UsageSummary | null>(null);
   const [mode, setMode] = useState<Mode | null>(null);
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -87,7 +88,10 @@ function AppShell() {
   const loadTasks = useCallback(() => api.listTasks().then(setTasks).catch(() => { }), []);
   const loadRuns = useCallback(() => api.listRuns({ limit: 100 }).then(setRuns).catch(() => { }), []);
   const loadProviders = useCallback(() => api.listProviders().then(setProviders).catch(() => { }), []);
-  const loadStats = useCallback(() => api.getStats().then(setStats).catch(() => { }), []);
+  const loadStats = useCallback(() => {
+    api.getStats().then(setStats).catch(() => { });
+    api.getUsage().then(setUsage).catch(() => { });
+  }, []);
   const loadCreds = useCallback(() => api.listCredentials().then(setCredentials).catch(() => { }), []);
   const loadSessions = useCallback(() => api.listSessions().then(setSessions).catch(() => { }), []);
 
@@ -237,7 +241,7 @@ function AppShell() {
         {/* Run/task aggregates — irrelevant to the Build surface, so hide there. */}
         {view !== "build" && (
           <div className="mb-6">
-            <StatsBar stats={stats} sparkData={sparkData} />
+            <StatsBar stats={stats} usage={usage} sparkData={sparkData} />
           </div>
         )}
 

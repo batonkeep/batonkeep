@@ -16,37 +16,8 @@ import pytest
 
 import app.web_tty as web_tty
 import app.sessions.workspace as ws_mod
-from app.web_tty import WebTtyError, build_web_tty_session, strip_sync_output
+from app.web_tty import WebTtyError, build_web_tty_session
 from app.providers.registry import ProviderDef, ProviderInstance
-
-
-class TestStripSyncOutput:
-    def test_strips_2026_brackets(self):
-        # agy frame: \e[?2026h <content> \e[?2026l → content survives, brackets gone.
-        raw = b"\x1b[?2026h\x1b[Hhello world\x1b[?2026l"
-        clean, carry = strip_sync_output(raw)
-        assert clean == b"\x1b[Hhello world"
-        assert carry == b""
-
-    def test_passes_through_normal_output(self):
-        raw = b"\x1b[32mclaude\x1b[m ready"
-        clean, carry = strip_sync_output(raw)
-        assert clean == raw and carry == b""
-
-    def test_marker_split_across_reads_is_held_then_dropped(self):
-        # First read ends mid-marker; the partial is carried, not emitted.
-        a, carry = strip_sync_output(b"abc\x1b[?2026")
-        assert a == b"abc" and carry == b"\x1b[?2026"
-        # Next read completes the marker → it's removed, content flows.
-        b, carry = strip_sync_output(b"hdef", carry)
-        assert b == b"def" and carry == b""
-
-    def test_partial_that_is_not_a_marker_is_emitted_next(self):
-        a, carry = strip_sync_output(b"x\x1b[?2026")
-        assert carry == b"\x1b[?2026"
-        # A non-marker continuation: the held bytes flush back out intact.
-        b, carry = strip_sync_output(b"X", carry)
-        assert b == b"\x1b[?2026X" and carry == b""
 
 
 def _patch_settings(monkeypatch, tmp_path, *, mode="personal"):

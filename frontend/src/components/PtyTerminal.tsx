@@ -47,6 +47,16 @@ export default function PtyTerminal({ wsPath, init, title, subtitle, onClose, em
       fontSize: 12,
       theme: THEME,
     });
+    // Work around an xterm.js@6 bug: its built-in DECRQM ("$p") handler throws
+    // `ReferenceError: i is not defined` when a CLI queries private-mode support.
+    // agy/Antigravity probes synchronized-output + grapheme modes on startup
+    // (\e[?2026$p, \e[?2027$p); the throw crashes the parser mid-stream, so the
+    // screen stays blank with only the cursor (claude/grok/codex don't query $p,
+    // hence only agy broke). Register no-op handlers that run before — and thus
+    // suppress — the broken built-in. The CLI just gets no reply and renders
+    // without synchronized output (verified to render correctly).
+    term.parser.registerCsiHandler({ prefix: "?", intermediates: "$", final: "p" }, () => true);
+    term.parser.registerCsiHandler({ intermediates: "$", final: "p" }, () => true);
     const fit = new FitAddon();
     term.loadAddon(fit);
     if (mountRef.current) term.open(mountRef.current);

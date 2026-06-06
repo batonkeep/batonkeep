@@ -47,14 +47,24 @@ export default function PtyTerminal({ wsPath, init, title, subtitle, onClose, em
       fontSize: 12,
       theme: THEME,
     });
-    // Work around an xterm.js@6 bug: its built-in DECRQM ("$p") handler throws
-    // `ReferenceError: i is not defined` when a CLI queries private-mode support.
+    // ─── TEMPORARY WORKAROUND for an upstream xterm.js@6.0.0 bug ───────────────
+    // xterm's built-in DECRQM ("$p") handler throws `ReferenceError: i is not
+    // defined` (minified bundle) whenever a CLI queries private-mode support. The
+    // throw crashes the parser mid-stream, so everything after the query never
+    // renders — the terminal shows a blank screen with only the cursor.
+    //
     // agy/Antigravity probes synchronized-output + grapheme modes on startup
-    // (\e[?2026$p, \e[?2027$p); the throw crashes the parser mid-stream, so the
-    // screen stays blank with only the cursor (claude/grok/codex don't query $p,
-    // hence only agy broke). Register no-op handlers that run before — and thus
-    // suppress — the broken built-in. The CLI just gets no reply and renders
-    // without synchronized output (verified to render correctly).
+    // (\e[?2026$p, \e[?2027$p) and so triggers it; claude/grok/codex don't send
+    // $p queries, which is why only agy was broken.
+    //
+    // We register no-op CSI handlers for $p (both the ?-prefixed and plain forms).
+    // Custom handlers run before the built-in and, by returning true, suppress it
+    // — so the buggy code never executes. The CLI simply gets no DECRQM reply and
+    // renders without synchronized output (verified correct for agy).
+    //
+    // REMOVE THIS once xterm.js ships a fixed requestMode (track @xterm/xterm
+    // releases > 6.0.0). To check if still needed: drop these two lines, rebuild,
+    // open an agy web-TTY session — if it renders, the upstream fix has landed.
     term.parser.registerCsiHandler({ prefix: "?", intermediates: "$", final: "p" }, () => true);
     term.parser.registerCsiHandler({ intermediates: "$", final: "p" }, () => true);
     const fit = new FitAddon();

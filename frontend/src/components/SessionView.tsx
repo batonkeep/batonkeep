@@ -3,11 +3,11 @@
 // with the live event stream. Right: the live preview <iframe> pointed at the
 // session's token-authenticated workspace, refreshed when a turn completes.
 // D-track: composed from ui/ primitives (Button, Badge, Card, StatusDot, Select).
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
 import hljs from "highlight.js/lib/common";
 import "highlight.js/styles/github-dark.css";
-import { Activity, Archive, Check, ChevronLeft, ChevronRight, Cloud, Copy, Download, FileCode, Globe, History, Link2, Loader2, Lock, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, Shield, X } from "lucide-react";
+import { Activity, Archive, Check, ChevronLeft, ChevronRight, Cloud, Copy, Download, FileCode, Globe, History, Link2, Loader2, Lock, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, Shield, SquareTerminal, X } from "lucide-react";
 import type { CloudflareStatus, ProviderHealth, Publish, Session, SessionTemplate, SessionTurn, Version } from "../types";
 import { api } from "../api";
 import { useSessionEvents, type SessionEvent } from "../useLiveFeed";
@@ -77,12 +77,17 @@ function GeneratingIndicator({ latest }: { latest?: string }) {
   );
 }
 
+// Lazy so xterm.js only loads when a web-TTY session is actually opened.
+const WebTtyConsole = lazy(() => import("./WebTtyConsole"));
+
 interface Props {
   sessions: Session[];
   selectedId: string | null;
   onSelect: (id: string | null) => void;
   onSessionsChanged: () => void; // reload the session list in the parent
   providers: ProviderHealth[];
+  consoleAvailable: boolean; // web console enabled (gates the web-TTY launcher)
+  consoleToken: string; // token presented to /ws/tty
 }
 
 const TURN_TONE: Record<SessionTurn["status"], Tone> = {
@@ -107,7 +112,10 @@ export default function SessionView({
   onSelect,
   onSessionsChanged,
   providers,
+  consoleAvailable,
+  consoleToken,
 }: Props) {
+  const [ttyOpen, setTtyOpen] = useState(false); // web-TTY terminal overlay
   const [detail, setDetail] = useState<Session | null>(null);
   const [turns, setTurns] = useState<SessionTurn[]>([]);
   const [message, setMessage] = useState("");
@@ -946,6 +954,16 @@ export default function SessionView({
                     </option>
                   ))}
                 </Select>
+                {consoleAvailable && consoleToken.trim().length > 0 && selectedId && (
+                  <button
+                    type="button"
+                    onClick={() => setTtyOpen(true)}
+                    title="Open a live terminal: drive this provider's CLI in the session workspace (you type each turn)"
+                    className="ml-auto inline-flex items-center gap-1 rounded border border-edge px-2 py-1 font-mono text-[11px] text-muted hover:text-ink"
+                  >
+                    <SquareTerminal size={12} /> terminal
+                  </button>
+                )}
               </div>
               {uploaded.length > 0 && (
                 <div className="flex flex-wrap gap-1.5">
@@ -1327,6 +1345,19 @@ export default function SessionView({
           {cfError && <p className="text-xs text-bad">{cfError}</p>}
         </div>
       </Modal>
+
+      {/* Web-TTY: live provider CLI in this session's workspace, human-driven
+          (D-0016 seam #3 / D-0017). Lazy so xterm.js loads only on open. */}
+      {ttyOpen && selectedId && (
+        <Suspense fallback={null}>
+          <WebTtyConsole
+            session={selectedId}
+            instance={providerSwitch || detail?.provider || providerIds[0] || "claude"}
+            token={consoleToken}
+            onClose={() => setTtyOpen(false)}
+          />
+        </Suspense>
+      )}
     </div>
   );
 }

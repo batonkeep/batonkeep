@@ -36,6 +36,12 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
     catch { /* surfaced via disabled state */ }
   };
 
+  const toggleSeam = async (p: ProviderHealth) => {
+    const next = (p.exec_seam ?? "headless") === "terminal" ? "headless" : "terminal";
+    try { await api.setProviderSeam(p.name, next, consoleToken); onRefresh(); }
+    catch { /* surfaced via disabled state */ }
+  };
+
   const canConsole = consoleAvailable && consoleToken.trim().length > 0;
 
   const groups: { template: string; instances: ProviderHealth[] }[] = [];
@@ -102,7 +108,25 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
                         <Badge tone="neutral">{TIER_LABEL[p.tier] || p.tier}</Badge>
                         <Badge tone="neutral">{p.mode}</Badge>
                         {p.kind === "cli" ? (
-                          <Badge tone="neutral">{p.model || "CLI default"}</Badge>
+                          <>
+                            <Badge tone="neutral">{p.model || "CLI default"}</Badge>
+                            {(p.exec_seam ?? "headless") === "terminal" ? (
+                              <Badge tone="defer">
+                                terminal seam
+                                {canConsole && (
+                                  <button onClick={() => toggleSeam(p)} title="switch to headless"
+                                    className="ml-1 text-muted hover:text-brand"><Terminal size={10} /></button>
+                                )}
+                              </Badge>
+                            ) : canConsole ? (
+                              <button onClick={() => toggleSeam(p)} title="run via PTY terminal seam"
+                                className="font-mono text-[10px] text-muted hover:text-brand">
+                                headless · use terminal seam
+                              </button>
+                            ) : (
+                              <Badge tone="neutral">headless</Badge>
+                            )}
+                          </>
                         ) : editingModel === p.name ? (
                           <span className="flex items-center gap-1">
                             <input autoFocus value={modelDraft} onChange={(e) => setModelDraft(e.target.value)}

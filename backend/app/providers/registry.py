@@ -314,6 +314,46 @@ def set_model_override(instance_id: str, model: Optional[str]) -> None:
         logger.error("[registry] failed to persist model overrides: %s", exc)
 
 
+# ── Exec-seam override (D-0015) ─────────────────────────────────────────────────
+# Per-instance choice of how a CLI instance runs: "headless" (cli -p, default) or
+# "terminal" (PTY interactive seam). Persisted as runtime JSON, mirroring the
+# model-override store above — no DB column, no migration.
+
+_EXEC_SEAM_OVERRIDES_PATH = os.environ.get("EXEC_SEAM_OVERRIDES_PATH", "/data/exec-seam-overrides.json")
+_VALID_SEAMS = {"headless", "terminal"}
+_DEFAULT_SEAM = "headless"
+
+
+def _load_exec_seam_overrides() -> dict[str, str]:
+    try:
+        with open(_EXEC_SEAM_OVERRIDES_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+        return {str(k): str(v) for k, v in data.items() if v in _VALID_SEAMS}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+_EXEC_SEAM_OVERRIDES: dict[str, str] = _load_exec_seam_overrides()
+
+
+def get_exec_seam(instance_id: str) -> str:
+    """The exec seam an instance will use: 'headless' (default) or 'terminal'."""
+    return _EXEC_SEAM_OVERRIDES.get(instance_id, _DEFAULT_SEAM)
+
+
+def set_exec_seam(instance_id: str, seam: Optional[str]) -> None:
+    """Set (or reset to default, when seam is falsy/'headless') an instance's seam + persist."""
+    if seam and seam in _VALID_SEAMS and seam != _DEFAULT_SEAM:
+        _EXEC_SEAM_OVERRIDES[instance_id] = seam
+    else:
+        _EXEC_SEAM_OVERRIDES.pop(instance_id, None)
+    try:
+        with open(_EXEC_SEAM_OVERRIDES_PATH, "w", encoding="utf-8") as f:
+            json.dump(_EXEC_SEAM_OVERRIDES, f, indent=2)
+    except OSError as exc:
+        logger.error("[registry] failed to persist exec-seam overrides: %s", exc)
+
+
 def effective_model(inst: ProviderInstance, pdef: ProviderDef) -> Optional[str]:
     """
     The model an instance will actually use.
@@ -522,7 +562,13 @@ def get_executor(instance_id: str) -> Optional[Executor]:
         return MockExecutor(name=inst.id)
 
     if pdef.kind == "cli":
-        # Wired in P4
+        # Wired in P4; seam selectable per-instance (D-0015).
+        if get_exec_seam(inst.id) == "terminal":
+            try:
+                from app.providers.cli_interactive import CLIInteractiveExecutor
+                return CLIInteractiveExecutor(pdef, instance=inst)
+            except ImportError:
+                logger.warning("CLIInteractiveExecutor unavailable; falling back to headless")
         try:
             from app.providers.cli_executor import CLIExecutor
             return CLIExecutor(pdef, instance=inst)

@@ -197,6 +197,11 @@ export const api = {
       `/providers/${encodeURIComponent(instanceId)}/model`,
       { method: "POST", headers: { "X-Console-Token": token }, body: JSON.stringify({ model }) }
     ),
+  setProviderSeam: (instanceId: string, seam: string, token: string) =>
+    req<{ status: string; instance: string; exec_seam: string }>(
+      `/providers/${encodeURIComponent(instanceId)}/seam`,
+      { method: "POST", headers: { "X-Console-Token": token }, body: JSON.stringify({ seam }) }
+    ),
 
   // ── Stats / meta ─────────────────────────────────────────────────────────
   getStats: () => req<Stats>("/stats"),

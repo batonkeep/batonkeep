@@ -34,9 +34,15 @@ class ProviderHealth:
     # Operator-declared limit window (optional; used for headroom estimate)
     declared_window_seconds: Optional[int] = None
     declared_window_limit: Optional[int] = None
+    # Subscription quota scraped from the plan-CLI's /usage panel (D-0015 slice 4).
+    # A real reading, so it takes precedence over the invocation-count estimate.
+    subscription_used_pct: Optional[float] = None
+    subscription_seen_at: Optional[datetime] = None
 
     @property
     def est_used_pct(self) -> Optional[float]:
+        if self.subscription_used_pct is not None:
+            return min(1.0, max(0.0, self.subscription_used_pct))
         if self.declared_window_limit and self.declared_window_limit > 0:
             return min(1.0, self.est_invocations / self.declared_window_limit)
         return None
@@ -112,6 +118,22 @@ class QuotaTracker:
             h = self._health[provider]
             h.declared_window_seconds = window_seconds
             h.declared_window_limit = window_limit
+
+    def set_subscription_usage(
+        self, provider: str, *, used_pct: Optional[float], reset_at: Optional[datetime] = None
+    ) -> None:
+        """Record a subscription-quota reading scraped from a plan-CLI /usage panel.
+
+        used_pct is a 0..1 fraction; None clears it. When a reset_at is parsed it
+        also seeds the cooldown so the router knows when the plan refills.
+        """
+        with self._lock:
+            h = self._health[provider]
+            h.subscription_used_pct = used_pct
+            h.subscription_seen_at = datetime.now(timezone.utc)
+            if reset_at is not None and used_pct is not None and used_pct >= 1.0:
+                h.healthy = False
+                h.cooldown_until = reset_at
 
     def get_health(self, provider: str) -> ProviderHealth:
         with self._lock:

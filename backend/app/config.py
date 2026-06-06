@@ -56,6 +56,21 @@ class Settings(BaseSettings):
     # instead of hard-failing; it defers only if none are available.
     daily_budget_usd: float = 0.0
 
+    # ── Terminal seam policy (D-0015 / P-0018) ───────────────────────────────
+    # The PTY interactive-CLI seam drives full TUI sessions, a wider surface than
+    # headless `cli -p`. These config knobs bound it (see app/cli_policy.py):
+    #   terminal_seam_enabled    — master switch; off ⇒ the seam refuses to run.
+    #   terminal_allowed_commands — comma-list of control commands the seam may
+    #       SEND into the TUI (default-deny allowlist; e.g. "/usage,/status").
+    #   terminal_allow_shell     — whether the driven CLI may auto-run shell/tool
+    #       commands (maps to the CLI's skip-permission flag). Off ⇒ launched in a
+    #       no-auto-approve mode so model-generated shell stays gated.
+    #   terminal_policy_path     — optional JSON file to extend the above at runtime.
+    terminal_seam_enabled: bool = False
+    terminal_allowed_commands: str = "/usage,/status,/cost"
+    terminal_allow_shell: bool = False
+    terminal_policy_path: str = ""
+
     # ── Behaviour ─────────────────────────────────────────────────────────────
     autonomous_tools: bool = True
     seed_examples: bool = True

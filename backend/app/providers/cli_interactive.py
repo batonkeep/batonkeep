@@ -91,8 +91,23 @@ def render_screen(screen: "pyte.Screen") -> str:
     pyte pads every line to the full screen width and keeps cleared rows blank,
     so we rstrip each line and trim leading/trailing blank rows — leaving the
     panel content as it actually appears, redraws already collapsed into the
-    final frame."""
-    lines = [ln.rstrip() for ln in screen.display]
+    final frame.
+
+    For a HistoryScreen we prepend the scrollback (lines that scrolled off the
+    top) so output longer than the viewport is captured when the TUI scrolls via
+    linefeeds. Caveat: TUIs that repaint a fixed window with cursor addressing
+    (grok pins an input box and redraws the transcript above it) never transmit
+    scrolled-off lines, so history stays empty and only the painted window is
+    recoverable — there are no bytes to reconstruct the rest from. This matters
+    only for long-form task output; the /usage panels this seam exists for fit on
+    one screen and capture in full."""
+    lines: list[str] = []
+    history = getattr(screen, "history", None)
+    if history is not None:
+        cols = screen.columns
+        for line in history.top:
+            lines.append("".join(line[x].data for x in range(cols)).rstrip())
+    lines.extend(ln.rstrip() for ln in screen.display)
     while lines and not lines[0]:
         lines.pop(0)
     while lines and not lines[-1]:
@@ -273,7 +288,10 @@ class CLIInteractiveExecutor(Executor):
             # Emulated terminal: raw PTY bytes are fed here so cursor moves and
             # screen clears are applied exactly as a real terminal would, instead
             # of being concatenated. We read the rendered screen back on capture.
-            screen = pyte.Screen(_PTY_COLS, _PTY_ROWS)
+            # HistoryScreen retains scrollback so output longer than the viewport
+            # is captured for linefeed-scrolling TUIs (repaint-style TUIs like
+            # grok only ever transmit their painted window — see render_screen).
+            screen = pyte.HistoryScreen(_PTY_COLS, _PTY_ROWS, history=5000, ratio=0.5)
             vt_stream = pyte.ByteStream(screen)
 
             def _write(s: str) -> None:

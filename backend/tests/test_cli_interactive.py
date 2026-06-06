@@ -65,6 +65,16 @@ class TestRenderScreen:
         out = self._feed(b"\x1b[2J\x1b[3;1Hmiddle line")
         assert out == "middle line"
 
+    def test_history_screen_captures_scrollback(self):
+        # Output longer than the viewport (a full task report, not a one-screen
+        # panel) must be captured in full, not truncated to the final screenful.
+        screen = pyte.HistoryScreen(20, 3, history=100, ratio=0.5)
+        stream = pyte.ByteStream(screen)
+        for i in range(8):
+            stream.feed(f"line{i}\r\n".encode())
+        out = render_screen(screen)
+        assert out.splitlines() == [f"line{i}" for i in range(8)]
+
 
 class TestLaunchFlags:
     def test_no_skip_flag_when_shell_disallowed(self):

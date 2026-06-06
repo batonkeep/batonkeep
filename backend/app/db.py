@@ -66,6 +66,9 @@ _ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
         # added to the model after early DBs were created; backfill so credential
         # reads/writes (e.g. the Cloudflare connector) don't hit "no such column".
         "label": "VARCHAR(128)",
+        # P-0009 #3 secrets surface: non-secret last-4 hint + last-used observability.
+        "key_hint": "VARCHAR(8)",
+        "last_used_at": "TIMESTAMP",
     },
 }
 

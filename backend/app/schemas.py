@@ -348,7 +348,21 @@ class CredentialOut(BaseModel):
     owner_id: str
     provider: str
     label: Optional[str] = None
+    key_hint: Optional[str] = None  # non-secret last-4 ("…wxyz"), never the full key
     created_at: datetime
+    last_used_at: Optional[datetime] = None
+
+
+class SecretStatusOut(BaseModel):
+    """One row of the named secrets-management surface (P-0009 #3)."""
+
+    provider: str
+    tier: str
+    env_key: Optional[str] = None
+    local: bool = False
+    source: str  # "stored" | "env" | "missing"
+    key_hint: Optional[str] = None
+    last_used_at: Optional[datetime] = None
 
 
 # ── Mode ─────────────────────────────────────────────────────────────────────

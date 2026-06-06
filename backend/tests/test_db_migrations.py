@@ -71,6 +71,9 @@ async def test_init_db_backfills_credentials_label(tmp_path, monkeypatch):
             for row in (await conn.exec_driver_sql("PRAGMA table_info(credentials)")).fetchall()
         }
     assert "label" in cols
+    # P-0009 #3 secrets surface columns must backfill on the same stale schema.
+    assert "key_hint" in cols
+    assert "last_used_at" in cols
     await engine.dispose()
 
 

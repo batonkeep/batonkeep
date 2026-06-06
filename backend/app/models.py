@@ -277,8 +277,16 @@ class Credential(Base):
     # optional human label for the account (e.g. "Work key")
     label: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
+    # Non-secret last-4 fingerprint so the secrets surface can distinguish keys
+    # without ever decrypting them. Set at write time; never the full value.
+    key_hint: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
+    )
+    # Touched whenever an executor resolves this key — turns the store into an
+    # observable surface ("is this key actually in use, and when last?").
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
     owner: Mapped["Owner"] = relationship(back_populates="credentials")

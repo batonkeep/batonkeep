@@ -11,6 +11,7 @@ import TaskForm from "./components/TaskForm";
 import RunViewer from "./components/RunViewer";
 import SessionView from "./components/SessionView";
 import ProvidersPanel from "./components/ProvidersPanel";
+import SecretsPanel from "./components/SecretsPanel";
 import Onboarding from "./components/Onboarding";
 import Styleguide from "./components/Styleguide";
 import { Button, Logo, Tabs } from "./ui";
@@ -312,14 +313,17 @@ function AppShell() {
         )}
 
         {view === "providers" && (
-          <ProvidersPanel
-            providers={providers}
-            now={now}
-            onRefresh={loadProviders}
-            consoleAvailable={consoleAvailable}
-            consoleToken={consoleToken}
-            onSetConsoleToken={setConsoleToken}
-          />
+          <div className="space-y-4">
+            <ProvidersPanel
+              providers={providers}
+              now={now}
+              onRefresh={loadProviders}
+              consoleAvailable={consoleAvailable}
+              consoleToken={consoleToken}
+              onSetConsoleToken={setConsoleToken}
+            />
+            <SecretsPanel />
+          </div>
         )}
       </main>
 

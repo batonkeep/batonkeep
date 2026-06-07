@@ -196,6 +196,73 @@ async def run_turn(
     return turn_id
 
 
+async def capture_terminal_snapshot(
+    session_id: str,
+    *,
+    provider: Optional[str] = None,
+    owner_id: str = "local",
+) -> Optional[int]:
+    """
+    Capture the web-TTY terminal lane's output as artifacts (D-0017 thread 2).
+
+    The human-driven CLI edits the workspace directly with no engine commit
+    boundary, so we snapshot the workspace on demand (Capture button) or on
+    session stop, then record it as a SessionTurn so the same artifact-card
+    rendering surfaces the files the session produced — the "capture the
+    artifacts" reframe applied to the terminal lane (dissolves the grok
+    viewport-truncation limit: the deliverable is the files, not the screen).
+
+    Returns the new turn id, or None if the workspace was unchanged (nothing to
+    capture — no empty turn is created). Raises SessionError for unknown sessions.
+    """
+    async with AsyncSessionLocal() as db:
+        session = await db.get(Session, session_id)
+        if session is None or session.owner_id != owner_id:
+            raise SessionError(f"session {session_id} not found")
+        workspace = session.workspace_path
+        label = provider or session.provider or "terminal"
+
+    version = await ws.commit_snapshot(
+        workspace, message=f"terminal session ({label})"
+    )
+    if version is None:
+        return None  # nothing changed — don't record an empty turn
+
+    async with AsyncSessionLocal() as db:
+        seq = await _next_turn_seq(db, session_id)
+        turn = SessionTurn(
+            session_id=session_id,
+            owner_id=owner_id,
+            seq=seq,
+            provider=label,
+            prompt="⌨ terminal session",
+            response="",
+            status="succeeded",
+            commit_sha=version["commit"],
+            diffstat=version["diffstat"],
+            changed_files=json.dumps(version["files"]),
+            finished_at=datetime.now(timezone.utc),
+        )
+        db.add(turn)
+        session = await db.get(Session, session_id)
+        if session is not None:
+            session.updated_at = datetime.now(timezone.utc)
+        await db.commit()
+        await db.refresh(turn)
+        turn_id = turn.id
+
+    await _broadcast_turn(turn_id, session_id, seq, label, "succeeded")
+    await _broadcast_event(
+        session_id, turn_id, seq, EventKind.result,
+        message=f"version {version['short']} captured",
+        phase="version",
+        data={"commit": version["commit"], "short": version["short"],
+              "diffstat": version["diffstat"], "diff": version["diff"],
+              "files": version["files"]},
+    )
+    return turn_id
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 async def _next_turn_seq(db, session_id: str) -> int:

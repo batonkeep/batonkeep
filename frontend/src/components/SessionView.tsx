@@ -185,6 +185,7 @@ export default function SessionView({
   const [diffFor, setDiffFor] = useState<string | null>(null); // commit whose diff is shown
   const [diffText, setDiffText] = useState<string>("");
   const [restoring, setRestoring] = useState<string | null>(null); // commit being restored
+  const [capturing, setCapturing] = useState(false); // terminal-lane artifact capture in flight
   const [publish, setPublish] = useState<Publish | null>(null);
   const [publishing, setPublishing] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -534,6 +535,30 @@ export default function SessionView({
     [selectedId]
   );
 
+  // Capture the web-TTY terminal lane's workspace edits as a version + artifact
+  // turn (D-0017 thread 2). The terminal CLI edits the workspace with no engine
+  // commit boundary, so we snapshot on demand (Capture button) and on stop. The
+  // captured turn surfaces in the transcript with the same artifact card.
+  const captureTerminal = useCallback(async (): Promise<boolean> => {
+    if (!selectedId || capturing) return false;
+    setCapturing(true);
+    try {
+      const turn = await api.captureTerminal(selectedId, activeInstance);
+      if (turn) {
+        loadTurns();
+        loadVersions();
+        onSessionsChanged();
+        setPreviewNonce((n) => n + 1);
+      }
+      return !!turn;
+    } catch (e) {
+      setSendError(e instanceof Error ? e.message : "Could not capture terminal output");
+      return false;
+    } finally {
+      setCapturing(false);
+    }
+  }, [selectedId, activeInstance, capturing, loadTurns, loadVersions, onSessionsChanged]);
+
   // Intercept clicks on the agent's rewritten artifact links
   // (/api/sessions/<id>/files/raw/<path>) and open them in the viewer instead of
   // navigating away. Other links behave normally.
@@ -874,7 +899,21 @@ export default function SessionView({
                   </button>
                 </div>
                 {mode === "terminal" && (
-                  <span className="font-mono text-[11px] text-muted">{activeInstance} · live · you drive every turn</span>
+                  <>
+                    <span className="font-mono text-[11px] text-muted">{activeInstance} · live · you drive every turn</span>
+                    {/* Capture the session's workspace edits as an artifact turn
+                        (D-0017 thread 2). Also runs automatically on stop. */}
+                    <button
+                      type="button"
+                      onClick={() => void captureTerminal()}
+                      disabled={capturing}
+                      title="Capture the files this terminal session changed as a result"
+                      className="ml-auto inline-flex items-center gap-1 rounded border border-edge px-2 py-0.5 font-mono text-[11px] text-muted hover:text-ink disabled:opacity-40"
+                    >
+                      {capturing ? <Loader2 size={11} className="animate-spin" /> : <FileCode size={11} />}
+                      Capture
+                    </button>
+                  </>
                 )}
               </div>
             )}
@@ -888,7 +927,13 @@ export default function SessionView({
                     session={selectedId}
                     instance={activeInstance}
                     token={consoleToken}
-                    onClose={() => setMode("chat")}
+                    onClose={async () => {
+                      // Auto-capture on stop so the session's artifacts are never
+                      // lost when the user leaves Terminal mode (founder: button +
+                      // auto on stop).
+                      await captureTerminal();
+                      setMode("chat");
+                    }}
                   />
                 </Suspense>
               </div>

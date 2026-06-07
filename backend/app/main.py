@@ -58,6 +58,7 @@ from app.schemas import (
     TaskCreate,
     TaskOut,
     TaskUpdate,
+    CaptureRequest,
     TurnCreate,
     UploadOut,
     VersionDiffOut,
@@ -564,6 +565,38 @@ async def create_session_turn(
     except SessionError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
+    turn = await db.get(SessionTurn, turn_id)
+    return SessionTurnOut.model_validate(turn)
+
+
+@app.post("/api/sessions/{session_id}/capture",
+          response_model=Optional[SessionTurnOut], tags=["sessions"])
+async def capture_session_terminal(
+    session_id: str,
+    body: CaptureRequest,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """
+    Capture the web-TTY terminal lane's workspace edits as artifacts (D-0017
+    thread 2). Commits the workspace and records it as a turn so the changed-files
+    card surfaces the session's output. Returns the new turn, or null (200) if the
+    workspace was unchanged — no empty turn is created.
+    """
+    session = await db.get(Session, session_id)
+    if session is None or session.owner_id != owner_id:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    from app.sessions.orchestrator import capture_terminal_snapshot, SessionError
+    try:
+        turn_id = await capture_terminal_snapshot(
+            session_id, provider=body.instance, owner_id=owner_id
+        )
+    except SessionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    if turn_id is None:
+        return None
     turn = await db.get(SessionTurn, turn_id)
     return SessionTurnOut.model_validate(turn)
 

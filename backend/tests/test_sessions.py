@@ -394,6 +394,51 @@ class TestTurnVersioning:
         assert any(v["commit"] == turn.commit_sha for v in versions)
 
 
+class TestTerminalCapture:
+    """D-0017 thread 2: web-TTY terminal lane artifact capture."""
+
+    @pytest.mark.asyncio
+    async def test_capture_records_terminal_edits_as_artifact_turn(self, session_env):
+        Maker, ws, orch, broadcasts = session_env
+        root = await _make_session(Maker, ws)
+
+        # Simulate the human-driven CLI editing the workspace (no commit boundary).
+        with open(os.path.join(root, "notes.md"), "w") as f:
+            f.write("# from terminal\n")
+
+        turn_id = await orch.capture_terminal_snapshot(
+            "s1", provider="claude", owner_id="local"
+        )
+        assert turn_id is not None
+
+        import json
+        from app.models import SessionTurn
+        async with Maker() as db:
+            turn = await db.get(SessionTurn, turn_id)
+            assert turn.status == "succeeded"
+            assert turn.provider == "claude"
+            assert turn.commit_sha and len(turn.commit_sha) == 40
+            files = json.loads(turn.changed_files)
+            assert any(f["path"] == "notes.md" for f in files)
+
+        # The capture is a real version in workspace history.
+        versions = await ws.list_versions(root)
+        assert any("terminal session (claude)" in v["message"] for v in versions)
+
+    @pytest.mark.asyncio
+    async def test_capture_noop_when_workspace_unchanged(self, session_env):
+        Maker, ws, orch, broadcasts = session_env
+        await _make_session(Maker, ws)
+        # No terminal edits → no turn recorded.
+        assert await orch.capture_terminal_snapshot("s1", owner_id="local") is None
+
+    @pytest.mark.asyncio
+    async def test_capture_unknown_session_raises(self, session_env):
+        Maker, ws, orch, broadcasts = session_env
+        with pytest.raises(orch.SessionError):
+            await orch.capture_terminal_snapshot("nope", owner_id="local")
+
+
 class TestVersioningHTTP:
     """versions / diff / restore endpoints + owner_id isolation (M1.3 gate)."""
 

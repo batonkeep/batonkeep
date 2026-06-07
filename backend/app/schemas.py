@@ -154,6 +154,13 @@ class TurnCreate(BaseModel):
     provider: Optional[str] = None
 
 
+class CaptureRequest(BaseModel):
+    """Capture the web-TTY terminal lane's workspace edits as a version + artifact
+    turn (D-0017 thread 2). `instance` labels the turn with the CLI that drove it."""
+
+    instance: Optional[str] = None
+
+
 class FileChangeOut(BaseModel):
     """One file a turn produced (D-0017 thread 2). status ∈ added/changed/removed;
     additions/deletions are None for binary files."""

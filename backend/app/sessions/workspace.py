@@ -259,6 +259,35 @@ async def commit_turn(
     }
 
 
+async def commit_snapshot(workspace: str, *, message: str) -> Optional[dict]:
+    """
+    Commit the current workspace state as a version and return the full version
+    dict {commit, short, message, diffstat, diff, files} — or None if nothing
+    changed. Used by the web-TTY terminal lane (D-0017 thread 2): the human-driven
+    CLI edits the workspace with no engine commit boundary, so we snapshot on
+    demand (Capture button) or on session stop and surface the artifacts as the
+    turn result, exactly like commit_turn does for the chat lane.
+    """
+    await _git(workspace, "add", "-A")
+    code, _ = await _git_out(workspace, "diff", "--cached", "--quiet")
+    if code == 0:
+        return None
+    await _git(workspace, "commit", "-q", "-m", message)
+    _, sha = await _git_out(workspace, "rev-parse", "HEAD")
+    sha = sha.strip()
+    if not sha:
+        return None
+    _, short = await _git_out(workspace, "rev-parse", "--short", "HEAD")
+    return {
+        "commit": sha,
+        "short": short.strip(),
+        "message": message,
+        "diffstat": await _commit_diffstat(workspace, sha),
+        "diff": await _commit_diff(workspace, sha),
+        "files": await commit_changed_files(workspace, sha),
+    }
+
+
 async def commit_paths(workspace: str, *, message: str) -> Optional[str]:
     """
     Stage the whole workspace and commit, returning the new commit sha (or None if

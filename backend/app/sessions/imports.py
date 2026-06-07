@@ -25,7 +25,7 @@ import tempfile
 import zipfile
 from typing import Callable, Iterable, Optional
 
-from app.sessions.workspace import safe_join
+from app.sessions.workspace import safe_join, group_writable
 
 # Bombs / runaway archives: cap count + total uncompressed bytes.
 _MAX_FILES = 2000
@@ -95,9 +95,13 @@ def _write_entries(
         total += max(size, 0)
         if total > _MAX_TOTAL_BYTES:
             raise ImportArchiveError(413, "archive too large (over 200 MB uncompressed)")
-        os.makedirs(os.path.dirname(abs_path), exist_ok=True)
-        with open(abs_path, "wb") as out:
-            out.write(read())
+        # Group-write umask so imported files land co-writable by the sandbox-user
+        # agent (P-0022/D-0020), inheriting the setgid `agents` group from the
+        # workspace root. Loop body is synchronous — safe to hold the umask.
+        with group_writable():
+            os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+            with open(abs_path, "wb") as out:
+                out.write(read())
         written.append(rel)
         if len(written) > _MAX_FILES:
             raise ImportArchiveError(413, f"archive has too many files (over {_MAX_FILES})")

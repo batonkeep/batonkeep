@@ -20,6 +20,7 @@ a checkout-restore (shown to non-coders as Undo/History, never "git").
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 from typing import Optional
@@ -28,6 +29,24 @@ from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 _settings = get_settings()
+
+
+@contextlib.contextmanager
+def group_writable():
+    """Temporarily apply a group-write umask (002) for files/dirs created in a
+    shared session workspace, so they stay co-writable by both `batond` (the
+    backend: git/commit/restore, uploads, imports) and the `sandbox`-user agent
+    (file edits) — P-0022/D-0020. The session tree is setgid `agents`, so new
+    entries inherit the group; the umask preserves the group-write bit the
+    backend's default (~022) would otherwise drop. No effect where the group is
+    absent (local/dev). umask is process-global, so callers must not `await`
+    inside the block — wrap only synchronous makedirs/open/write regions.
+    """
+    prev = os.umask(0o002)
+    try:
+        yield
+    finally:
+        os.umask(prev)
 
 BRIEF_FILENAME = "SESSION.md"
 
@@ -113,19 +132,14 @@ async def create_workspace(
     any orchestrator change.
     """
     root = workspace_root(session_id)
-    # Group-write umask so the agents-group setgid dir stays co-writable by both
-    # batond (git/commit/restore here) and the sandbox-user agent (file edits) —
-    # P-0022/D-0020. The parent /data/sessions is setgid `agents`, so new subdirs
-    # inherit the group; setgid + 0770 on the workspace root preserves group-write.
-    prev_umask = os.umask(0o002)
-    try:
+    # The parent /data/sessions is setgid `agents`, so new subdirs inherit the
+    # group; the group-write umask + setgid on the root keep the tree co-writable.
+    with group_writable():
         os.makedirs(root, exist_ok=True)
         try:
             os.chmod(root, 0o2770)  # setgid + group rwx
         except OSError as exc:  # best-effort: local/dev may not have the group
             logger.debug("[workspace] chmod 2770 %s skipped: %s", root, exc)
-    finally:
-        os.umask(prev_umask)
 
     guidance_block = f"\n## Task guidance\n{guidance.strip()}\n" if guidance.strip() else ""
     brief_path = os.path.join(root, BRIEF_FILENAME)

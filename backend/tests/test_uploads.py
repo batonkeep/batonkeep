@@ -50,6 +50,21 @@ class TestUploadValidation:
             uploads.save_upload(str(tmp_path), "empty.txt", io.BytesIO(b""))
         assert exc.value.status == 400
 
+    def test_upload_is_group_writable(self, tmp_path):
+        """Uploaded assets must land co-writable by the sandbox-user agent
+        (P-0022/D-0020), not just readable — even under a restrictive backend
+        umask. The save applies a group-write umask; assert the bit survives."""
+        prev = os.umask(0o022)  # simulate the backend's default (drops group write)
+        try:
+            rel = uploads.save_upload(str(tmp_path), "sales.csv", io.BytesIO(b"a,b\n1,2\n"))
+            mode = os.stat(os.path.join(str(tmp_path), rel)).st_mode
+            assert mode & 0o020, f"upload not group-writable: {oct(mode)}"
+            # the data/ dir the upload created is group-writable too
+            dmode = os.stat(os.path.join(str(tmp_path), "data")).st_mode
+            assert dmode & 0o020, f"data/ not group-writable: {oct(dmode)}"
+        finally:
+            os.umask(prev)
+
 
 # ── End-to-end through the app (drop → commit → reference → publish) ───────────
 

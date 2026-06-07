@@ -1,15 +1,26 @@
 """
-db.py — async SQLAlchemy engine + session factory.
+db.py — async SQLAlchemy engine + session factory + schema migration entrypoint.
+
+Schema is owned by **alembic** (D-0021): `init_db()` brings the DB to head. This
+replaced the previous hand-rolled, SQLite-only additive-column backfill — alembic
+works for both the current per-user SQLite (data plane) and a future Postgres
+control plane. Tests build their schema directly from `Base.metadata.create_all`
+(the model metadata is the source the alembic baseline is generated from), so they
+do not pay the migration cost.
 """
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
 from app.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 class Base(DeclarativeBase):
@@ -44,52 +55,57 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 
-# Lightweight additive migrations for SQLite (this project has no alembic).
-# create_all() creates *missing tables* but never alters *existing* ones, so a
-# column added to a model after a DB already exists on a persisted volume must be
-# backfilled here — otherwise queries over that table fail with "no such column"
-# against the stale schema (e.g. M1.3 added session_turns.commit_sha/diffstat).
-# Additive + idempotent only: add columns, never drop/alter. Non-SQLite engines
-# are left to their own migration tooling.
-_ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
-    # table -> {column: column_type_ddl}
-    "session_turns": {
-        "commit_sha": "VARCHAR(40)",
-        "diffstat": "TEXT",
-        # D-0017 thread 2: per-file artifact list (JSON) the turn produced.
-        "changed_files": "TEXT",
-    },
-    "sessions": {
-        "cf_project": "VARCHAR(64)",
-        # P-0009 #1 sovereignty toggle; default off so existing sessions are unchanged.
-        "confidential": "BOOLEAN NOT NULL DEFAULT 0",
-    },
-    "credentials": {
-        # added to the model after early DBs were created; backfill so credential
-        # reads/writes (e.g. the Cloudflare connector) don't hit "no such column".
-        "label": "VARCHAR(128)",
-        # P-0009 #3 secrets surface: non-secret last-4 hint + last-used observability.
-        "key_hint": "VARCHAR(8)",
-        "last_used_at": "TIMESTAMP",
-    },
-}
+# ── Schema migrations (alembic, D-0021) ──────────────────────────────────────
+# `init_db()` brings the schema to head. Three startup states are handled so the
+# transition from the old create_all+backfill world is seamless:
+#   • fresh DB                         → `upgrade head` creates every table.
+#   • already alembic-managed DB       → `upgrade head` applies any new revisions.
+#   • legacy DB (tables but no
+#     alembic_version — created by the
+#     old create_all+backfill)         → `stamp head`: it is structurally already
+#                                         at head (the old backfill kept it current),
+#                                         so adopt it without re-creating tables.
+
+_ALEMBIC_INI = os.path.join(os.path.dirname(os.path.dirname(__file__)), "alembic.ini")
 
 
-async def _backfill_additive_columns(conn) -> None:
-    """Add any model columns missing from an existing SQLite table (idempotent)."""
-    for table, columns in _ADDITIVE_COLUMNS.items():
-        rows = (await conn.exec_driver_sql(f"PRAGMA table_info({table})")).fetchall()
-        if not rows:
-            continue  # table doesn't exist yet (create_all handles fresh DBs)
-        existing = {row[1] for row in rows}  # row[1] = column name
-        for col, ddl in columns.items():
-            if col not in existing:
-                await conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+def _alembic_config():
+    from alembic.config import Config
+
+    cfg = Config(_ALEMBIC_INI)
+    # script_location in the ini is relative to the ini's dir; make it absolute so
+    # init_db works regardless of the process CWD (uvicorn, `python -m app.seed`, tests).
+    cfg.set_main_option("script_location", os.path.join(os.path.dirname(_ALEMBIC_INI), "alembic"))
+    return cfg
+
+
+def _sync_url() -> str:
+    """DATABASE_URL with the async driver stripped (migrations run on a sync engine)."""
+    return get_settings().database_url.replace("+aiosqlite", "").replace("+asyncpg", "")
+
+
+def _run_migrations() -> None:
+    """Synchronous migration runner (called via asyncio.to_thread from init_db)."""
+    from sqlalchemy import create_engine, inspect
+
+    from alembic import command
+
+    cfg = _alembic_config()
+    sync_engine = create_engine(_sync_url())
+    try:
+        with sync_engine.connect() as conn:
+            names = set(inspect(conn).get_table_names())
+        app_tables = names - {"alembic_version"}
+        if "alembic_version" not in names and app_tables:
+            # Legacy pre-alembic DB already at head schema → adopt it in place.
+            logger.info("[db] legacy schema (%d tables) — stamping alembic head", len(app_tables))
+            command.stamp(cfg, "head")
+        else:
+            command.upgrade(cfg, "head")
+    finally:
+        sync_engine.dispose()
 
 
 async def init_db() -> None:
-    """Create missing tables, then backfill additive columns on existing ones."""
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        if engine.dialect.name == "sqlite":
-            await _backfill_additive_columns(conn)
+    """Bring the database schema to the latest alembic revision (see states above)."""
+    await asyncio.to_thread(_run_migrations)

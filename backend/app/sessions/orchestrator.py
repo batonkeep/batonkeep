@@ -26,6 +26,7 @@ from sqlalchemy import select
 
 from app.config import get_settings
 from app.db import AsyncSessionLocal
+from app.logging_config import owner_id_var, session_id_var
 from app.models import Session, SessionTurn
 from app.providers.base import EventKind, ExecResult, Usage
 from app.providers.registry import (
@@ -71,6 +72,8 @@ async def run_turn(
     Execute one turn. Returns the SessionTurn id. Streams events over WS live.
     Raises SessionError for unknown session/provider before any turn is created.
     """
+    session_id_var.set(session_id)  # correlation for this turn's logs (D-0021)
+    owner_id_var.set(owner_id)
     async with AsyncSessionLocal() as db:
         session = await db.get(Session, session_id)
         if session is None or session.owner_id != owner_id:

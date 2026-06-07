@@ -41,6 +41,9 @@ RUN (export HOME=/usr/local; curl -fsSL https://chatgpt.com/codex/install.sh | s
 # Owned by batond (control plane), unreadable to the sandbox user — P-0022/D-0020.
 COPY --chown=batond:batond app/ app/
 COPY --chown=batond:batond scripts/ scripts/
+# Alembic migration scripts + config — init_db() runs `upgrade head` at startup (D-0021).
+COPY --chown=batond:batond alembic.ini ./
+COPY --chown=batond:batond alembic/ alembic/
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x scripts/*.sh /usr/local/bin/entrypoint.sh
 

@@ -28,6 +28,7 @@ from sqlalchemy import select
 
 from app.config import get_settings
 from app.db import AsyncSessionLocal
+from app.logging_config import bind_run
 from app.models import Run, RunEvent, Task
 from app.providers.base import EventKind, ExecEvent, ExecResult, Usage
 from app.providers.registry import get_executor
@@ -63,9 +64,11 @@ async def execute_run(run_id: int) -> None:
         if task is None:
             await _fail(db, run, "Task not found")
             return
+        owner_id = run.owner_id
 
-    async with _global_sem:
-        await _do_execute(run_id, task)
+    with bind_run(run_id, owner_id):
+        async with _global_sem:
+            await _do_execute(run_id, task)
 
 
 async def _do_execute(run_id: int, task: Task) -> None:
@@ -367,6 +370,36 @@ async def _do_execute(run_id: int, task: Task) -> None:
         await db.commit()
         await _broadcast_run(run)
         logger.info("[orchestrator] run %d succeeded via %s (%.4f USD)", run_id, run.provider, run.cost_usd)
+
+
+# ── startup reaper (D-0021) ─────────────────────────────────────────────────────
+
+async def reap_orphaned_runs() -> int:
+    """Reconcile runs stranded by a backend restart; return how many were reaped.
+
+    Runs execute as in-memory fire-and-forget asyncio tasks (no durable queue), so a
+    crash/restart leaves any `running` or `queued` run with no executor — it would sit
+    non-terminal forever. On startup we mark these `failed` with a clear reason so the
+    state is honest and the user can requeue (P5: tasks are the real-work unit). Note:
+    `deferred` runs are intentionally left alone — the scheduler's deferred-sweep owns
+    those. Durable queueing/auto-requeue is a later managed-scale graduation (D-0021).
+    """
+    now = datetime.now(timezone.utc)
+    reaped = 0
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(Run).where(Run.status.in_(("running", "queued")))
+        )
+        for run in result.scalars().all():
+            run.status = "failed"
+            run.error = "interrupted by backend restart (reaped at startup)"
+            run.finished_at = now
+            reaped += 1
+        if reaped:
+            await db.commit()
+    if reaped:
+        logger.warning("reaped %d orphaned run(s) on startup", reaped)
+    return reaped
 
 
 # ── enqueue ────────────────────────────────────────────────────────────────────

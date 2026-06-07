@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings, DeploymentMode
 from app.db import get_db, init_db
+from app.logging_config import configure_logging, owner_id_var, request_id_var
 from app.models import Artifact, Credential, Owner, Session, SessionTurn, Task, Run, RunEvent
 from app.schemas import (
     CredentialCreate,
@@ -75,7 +76,7 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logging.basicConfig(level=settings.log_level)
+    configure_logging(settings.log_level)
     logger.info("Starting batonkeep backend (DEPLOYMENT_MODE=%s)", settings.deployment_mode)
 
     await init_db()
@@ -95,6 +96,14 @@ async def lifespan(app: FastAPI):
             await seed_if_empty(settings.owner_id)
         except ImportError:
             pass
+
+    # D-0021: reconcile runs stranded by a previous restart before the scheduler
+    # (and any re-enqueue) starts, so the run state is honest from boot.
+    try:
+        from app.orchestrator import reap_orphaned_runs
+        await reap_orphaned_runs()
+    except Exception:
+        logger.exception("startup run-reaper failed")
 
     # P7: scheduler wired here
     try:
@@ -173,9 +182,50 @@ app.add_middleware(
 app.add_middleware(PrivateNetworkAccessMiddleware)
 
 
+# ── Observability: request correlation + catch-all error handling (D-0021) ──────
+
+@app.middleware("http")
+async def correlation_middleware(request, call_next):
+    """Assign a request id (honour an inbound X-Request-ID), bind it for logging,
+    echo it on the response, and emit a structured access log per request."""
+    rid = request.headers.get("x-request-id") or os.urandom(8).hex()
+    tok = request_id_var.set(rid)
+    try:
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = rid
+        # Logged while the contextvar is still bound so the access log is correlated.
+        logger.info(
+            "request",
+            extra={"method": request.method, "path": request.url.path,
+                   "status": response.status_code},
+        )
+        return response
+    finally:
+        request_id_var.reset(tok)
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request, exc: Exception):
+    """Last-resort handler: log the failure with correlation, return a clean 500.
+
+    (FastAPI handles HTTPException itself; this catches the unexpected.)"""
+    from fastapi.responses import JSONResponse
+
+    logger.exception("unhandled exception",
+                     extra={"method": request.method, "path": request.url.path})
+    rid = request_id_var.get()
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error", "request_id": rid},
+        headers={"X-Request-ID": rid} if rid else None,
+    )
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _owner_id() -> str:
+    # Bind for correlation (single-tenant today; the auth layer sets the real owner later).
+    owner_id_var.set(settings.owner_id)
     return settings.owner_id
 
 

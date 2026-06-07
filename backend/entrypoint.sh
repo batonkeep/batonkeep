@@ -46,7 +46,11 @@ run_migration() {
 
 if [ "$(id -u)" = "0" ]; then
   run_migration
-  exec gosu batond:batond "$@"
+  # Give the backend process its HOME explicitly. We deliberately do NOT set a
+  # container-wide HOME (Dockerfile/compose), so `docker exec -u sandbox` and agent
+  # subprocesses resolve HOME from /etc/passwd (sandbox→/home/agent). Only the
+  # backend needs batond's home, so set it here at the one exec boundary.
+  exec gosu batond:batond env HOME=/home/batond "$@"
 else
   # Already unprivileged (e.g. local dev without root) — skip migration, run as-is.
   echo "[entrypoint] not root; skipping migration, running as $(id -un)."

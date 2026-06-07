@@ -443,6 +443,167 @@ class TestOrchestratorSmoke:
             assert filt[0].data["dropped"] == ["nohead"]
 
     @pytest.mark.asyncio
+    async def test_transient_error_retries_then_succeeds(self, fresh_db, monkeypatch):
+        """P-0025 #2: a transient (non-quota) failure is auto-retried in-process;
+        the run succeeds on a later attempt and records retry_count."""
+        engine, Session, base_path = fresh_db
+        import app.orchestrator as orch_mod
+        from app.providers.mock import MockExecutor
+
+        monkeypatch.setattr(orch_mod, "AsyncSessionLocal", Session)
+        monkeypatch.setitem(orch_mod._settings.__dict__, "outputs_dir", str(base_path / "out"))
+        monkeypatch.setitem(orch_mod._settings.__dict__, "work_dir", str(base_path / "work"))
+        monkeypatch.setitem(orch_mod._settings.__dict__, "max_run_retries", 2)
+        monkeypatch.setitem(orch_mod._settings.__dict__, "retry_backoff_seconds", 0.0)
+
+        # First chain run errors; the retry run succeeds.
+        calls = {"n": 0}
+
+        def fake_get_executor(name):
+            calls["n"] += 1
+            return MockExecutor(latency_ms=1, simulate_error=(calls["n"] == 1))
+
+        monkeypatch.setattr(orch_mod, "get_executor", fake_get_executor)
+
+        from app.models import Run, Task
+        async with Session() as db:
+            task = Task(owner_id="local", name="Retry task", prompt_template="x",
+                        routing={"candidates": ["mock"], "failover": True})
+            db.add(task)
+            await db.commit()
+            await db.refresh(task)
+            task_id = task.id
+
+        run = await orch_mod.enqueue_run(task_id, trigger="test")
+        bg = orch_mod._cancel_handles.get(run.id)
+        if bg:
+            try:
+                await asyncio.wait_for(asyncio.shield(bg), timeout=8.0)
+            except asyncio.TimeoutError:
+                pass
+        await asyncio.sleep(0.2)
+
+        async with Session() as db:
+            run = await db.get(Run, run.id)
+            assert run.status == "succeeded", f"status={run.status} error={run.error}"
+            assert run.retry_count == 1
+            assert run.provider == "mock"
+
+    @pytest.mark.asyncio
+    async def test_transient_error_fails_after_exhausting_retries(self, fresh_db, monkeypatch):
+        """P-0025 #2: when retries are exhausted the run fails honestly (it must NOT
+        get stuck 'deferred' with a null deferred_until — the bug this fixes)."""
+        engine, Session, base_path = fresh_db
+        import app.orchestrator as orch_mod
+        from app.providers.mock import MockExecutor
+
+        monkeypatch.setattr(orch_mod, "AsyncSessionLocal", Session)
+        monkeypatch.setitem(orch_mod._settings.__dict__, "outputs_dir", str(base_path / "out"))
+        monkeypatch.setitem(orch_mod._settings.__dict__, "work_dir", str(base_path / "work"))
+        monkeypatch.setitem(orch_mod._settings.__dict__, "max_run_retries", 1)
+        monkeypatch.setitem(orch_mod._settings.__dict__, "retry_backoff_seconds", 0.0)
+        monkeypatch.setattr(
+            orch_mod, "get_executor", lambda name: MockExecutor(latency_ms=1, simulate_error=True)
+        )
+
+        from app.models import Run, Task
+        async with Session() as db:
+            task = Task(owner_id="local", name="Always-fail task", prompt_template="x",
+                        routing={"candidates": ["mock"], "failover": True})
+            db.add(task)
+            await db.commit()
+            await db.refresh(task)
+            task_id = task.id
+
+        run = await orch_mod.enqueue_run(task_id, trigger="test")
+        bg = orch_mod._cancel_handles.get(run.id)
+        if bg:
+            try:
+                await asyncio.wait_for(asyncio.shield(bg), timeout=8.0)
+            except asyncio.TimeoutError:
+                pass
+        await asyncio.sleep(0.2)
+
+        async with Session() as db:
+            run = await db.get(Run, run.id)
+            assert run.status == "failed", f"status={run.status}"
+            assert run.retry_count == 1
+            assert run.deferred_until is None
+            assert "after 1 retry" in (run.error or "")
+
+    @pytest.mark.asyncio
+    async def test_claim_guard_prevents_double_execution(self, fresh_db, monkeypatch):
+        """P-0025 #2: execute_run on a run that is no longer 'queued' is a no-op —
+        the atomic queued→planning claim guards against double-execution."""
+        engine, Session, base_path = fresh_db
+        import app.orchestrator as orch_mod
+        from app.providers.mock import MockExecutor
+
+        monkeypatch.setattr(orch_mod, "AsyncSessionLocal", Session)
+        monkeypatch.setitem(orch_mod._settings.__dict__, "outputs_dir", str(base_path / "out"))
+        # If the guard failed, this executor would run and flip status to succeeded.
+        monkeypatch.setattr(orch_mod, "get_executor", lambda name: MockExecutor(latency_ms=1))
+
+        from app.models import Run, RunEvent, Task
+        from sqlalchemy import select
+        async with Session() as db:
+            task = Task(owner_id="local", name="Claimed task", prompt_template="x",
+                        routing={"candidates": ["mock"]})
+            db.add(task)
+            await db.commit()
+            await db.refresh(task)
+            # A run already past 'queued' (e.g. a stray duplicate dispatch).
+            run = Run(owner_id="local", task_id=task.id, trigger="test", status="running")
+            db.add(run)
+            await db.commit()
+            await db.refresh(run)
+            run_id = run.id
+
+        await orch_mod.execute_run(run_id)
+
+        async with Session() as db:
+            run = await db.get(Run, run_id)
+            assert run.status == "running", "claim guard must not re-execute a non-queued run"
+            events = (await db.execute(
+                select(RunEvent).where(RunEvent.run_id == run_id)
+            )).scalars().all()
+            assert events == [], "no events should be emitted for a skipped run"
+
+    @pytest.mark.asyncio
+    async def test_enqueue_dedupes_on_idempotency_key(self, fresh_db, monkeypatch):
+        """P-0025 #2: enqueue with a key matching an active run returns that run
+        instead of creating a duplicate."""
+        engine, Session, base_path = fresh_db
+        import app.orchestrator as orch_mod
+
+        monkeypatch.setattr(orch_mod, "AsyncSessionLocal", Session)
+
+        from app.models import Run, Task
+        from sqlalchemy import func, select
+        async with Session() as db:
+            task = Task(owner_id="local", name="Dedupe task", prompt_template="x")
+            db.add(task)
+            await db.commit()
+            await db.refresh(task)
+            task_id = task.id
+            # An already-active run carrying the key.
+            active = Run(owner_id="local", task_id=task_id, trigger="manual",
+                         status="running", idempotency_key="k-1")
+            db.add(active)
+            await db.commit()
+            await db.refresh(active)
+            active_id = active.id
+
+        dup = await orch_mod.enqueue_run(task_id, trigger="manual", idempotency_key="k-1")
+        assert dup.id == active_id, "should return the existing active run, not a new one"
+
+        async with Session() as db:
+            total = (await db.execute(
+                select(func.count()).select_from(Run).where(Run.task_id == task_id)
+            )).scalar()
+            assert total == 1, "no duplicate run should have been created"
+
+    @pytest.mark.asyncio
     async def test_run_deferred_when_all_cooling(self, fresh_db, tmp_path):
         engine, Session, base_path = fresh_db
 

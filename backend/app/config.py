@@ -48,6 +48,16 @@ class Settings(BaseSettings):
     max_concurrent_runs: int = 4
     run_timeout_seconds: int = 1800
 
+    # ── Run retry (P-0025 #2) ─────────────────────────────────────────────────
+    # Bounded in-process retry for *transient* failures: a run whose candidate
+    # chain exhausts on non-quota errors (failover on) is retried up to
+    # max_run_retries times with exponential backoff before being marked failed.
+    # Rate-limit/cooling exhaustion is NOT a retry case — it defers and the
+    # scheduler's deferred-sweep re-enqueues it. Durable cross-restart requeue is
+    # a later managed-scale graduation (D-0021); this is the in-process slice.
+    max_run_retries: int = 2
+    retry_backoff_seconds: float = 2.0
+
     # ── Budget (P-0009 #2) ────────────────────────────────────────────────────
     # Daily spend cap in USD across all of an owner's runs. 0 = unlimited.
     # When today's metered spend reaches the cap, the router gracefully degrades

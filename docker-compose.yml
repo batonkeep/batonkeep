@@ -8,10 +8,10 @@ services:
         TAG: ${TAG:-latest}
     image: batonkeep-backend
     env_file: .env
-    environment:
-      # Backend runs as batond (P-0022/D-0020); agent CLIs get sandbox's HOME
-      # (/home/agent) via the setuid spawner, not from this process env.
-      - HOME=/home/batond
+    # Note: HOME is intentionally NOT set here. A container-wide HOME would leak
+    # into `docker exec -u sandbox` and agent subprocesses, masking sandbox's real
+    # home (/home/agent). The backend gets HOME=/home/batond from entrypoint.sh;
+    # everything else resolves HOME from /etc/passwd per user.
     volumes:
       - appdata:/data
       # sandbox's home — persists plan-CLI OAuth; mount path unchanged so existing

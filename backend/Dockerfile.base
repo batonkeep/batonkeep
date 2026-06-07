@@ -28,7 +28,12 @@ ENV UV_SYSTEM_PYTHON=1 \
 RUN groupadd agents \
  && useradd -u 1000 -m -d /home/agent -s /bin/bash -G agents sandbox \
  && useradd -m -d /home/batond -s /bin/bash -G agents batond
-ENV HOME=/home/batond
+# NOTE: deliberately do NOT bake `ENV HOME=...`. A container-wide HOME leaks into
+# every `docker exec -u sandbox` and into agent subprocesses, overriding sandbox's
+# real home (/home/agent) with batond's — so plan-CLI auth landed in batond's
+# ephemeral home and vanished on rebuild. With no ENV HOME, Docker resolves HOME
+# from /etc/passwd per user (sandbox→/home/agent, batond→/home/batond). The backend
+# process is given HOME=/home/batond explicitly by entrypoint.sh.
 
 # ── setuid privilege-drop helper (the single privileged surface) ───────────────
 # Built here; installed 4750 root:batond so ONLY the backend (batond group) may

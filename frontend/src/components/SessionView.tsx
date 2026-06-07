@@ -8,7 +8,7 @@ import { marked } from "marked";
 import hljs from "highlight.js/lib/common";
 import "highlight.js/styles/github-dark.css";
 import { Activity, Archive, Check, ChevronLeft, ChevronRight, Cloud, Copy, Download, FileCode, Globe, History, Link2, Loader2, Lock, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, Shield, SquareTerminal, X } from "lucide-react";
-import type { CloudflareStatus, ProviderHealth, Publish, Session, SessionTemplate, SessionTurn, Version } from "../types";
+import type { CloudflareStatus, FileChange, ProviderHealth, Publish, Session, SessionTemplate, SessionTurn, Version } from "../types";
 import { api } from "../api";
 import { useSessionEvents, type SessionEvent } from "../useLiveFeed";
 import { fmtTime } from "../format";
@@ -77,6 +77,57 @@ function GeneratingIndicator({ latest }: { latest?: string }) {
   );
 }
 
+// D-0017 thread 2: the turn *result* is the workspace files it produced — the
+// "capture the artifacts" reframe. Renders the changed files as the headline,
+// each clickable to open in the viewer; agent prose is demoted to a caption.
+const STATUS_DOT: Record<string, string> = {
+  added: "text-ok",
+  changed: "text-brand",
+  removed: "text-bad",
+};
+
+function ArtifactList({
+  files,
+  onOpen,
+}: {
+  files: FileChange[];
+  onOpen: (path: string) => void;
+}) {
+  if (files.length === 0) return null;
+  return (
+    <div className="rounded-lg border border-edge bg-base/60 px-2 py-1.5">
+      <div className="px-1 pb-1 text-[11px] font-medium text-muted">
+        {files.length} {files.length === 1 ? "file" : "files"} ·{" "}
+        <span className="text-muted/80">result</span>
+      </div>
+      <ul className="space-y-0.5">
+        {files.map((f) => (
+          <li key={f.path}>
+            <button
+              onClick={() => onOpen(f.path)}
+              className="group flex w-full items-center gap-2 rounded px-1 py-0.5 text-left hover:bg-edge/40"
+              title={`Open ${f.path}`}
+            >
+              <FileCode size={13} className={`shrink-0 ${STATUS_DOT[f.status] || "text-muted"}`} />
+              <span className="flex-1 truncate font-mono text-xs text-ink group-hover:underline">
+                {f.path}
+              </span>
+              <span className="shrink-0 font-mono text-[11px]">
+                {f.additions != null && <span className="text-ok">+{f.additions}</span>}
+                {f.additions != null && f.deletions != null && " "}
+                {f.deletions != null && <span className="text-bad">−{f.deletions}</span>}
+                {f.additions == null && f.deletions == null && (
+                  <span className="text-muted">bin</span>
+                )}
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 // Lazy so xterm.js only loads when a web-TTY session is actually opened.
 const WebTtyConsole = lazy(() => import("./WebTtyConsole"));
 
@@ -134,6 +185,7 @@ export default function SessionView({
   const [diffFor, setDiffFor] = useState<string | null>(null); // commit whose diff is shown
   const [diffText, setDiffText] = useState<string>("");
   const [restoring, setRestoring] = useState<string | null>(null); // commit being restored
+  const [capturing, setCapturing] = useState(false); // terminal-lane artifact capture in flight
   const [publish, setPublish] = useState<Publish | null>(null);
   const [publishing, setPublishing] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -483,6 +535,30 @@ export default function SessionView({
     [selectedId]
   );
 
+  // Capture the web-TTY terminal lane's workspace edits as a version + artifact
+  // turn (D-0017 thread 2). The terminal CLI edits the workspace with no engine
+  // commit boundary, so we snapshot on demand (Capture button) and on stop. The
+  // captured turn surfaces in the transcript with the same artifact card.
+  const captureTerminal = useCallback(async (): Promise<boolean> => {
+    if (!selectedId || capturing) return false;
+    setCapturing(true);
+    try {
+      const turn = await api.captureTerminal(selectedId, activeInstance);
+      if (turn) {
+        loadTurns();
+        loadVersions();
+        onSessionsChanged();
+        setPreviewNonce((n) => n + 1);
+      }
+      return !!turn;
+    } catch (e) {
+      setSendError(e instanceof Error ? e.message : "Could not capture terminal output");
+      return false;
+    } finally {
+      setCapturing(false);
+    }
+  }, [selectedId, activeInstance, capturing, loadTurns, loadVersions, onSessionsChanged]);
+
   // Intercept clicks on the agent's rewritten artifact links
   // (/api/sessions/<id>/files/raw/<path>) and open them in the viewer instead of
   // navigating away. Other links behave normally.
@@ -823,7 +899,21 @@ export default function SessionView({
                   </button>
                 </div>
                 {mode === "terminal" && (
-                  <span className="font-mono text-[11px] text-muted">{activeInstance} · live · you drive every turn</span>
+                  <>
+                    <span className="font-mono text-[11px] text-muted">{activeInstance} · live · you drive every turn</span>
+                    {/* Capture the session's workspace edits as an artifact turn
+                        (D-0017 thread 2). Also runs automatically on stop. */}
+                    <button
+                      type="button"
+                      onClick={() => void captureTerminal()}
+                      disabled={capturing}
+                      title="Capture the files this terminal session changed as a result"
+                      className="ml-auto inline-flex items-center gap-1 rounded border border-edge px-2 py-0.5 font-mono text-[11px] text-muted hover:text-ink disabled:opacity-40"
+                    >
+                      {capturing ? <Loader2 size={11} className="animate-spin" /> : <FileCode size={11} />}
+                      Capture
+                    </button>
+                  </>
                 )}
               </div>
             )}
@@ -837,7 +927,13 @@ export default function SessionView({
                     session={selectedId}
                     instance={activeInstance}
                     token={consoleToken}
-                    onClose={() => setMode("chat")}
+                    onClose={async () => {
+                      // Auto-capture on stop so the session's artifacts are never
+                      // lost when the user leaves Terminal mode (founder: button +
+                      // auto on stop).
+                      await captureTerminal();
+                      setMode("chat");
+                    }}
                   />
                 </Suspense>
               </div>
@@ -932,9 +1028,18 @@ export default function SessionView({
                       </button>
                     )}
                   </div>
+                  {/* The result is the artifacts the turn produced (D-0017 thread 2);
+                      the agent's prose is demoted to a caption beneath them. */}
+                  {t.changed_files && t.changed_files.length > 0 && (
+                    <ArtifactList files={t.changed_files} onOpen={viewFile} />
+                  )}
                   {t.response && (
                     <div
-                      className="markdown px-1 text-sm text-ink/80"
+                      className={`markdown px-1 text-sm ${
+                        t.changed_files && t.changed_files.length > 0
+                          ? "text-muted"
+                          : "text-ink/80"
+                      }`}
                       onClick={onChatClick}
                       dangerouslySetInnerHTML={{ __html: renderMarkdown(t.response) }}
                     />

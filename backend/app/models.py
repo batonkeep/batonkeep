@@ -214,6 +214,9 @@ class SessionTurn(Base):
     # changed no files), plus a `git --stat` summary for the History/event view.
     commit_sha: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
     diffstat: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # D-0017 thread 2: per-file artifact list (JSON) the turn produced — the result
+    # surfaced to the user is the workspace files changed, not scraped agent text.
+    changed_files: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

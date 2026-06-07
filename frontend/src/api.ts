@@ -109,6 +109,13 @@ export const api = {
   listTurns: (id: string) => req<SessionTurn[]>(`/sessions/${id}/turns`),
   createTurn: (id: string, body: TurnInput) =>
     req<SessionTurn>(`/sessions/${id}/turns`, { method: "POST", body: JSON.stringify(body) }),
+  // D-0017 thread 2: capture the web-TTY terminal lane's workspace edits as a
+  // version + artifact turn. Returns the new turn, or null if nothing changed.
+  captureTerminal: (id: string, instance?: string) =>
+    req<SessionTurn | null>(`/sessions/${id}/capture`, {
+      method: "POST",
+      body: JSON.stringify({ instance: instance ?? null }),
+    }),
   // Asset upload-in (M1.5): drop files into the session; they land as workspace files
   // (assets/… or data/…) the agent can reference by name. multipart, so no JSON header.
   uploadAssets: (id: string, files: File[]) => {

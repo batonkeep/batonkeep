@@ -248,12 +248,43 @@ async def commit_turn(
     _, short = await _git_out(workspace, "rev-parse", "--short", "HEAD")
     diffstat = await _commit_diffstat(workspace, sha)
     diff = await _commit_diff(workspace, sha)
+    files = await commit_changed_files(workspace, sha)
     return {
         "commit": sha,
         "short": short.strip(),
         "message": message,
         "diffstat": diffstat,
         "diff": diff,
+        "files": files,
+    }
+
+
+async def commit_snapshot(workspace: str, *, message: str) -> Optional[dict]:
+    """
+    Commit the current workspace state as a version and return the full version
+    dict {commit, short, message, diffstat, diff, files} — or None if nothing
+    changed. Used by the web-TTY terminal lane (D-0017 thread 2): the human-driven
+    CLI edits the workspace with no engine commit boundary, so we snapshot on
+    demand (Capture button) or on session stop and surface the artifacts as the
+    turn result, exactly like commit_turn does for the chat lane.
+    """
+    await _git(workspace, "add", "-A")
+    code, _ = await _git_out(workspace, "diff", "--cached", "--quiet")
+    if code == 0:
+        return None
+    await _git(workspace, "commit", "-q", "-m", message)
+    _, sha = await _git_out(workspace, "rev-parse", "HEAD")
+    sha = sha.strip()
+    if not sha:
+        return None
+    _, short = await _git_out(workspace, "rev-parse", "--short", "HEAD")
+    return {
+        "commit": sha,
+        "short": short.strip(),
+        "message": message,
+        "diffstat": await _commit_diffstat(workspace, sha),
+        "diff": await _commit_diff(workspace, sha),
+        "files": await commit_changed_files(workspace, sha),
     }
 
 
@@ -286,6 +317,64 @@ async def _commit_diffstat(workspace: str, sha: str) -> str:
         workspace, "show", "--no-color", "--format=", "--stat", sha
     )
     return out.strip()
+
+
+# Map git's status letter to the user-facing word (D-0017 thread 2). "git" is
+# never named to the user; these become "added / changed / removed" in the UI.
+_STATUS_WORD = {"A": "added", "M": "changed", "D": "removed"}
+
+
+async def commit_changed_files(workspace: str, sha: str) -> list[dict]:
+    """
+    Per-file artifact list for a version (D-0017 thread 2): the files a turn
+    actually produced, with line counts. This is the *result* of a turn — the
+    workspace artifacts — surfaced instead of (or above) scraped agent text.
+
+    Each entry: {path, status, additions, deletions}. status ∈ added/changed/
+    removed. Binary files report additions/deletions = None. The SESSION.md brief
+    is excluded — it's an internal ledger that churns every turn, not a build
+    output (mirrors list_files_meta). Rename detection is off, so a rename shows
+    as a remove + add (simpler and honest about what's on disk).
+    """
+    # name-status gives the change type; numstat gives the line counts. Merge by
+    # path so we get both without rename-path parsing ambiguity.
+    _, name_out = await _git_out(
+        workspace, "show", "--no-color", "--format=", "--name-status", sha
+    )
+    status_by_path: dict[str, str] = {}
+    for line in name_out.splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2 and parts[0]:
+            status_by_path[parts[-1]] = _STATUS_WORD.get(parts[0][0], "changed")
+
+    _, num_out = await _git_out(
+        workspace, "show", "--no-color", "--format=", "--numstat", sha
+    )
+    counts_by_path: dict[str, tuple[Optional[int], Optional[int]]] = {}
+    order: list[str] = []
+    for line in num_out.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 3:
+            continue
+        adds_s, dels_s, path = parts
+        # numstat uses "-" for binary files.
+        adds = None if adds_s == "-" else int(adds_s)
+        dels = None if dels_s == "-" else int(dels_s)
+        counts_by_path[path] = (adds, dels)
+        order.append(path)
+
+    files: list[dict] = []
+    for path in order:
+        if path == BRIEF_FILENAME:
+            continue
+        adds, dels = counts_by_path[path]
+        files.append({
+            "path": path,
+            "status": status_by_path.get(path, "changed"),
+            "additions": adds,
+            "deletions": dels,
+        })
+    return files
 
 
 async def list_versions(workspace: str) -> list[dict]:
@@ -324,6 +413,7 @@ async def version_diff(workspace: str, commit: str) -> Optional[dict]:
         "commit": commit,
         "diffstat": await _commit_diffstat(workspace, commit),
         "diff": await _commit_diff(workspace, commit),
+        "files": await commit_changed_files(workspace, commit),
     }
 
 

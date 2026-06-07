@@ -259,6 +259,34 @@ class TestWorkspaceVersioning:
         assert "index.html" in version["diffstat"]
 
     @pytest.mark.asyncio
+    async def test_commit_turn_surfaces_per_file_artifacts(self, tmp_path, monkeypatch):
+        """D-0017 thread 2: the turn result is the per-file artifact list."""
+        from app.sessions import workspace as ws
+        monkeypatch.setitem(ws._settings.__dict__, "sessions_dir", str(tmp_path))
+        root = await ws.create_workspace("vf", title="T", goal="G")
+
+        with open(os.path.join(root, "index.html"), "w") as f:
+            f.write("<h1>one</h1>\n<p>two</p>\n")
+        v0 = await ws.commit_turn(root, seq=0, provider="mock", summary="page")
+        files = {f["path"]: f for f in v0["files"]}
+        # SESSION.md churns every turn but is an internal ledger — excluded.
+        assert "SESSION.md" not in files
+        assert files["index.html"]["status"] == "added"
+        assert files["index.html"]["additions"] == 2
+        assert files["index.html"]["deletions"] == 0
+
+        # A second turn: modify one file, add one, remove one.
+        with open(os.path.join(root, "index.html"), "w") as f:
+            f.write("<h1>one</h1>\n")            # one line removed
+        with open(os.path.join(root, "style.css"), "w") as f:
+            f.write("body{}\n")                   # added
+        v1 = await ws.commit_turn(root, seq=1, provider="mock", summary="edit")
+        files = {f["path"]: f for f in v1["files"]}
+        assert files["index.html"]["status"] == "changed"
+        assert files["index.html"]["deletions"] == 1
+        assert files["style.css"]["status"] == "added"
+
+    @pytest.mark.asyncio
     async def test_commit_turn_noop_when_nothing_changed(self, tmp_path, monkeypatch):
         from app.sessions import workspace as ws
         monkeypatch.setitem(ws._settings.__dict__, "sessions_dir", str(tmp_path))
@@ -345,6 +373,10 @@ class TestTurnVersioning:
             turn = await db.get(SessionTurn, turn_id)
             assert turn.commit_sha and len(turn.commit_sha) == 40
             assert turn.diffstat and "index.html" in turn.diffstat
+            # D-0017 thread 2: per-file artifacts persisted as the turn result.
+            import json
+            changed = json.loads(turn.changed_files)
+            assert any(f["path"] == "index.html" for f in changed)
 
         # Per-turn diff surfaced in the live event stream (event view gate).
         version_events = [
@@ -353,10 +385,58 @@ class TestTurnVersioning:
         ]
         assert version_events
         assert "index.html" in version_events[0]["event"]["data"]["diff"]
+        # ...and the per-file artifact list rides the same event (D-0017 thread 2).
+        ev_files = version_events[0]["event"]["data"]["files"]
+        assert any(f["path"] == "index.html" for f in ev_files)
 
         # The commit is a real version in workspace history.
         versions = await ws.list_versions(root)
         assert any(v["commit"] == turn.commit_sha for v in versions)
+
+
+class TestTerminalCapture:
+    """D-0017 thread 2: web-TTY terminal lane artifact capture."""
+
+    @pytest.mark.asyncio
+    async def test_capture_records_terminal_edits_as_artifact_turn(self, session_env):
+        Maker, ws, orch, broadcasts = session_env
+        root = await _make_session(Maker, ws)
+
+        # Simulate the human-driven CLI editing the workspace (no commit boundary).
+        with open(os.path.join(root, "notes.md"), "w") as f:
+            f.write("# from terminal\n")
+
+        turn_id = await orch.capture_terminal_snapshot(
+            "s1", provider="claude", owner_id="local"
+        )
+        assert turn_id is not None
+
+        import json
+        from app.models import SessionTurn
+        async with Maker() as db:
+            turn = await db.get(SessionTurn, turn_id)
+            assert turn.status == "succeeded"
+            assert turn.provider == "claude"
+            assert turn.commit_sha and len(turn.commit_sha) == 40
+            files = json.loads(turn.changed_files)
+            assert any(f["path"] == "notes.md" for f in files)
+
+        # The capture is a real version in workspace history.
+        versions = await ws.list_versions(root)
+        assert any("terminal session (claude)" in v["message"] for v in versions)
+
+    @pytest.mark.asyncio
+    async def test_capture_noop_when_workspace_unchanged(self, session_env):
+        Maker, ws, orch, broadcasts = session_env
+        await _make_session(Maker, ws)
+        # No terminal edits → no turn recorded.
+        assert await orch.capture_terminal_snapshot("s1", owner_id="local") is None
+
+    @pytest.mark.asyncio
+    async def test_capture_unknown_session_raises(self, session_env):
+        Maker, ws, orch, broadcasts = session_env
+        with pytest.raises(orch.SessionError):
+            await orch.capture_terminal_snapshot("nope", owner_id="local")
 
 
 class TestVersioningHTTP:

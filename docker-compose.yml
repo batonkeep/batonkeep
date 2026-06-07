@@ -9,9 +9,13 @@ services:
     image: batonkeep-backend
     env_file: .env
     environment:
-      - HOME=/home/agent
+      # Backend runs as batond (P-0022/D-0020); agent CLIs get sandbox's HOME
+      # (/home/agent) via the setuid spawner, not from this process env.
+      - HOME=/home/batond
     volumes:
       - appdata:/data
+      # sandbox's home — persists plan-CLI OAuth; mount path unchanged so existing
+      # auth on the agent_home volume keeps working after the user split.
       - agent_home:/home/agent
     ports:
       - "8000:8000"

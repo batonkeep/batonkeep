@@ -113,7 +113,19 @@ async def create_workspace(
     any orchestrator change.
     """
     root = workspace_root(session_id)
-    os.makedirs(root, exist_ok=True)
+    # Group-write umask so the agents-group setgid dir stays co-writable by both
+    # batond (git/commit/restore here) and the sandbox-user agent (file edits) —
+    # P-0022/D-0020. The parent /data/sessions is setgid `agents`, so new subdirs
+    # inherit the group; setgid + 0770 on the workspace root preserves group-write.
+    prev_umask = os.umask(0o002)
+    try:
+        os.makedirs(root, exist_ok=True)
+        try:
+            os.chmod(root, 0o2770)  # setgid + group rwx
+        except OSError as exc:  # best-effort: local/dev may not have the group
+            logger.debug("[workspace] chmod 2770 %s skipped: %s", root, exc)
+    finally:
+        os.umask(prev_umask)
 
     guidance_block = f"\n## Task guidance\n{guidance.strip()}\n" if guidance.strip() else ""
     brief_path = os.path.join(root, BRIEF_FILENAME)

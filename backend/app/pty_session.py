@@ -27,6 +27,8 @@ import struct
 import subprocess
 import termios
 
+from app import sandbox
+
 logger = logging.getLogger(__name__)
 
 
@@ -62,8 +64,13 @@ class PtySession:
         # start_new_session makes the child the session leader with this pts as its
         # controlling terminal; descendants inherit that tty, which is how close()
         # finds and kills the whole tree (even when a CLI re-parents itself).
+        # Privilege drop: run the TUI / auth flow as the low-priv `sandbox` user
+        # via the setuid helper (P-0022/D-0020). A clean setuid+execve inside the
+        # helper preserves the controlling tty set up here. No-op outside the
+        # container, where the helper is absent.
+        argv = sandbox.wrap(self._argv)
         self._proc = subprocess.Popen(
-            self._argv,
+            argv,
             stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
             cwd=self._cwd,
             start_new_session=True, env=self._env, close_fds=True,
@@ -128,14 +135,21 @@ class PtySession:
         return self._proc.poll()
 
     def close(self) -> None:
+        # Privileged reaper: the TUI tree runs as `sandbox`, so batond cannot
+        # signal it cross-user (os.kill → PermissionError). start_new_session made
+        # the child a session/group leader, so its pgid == its pid; kill that group
+        # through the setuid helper (P-0022/D-0020). No-op outside the container.
+        if self._proc is not None:
+            sandbox.reap(self._proc.pid)
         # Kill every process whose controlling terminal is our pts — this catches
         # a CLI even when it re-parents into its own session/group, which
-        # process-group or PPID-tree kills miss.
+        # process-group or PPID-tree kills miss. (Direct kill works when un-split;
+        # cross-user it raises PermissionError and the helper above did the work.)
         if self._pts_minor is not None:
             for pid in _pids_on_pts(self._pts_minor):
                 try:
                     os.kill(pid, signal.SIGKILL)
-                except ProcessLookupError:
+                except (ProcessLookupError, PermissionError):
                     pass
         if self._proc is not None:
             try:

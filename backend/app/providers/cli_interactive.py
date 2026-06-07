@@ -57,6 +57,7 @@ from app.providers.base import (
     Usage,
 )
 from app.providers.registry import ProviderDef, ProviderInstance
+from app import sandbox
 
 logger = logging.getLogger(__name__)
 _settings = get_settings()
@@ -317,8 +318,10 @@ class CLIInteractiveExecutor(Executor):
         proc: Optional[asyncio.subprocess.Process] = None
         accumulated: list[str] = []
         try:
+            # Privilege drop: run the TUI as the low-priv `sandbox` user via the
+            # setuid helper (P-0022/D-0020). No-op outside the container.
             proc = await asyncio.create_subprocess_exec(
-                *launch,
+                *sandbox.wrap(launch),
                 stdin=slave_fd,
                 stdout=slave_fd,
                 stderr=slave_fd,
@@ -427,10 +430,17 @@ class CLIInteractiveExecutor(Executor):
                 except OSError:
                     pass
             if proc and proc.returncode is None:
+                # The TUI runs as `sandbox`, so batond can't signal it cross-user;
+                # reap the process group through the setuid helper (pgid == pid via
+                # start_new_session). Direct killpg/kill below covers the un-split case.
+                sandbox.reap(proc.pid)
                 try:
                     os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
                 except (ProcessLookupError, PermissionError, OSError):
-                    proc.kill()
+                    try:
+                        proc.kill()
+                    except (ProcessLookupError, PermissionError):
+                        pass
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=5)
                 except (asyncio.TimeoutError, Exception):

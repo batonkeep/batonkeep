@@ -57,12 +57,15 @@ class MockExecutor(Executor):
         latency_ms: int = 50,
         token_chunks: int = 5,
         simulate_rate_limit: bool = False,
+        simulate_error: bool = False,
     ) -> None:
         self.name = name
         self.tier = "mock"
         self._latency_ms = latency_ms
         self._token_chunks = token_chunks
         self._simulate_rate_limit = simulate_rate_limit
+        # Emit a non-quota error (transient failure) — exercises the retry path.
+        self._simulate_error = simulate_error
 
     @property
     def kind(self) -> str:
@@ -88,6 +91,14 @@ class MockExecutor(Executor):
 
         yield ExecEvent(kind=EventKind.phase, phase="planning", message="[mock] planning")
         await asyncio.sleep(delay)
+
+        if self._simulate_error:
+            yield ExecEvent(
+                kind=EventKind.error,
+                message="mock transient error: upstream unavailable",
+                data={},
+            )
+            return
 
         if self._simulate_rate_limit:
             yield ExecEvent(

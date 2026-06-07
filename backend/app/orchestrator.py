@@ -22,7 +22,7 @@ from collections import defaultdict
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app import task_workspace
 from app.config import get_settings
@@ -75,10 +75,26 @@ async def _do_execute(run_id: int, task: Task) -> None:
         if run is None:
             return
 
-        # ── 1. Planning ──────────────────────────────────────────────────────
-        run.status = "planning"
-        run.started_at = datetime.now(UTC)
+        # ── 1. Claim (idempotency guard) ─────────────────────────────────────
+        # Atomically transition queued → planning. If the row is no longer queued
+        # (already claimed by another worker, or terminal), this is a no-op and we
+        # bail — so a duplicated execute_run (e.g. a stray re-enqueue) can never
+        # double-execute the same run. (P-0025 #2)
+        now = datetime.now(UTC)
+        claim = await db.execute(
+            update(Run)
+            .where(Run.id == run_id, Run.status == "queued")
+            .values(status="planning", started_at=now)
+        )
         await db.commit()
+        if claim.rowcount == 0:
+            await db.refresh(run)
+            logger.warning(
+                "[orchestrator] run %d not claimable (status=%s) — skipping to avoid "
+                "double-execution", run_id, run.status,
+            )
+            return
+        await db.refresh(run)
         await _broadcast_run(run)
 
         # ── 2. Route ─────────────────────────────────────────────────────────
@@ -164,7 +180,7 @@ async def _do_execute(run_id: int, task: Task) -> None:
                 f"the following output. Note what has changed since then:\n\n{prior}\n---"
             )
 
-        # ── 4. Failover loop ─────────────────────────────────────────────────
+        # ── 4. Failover loop (with bounded in-process retry, P-0025 #2) ───────
         attempts: list[dict] = []
         final_result: ExecResult | None = None
         final_usage = Usage()
@@ -179,148 +195,219 @@ async def _do_execute(run_id: int, task: Task) -> None:
         outputs_dir = os.path.join(_settings.outputs_dir, f"run_{run_id}")
         os.makedirs(outputs_dir, exist_ok=True)
 
-        for provider_name in candidates:
-            executor = get_executor(provider_name)
-            if executor is None:
-                logger.warning("[orchestrator] executor %s not available, skipping", provider_name)
-                attempts.append({"provider": provider_name, "outcome": "unavailable"})
-                continue
+        async def _run_candidates() -> tuple[str, str | None]:
+            """Run the candidate chain (+ overflow) once.
 
-            sem = _provider_sems[provider_name]
-            async with sem:
-                run.status = "running"
-                run.provider = provider_name
+            Mutates the enclosing final_result/final_usage/subagents/tool_calls
+            and the attempts log. Returns (outcome, error_msg) where outcome is:
+              "success"   — final_result set, ready to post-process
+              "cooling"   — exhausted with rate-limits; a legitimate deferral
+              "error"     — exhausted with transient (non-quota) errors; retryable
+              "hard_fail" — a non-quota error with failover disabled; terminal
+            """
+            nonlocal final_result, final_usage, subagents, tool_calls
+            rate_limited_any = False
+            last_error: str | None = None
+
+            for provider_name in candidates:
+                executor = get_executor(provider_name)
+                if executor is None:
+                    logger.warning(
+                        "[orchestrator] executor %s not available, skipping", provider_name
+                    )
+                    attempts.append({"provider": provider_name, "outcome": "unavailable"})
+                    continue
+
+                sem = _provider_sems[provider_name]
+                async with sem:
+                    run.status = "running"
+                    run.provider = provider_name
+                    await db.commit()
+                    await _broadcast_run(run)
+
+                    attempt: dict[str, Any] = {"provider": provider_name, "outcome": "pending"}
+                    attempts.append(attempt)
+                    run.attempts = list(attempts)
+                    await db.commit()
+
+                    rate_limited = False
+                    error_msg: str | None = None
+                    seq = await _next_seq(db, run_id)
+
+                    try:
+                        async for ev in executor.run_stream(
+                            prompt,
+                            workdir=workdir,
+                            tools_enabled=_settings.autonomous_tools,
+                            max_rounds=10,
+                            budget_usd=1.0,
+                        ):
+                            # Persist non-token events
+                            if ev.kind != EventKind.token:
+                                await _emit_event(db, run, ev.kind, ev.phase or ev.message,
+                                                  data=ev.data, seq_override=seq)
+                                seq += 1
+
+                            # Broadcast all events to WS
+                            await _broadcast_event(run_id, ev, seq)
+
+                            # Count subagents and tool calls
+                            if ev.kind == EventKind.subagent:
+                                subagents += 1
+                            elif ev.kind == EventKind.tool:
+                                tool_calls += 1
+
+                            # Terminal events
+                            if ev.kind == EventKind.result:
+                                final_result = ev.data.get("result")
+                                usage_raw = ev.data.get("usage", {})
+                                final_usage = Usage(
+                                    tokens_in=usage_raw.get("tokens_in", 0),
+                                    tokens_out=usage_raw.get("tokens_out", 0),
+                                    cost_usd=usage_raw.get("cost_usd", 0.0),
+                                )
+                                attempt["outcome"] = "success"
+                                break
+
+                            elif ev.kind == EventKind.error:
+                                msg = ev.message or ""
+                                if ev.data.get("rate_limit") or "rate_limit_reached" in msg:
+                                    rate_limited = True
+                                    reset_at_str = ev.data.get("reset_at")
+                                    reset_at = None
+                                    if reset_at_str:
+                                        try:
+                                            reset_at = datetime.fromisoformat(reset_at_str)
+                                        except ValueError:
+                                            pass
+                                    quota_tracker.mark_cooldown(provider_name, reset_at)
+                                    attempt["outcome"] = "rate_limited"
+                                    attempt["reset_at"] = reset_at_str
+                                    next_up = (
+                                        candidates[candidates.index(provider_name) + 1:]
+                                        if provider_name in candidates else []
+                                    )
+                                    await _broadcast_event(run_id, ExecEvent(
+                                        kind=EventKind.route,
+                                        message=f"{provider_name} rate-limited; trying next",
+                                        data={"provider": provider_name, "cooling": True,
+                                              "next": next_up},
+                                    ), seq)
+                                else:
+                                    error_msg = msg
+                                    attempt["outcome"] = "error"
+                                break
+
+                    except Exception as exc:
+                        logger.exception(
+                            "[orchestrator] run %d provider %s error", run_id, provider_name
+                        )
+                        attempt["outcome"] = "error"
+                        error_msg = str(exc)
+
+                    run.attempts = list(attempts)
+                    await db.commit()
+
+                    if final_result is not None:
+                        return "success", None
+
+                    if rate_limited:
+                        rate_limited_any = True
+                        continue  # try next candidate
+
+                    if error_msg:
+                        last_error = error_msg
+                        if not routing.get("failover", True):
+                            return "hard_fail", error_msg
+                        continue  # non-quota error but failover enabled
+
+            # ── Overflow ──────────────────────────────────────────────────────
+            if final_result is None and overflow_to:
+                executor = get_executor(overflow_to)
+                if executor:
+                    logger.info(
+                        "[orchestrator] run %d using overflow provider %s", run_id, overflow_to
+                    )
+                    async with _provider_sems[overflow_to]:
+                        seq = await _next_seq(db, run_id)
+                        async for ev in executor.run_stream(prompt, workdir=workdir,
+                                                            tools_enabled=_settings.autonomous_tools,
+                                                            max_rounds=10, budget_usd=1.0):
+                            if ev.kind != EventKind.token:
+                                await _emit_event(db, run, ev.kind, ev.phase or ev.message,
+                                                  data=ev.data, seq_override=seq)
+                                seq += 1
+                            await _broadcast_event(run_id, ev, seq)
+                            if ev.kind == EventKind.result:
+                                final_result = ev.data.get("result")
+                                usage_raw = ev.data.get("usage", {})
+                                final_usage = Usage(
+                                    **{
+                                        k: usage_raw.get(k, 0)
+                                        for k in ("tokens_in", "tokens_out", "cost_usd")
+                                    }
+                                )
+                                run.overflow_used = True
+                                break
+
+            if final_result is not None:
+                return "success", None
+            if rate_limited_any:
+                return "cooling", None
+            return "error", last_error
+
+        # Retry wrapper: rerun the chain on transient failure with exponential
+        # backoff, bounded by max_run_retries. Rate-limit exhaustion ("cooling")
+        # is not retried here — it defers and the scheduler's sweep re-enqueues it.
+        max_retries = _settings.max_run_retries
+        retry_count = run.retry_count or 0
+        while True:
+            outcome, error_msg = await _run_candidates()
+
+            if outcome == "success":
+                break
+
+            if outcome == "hard_fail":
+                await _fail(db, run, error_msg or "provider error (failover disabled)")
+                return
+
+            if outcome == "cooling":
+                run.status = "deferred"
+                run.deferred_until = quota_tracker.earliest_reset(candidates)
+                run.attempts = attempts
                 await db.commit()
                 await _broadcast_run(run)
+                return
 
-                attempt: dict[str, Any] = {"provider": provider_name, "outcome": "pending"}
-                attempts.append(attempt)
-                run.attempts = list(attempts)
+            # outcome == "error" → transient; retry if budget remains.
+            if retry_count < max_retries:
+                retry_count += 1
+                run.retry_count = retry_count
+                delay = _settings.retry_backoff_seconds * (2 ** (retry_count - 1))
+                logger.info(
+                    "[orchestrator] run %d transient failure (%s); retry %d/%d in %.1fs",
+                    run_id, error_msg, retry_count, max_retries, delay,
+                )
+                await _emit_event(
+                    db, run, EventKind.route, "retry_scheduled",
+                    data={"attempt": retry_count, "max_retries": max_retries,
+                          "delay_seconds": delay, "error": error_msg},
+                )
+                run.attempts = attempts
                 await db.commit()
+                await _broadcast_run(run)
+                await asyncio.sleep(delay)
+                continue
 
-                rate_limited = False
-                error_msg: str | None = None
-                seq = await _next_seq(db, run_id)
-
-                try:
-                    async for ev in executor.run_stream(
-                        prompt,
-                        workdir=workdir,
-                        tools_enabled=_settings.autonomous_tools,
-                        max_rounds=10,
-                        budget_usd=1.0,
-                    ):
-                        # Persist non-token events
-                        if ev.kind != EventKind.token:
-                            await _emit_event(db, run, ev.kind, ev.phase or ev.message,
-                                              data=ev.data, seq_override=seq)
-                            seq += 1
-
-                        # Broadcast all events to WS
-                        await _broadcast_event(run_id, ev, seq)
-
-                        # Count subagents and tool calls
-                        if ev.kind == EventKind.subagent:
-                            subagents += 1
-                        elif ev.kind == EventKind.tool:
-                            tool_calls += 1
-
-                        # Terminal events
-                        if ev.kind == EventKind.result:
-                            final_result = ev.data.get("result")
-                            usage_raw = ev.data.get("usage", {})
-                            final_usage = Usage(
-                                tokens_in=usage_raw.get("tokens_in", 0),
-                                tokens_out=usage_raw.get("tokens_out", 0),
-                                cost_usd=usage_raw.get("cost_usd", 0.0),
-                            )
-                            attempt["outcome"] = "success"
-                            break
-
-                        elif ev.kind == EventKind.error:
-                            msg = ev.message or ""
-                            if ev.data.get("rate_limit") or "rate_limit_reached" in msg:
-                                rate_limited = True
-                                reset_at_str = ev.data.get("reset_at")
-                                reset_at = None
-                                if reset_at_str:
-                                    try:
-                                        reset_at = datetime.fromisoformat(reset_at_str)
-                                    except ValueError:
-                                        pass
-                                quota_tracker.mark_cooldown(provider_name, reset_at)
-                                attempt["outcome"] = "rate_limited"
-                                attempt["reset_at"] = reset_at_str
-                                await _broadcast_event(run_id, ExecEvent(
-                                    kind=EventKind.route,
-                                    message=f"{provider_name} rate-limited; trying next",
-                                    data={"provider": provider_name, "cooling": True,
-                                          "next": candidates[candidates.index(provider_name) + 1:]
-                                          if provider_name in candidates else []}
-                                ), seq)
-                            else:
-                                error_msg = msg
-                                attempt["outcome"] = "error"
-                            break
-
-                except Exception as exc:
-                    logger.exception(
-                        "[orchestrator] run %d provider %s error", run_id, provider_name
-                    )
-                    attempt["outcome"] = "error"
-                    error_msg = str(exc)
-
-                run.attempts = list(attempts)
-                await db.commit()
-
-                if final_result is not None:
-                    break  # success — exit failover loop
-
-                if rate_limited:
-                    continue  # try next candidate
-
-                if error_msg and routing.get("failover", True):
-                    continue  # non-quota error but failover enabled
-
-                # Hard error with failover=False
-                if error_msg:
-                    await _fail(db, run, error_msg)
-                    return
-
-        # ── Overflow ──────────────────────────────────────────────────────────
-        if final_result is None and overflow_to:
-            executor = get_executor(overflow_to)
-            if executor:
-                logger.info("[orchestrator] run %d using overflow provider %s", run_id, overflow_to)
-                async with _provider_sems[overflow_to]:
-                    seq = await _next_seq(db, run_id)
-                    async for ev in executor.run_stream(prompt, workdir=workdir,
-                                                        tools_enabled=_settings.autonomous_tools,
-                                                        max_rounds=10, budget_usd=1.0):
-                        if ev.kind != EventKind.token:
-                            await _emit_event(db, run, ev.kind, ev.phase or ev.message,
-                                              data=ev.data, seq_override=seq)
-                            seq += 1
-                        await _broadcast_event(run_id, ev, seq)
-                        if ev.kind == EventKind.result:
-                            final_result = ev.data.get("result")
-                            usage_raw = ev.data.get("usage", {})
-                            final_usage = Usage(
-                                **{
-                                    k: usage_raw.get(k, 0)
-                                    for k in ("tokens_in", "tokens_out", "cost_usd")
-                                }
-                            )
-                            run.overflow_used = True
-                            break
-
-        # ── All exhausted → deferred ──────────────────────────────────────────
-        if final_result is None:
-            run.status = "deferred"
-            run.deferred_until = quota_tracker.earliest_reset(candidates)
+            # Retries exhausted → terminal failure (the stuck-deferred bug fix:
+            # a non-cooling exhaustion now fails honestly instead of deferring
+            # with a null deferred_until that the sweep can never pick up).
+            plural = "y" if retry_count == 1 else "ies"
             run.attempts = attempts
-            await db.commit()
-            await _broadcast_run(run)
+            await _fail(
+                db, run,
+                f"all candidates failed after {retry_count} retr{plural}: {error_msg}",
+            )
             return
 
         # ── 5. Post-process outputs ───────────────────────────────────────────
@@ -419,17 +506,44 @@ async def reap_orphaned_runs() -> int:
 
 # ── enqueue ────────────────────────────────────────────────────────────────────
 
-async def enqueue_run(task_id: int, trigger: str = "manual") -> Run:
-    """Create a queued Run and fire-and-forget execute_run as a background task."""
+_ACTIVE_RUN_STATUSES = ("queued", "planning", "running", "deferred")
+
+
+async def enqueue_run(
+    task_id: int, trigger: str = "manual", *, idempotency_key: str | None = None
+) -> Run:
+    """Create a queued Run and fire-and-forget execute_run as a background task.
+
+    If idempotency_key is given and an active (non-terminal) run already carries
+    it, return that run instead of creating a duplicate (P-0025 #2) — so a retried
+    submit or a scheduler misfire-catchup can't spawn two runs for one intent.
+    """
     async with AsyncSessionLocal() as db:
         task = await db.get(Task, task_id)
         if task is None:
             raise ValueError(f"Task {task_id} not found")
+
+        if idempotency_key is not None:
+            existing = await db.execute(
+                select(Run).where(
+                    Run.idempotency_key == idempotency_key,
+                    Run.status.in_(_ACTIVE_RUN_STATUSES),
+                ).order_by(Run.id.desc()).limit(1)
+            )
+            dup = existing.scalar_one_or_none()
+            if dup is not None:
+                logger.info(
+                    "[orchestrator] enqueue deduped on idempotency_key=%s → run %d",
+                    idempotency_key, dup.id,
+                )
+                return dup
+
         run = Run(
             owner_id=task.owner_id,
             task_id=task_id,
             trigger=trigger,
             status="queued",
+            idempotency_key=idempotency_key,
         )
         db.add(run)
         await db.commit()

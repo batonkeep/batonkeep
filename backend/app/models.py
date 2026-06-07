@@ -99,6 +99,11 @@ class Run(Base):
     tier: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # ordered list of attempt outcomes: [{provider, outcome, reset_at?}]
     attempts: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Bounded in-process auto-retries consumed on transient failures (P-0025 #2).
+    retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # Optional dedupe key: a second enqueue with the same key + an active run is a
+    # no-op (returns the existing run) rather than a duplicate (P-0025 #2).
+    idempotency_key: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     overflow_used: Mapped[bool] = mapped_column(Boolean, default=False)
     deferred_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     tokens_in: Mapped[int] = mapped_column(Integer, default=0)

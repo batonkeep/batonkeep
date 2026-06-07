@@ -18,9 +18,9 @@ API:
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -38,7 +38,7 @@ def is_free_provider(pdef: ProviderDef) -> bool:
 
 
 def _start_of_today() -> datetime:
-    return datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    return datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 async def spend_since(db: AsyncSession, owner_id: str, since: datetime) -> float:

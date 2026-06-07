@@ -29,7 +29,6 @@ import os
 import re
 import shutil
 import tempfile
-from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -82,7 +81,7 @@ async def set_config(
     await creds.store_credential(db, owner_id, CF_PROVIDER, blob, label="Cloudflare Pages")
 
 
-async def get_config(db: AsyncSession, owner_id: str) -> Optional[dict]:
+async def get_config(db: AsyncSession, owner_id: str) -> dict | None:
     """Return the decrypted credentials dict, or None if the connector isn't set up."""
     raw = await creds.get_credential(db, owner_id, CF_PROVIDER)
     if not raw:
@@ -133,7 +132,7 @@ def _deploy_cmd(directory: str, project_name: str, branch: str) -> list[str]:
             f"--project-name={project_name}", f"--branch={branch}", "--commit-dirty=true"]
 
 
-def _parse_deploy_url(output: str) -> Optional[str]:
+def _parse_deploy_url(output: str) -> str | None:
     m = _URL_RE.search(output or "")
     return m.group(0) if m else None
 
@@ -148,7 +147,7 @@ async def _run(cmd: list[str], env: dict) -> tuple[int, str]:
     )
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=_DEPLOY_TIMEOUT_S)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         proc.kill()
         raise CloudflareError("Cloudflare deploy timed out")
     return proc.returncode, (out or b"").decode("utf-8", errors="replace")

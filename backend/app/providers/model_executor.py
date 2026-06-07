@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, AsyncIterator, Optional
+from collections.abc import AsyncIterator
+from typing import Any
 
 from app.providers.base import (
     EventKind,
@@ -23,16 +24,15 @@ from app.providers.base import (
 )
 from app.providers.registry import ProviderDef, ProviderInstance
 
-logger = logging.getLogger(__name__)
-
-# ── Tool registry ─────────────────────────────────────────────────────────────
 # Tools are reached only through the MCP-shaped registry (P-0017). The executor
 # never imports a tool module directly — it lists schemas and dispatches calls
 # through the registry, so a future external-MCP-server provider drops in
 # transparently.
-
 from app.providers.tools.registry import get_tool_registry
 
+logger = logging.getLogger(__name__)
+
+# ── Tool registry ─────────────────────────────────────────────────────────────
 TOOL_SCHEMAS = get_tool_registry().function_schemas()
 
 _SYSTEM_PROMPT = (
@@ -47,7 +47,7 @@ _SYSTEM_PROMPT = (
 class ModelExecutor(Executor):
     """OpenAI-compatible or Anthropic model backend with our own agent loop."""
 
-    def __init__(self, provider_def: ProviderDef, instance: Optional["ProviderInstance"] = None) -> None:
+    def __init__(self, provider_def: ProviderDef, instance: ProviderInstance | None = None) -> None:
         self._def = provider_def
         self._instance = instance
         # name is the instance id so run records / cooldown key per-account.
@@ -63,8 +63,11 @@ class ModelExecutor(Executor):
             or (instance.model_override if instance and instance.model_override else None)
             or provider_def.model
         )
-        self._cred_provider = (instance.credential_provider if instance and instance.credential_provider
-                               else provider_def.name)
+        self._cred_provider = (
+            instance.credential_provider
+            if instance and instance.credential_provider
+            else provider_def.name
+        )
 
     @property
     def kind(self) -> str:
@@ -90,15 +93,19 @@ class ModelExecutor(Executor):
         tools_enabled: bool = True,
         max_rounds: int = 10,
         budget_usd: float = 1.0,
-        extra: Optional[dict[str, Any]] = None,
+        extra: dict[str, Any] | None = None,
     ) -> AsyncIterator[ExecEvent]:
         if self._def.kind == "anthropic":
-            async for ev in self._run_anthropic(prompt, workdir=workdir, tools_enabled=tools_enabled,
-                                                max_rounds=max_rounds, budget_usd=budget_usd):
+            async for ev in self._run_anthropic(
+                prompt, workdir=workdir, tools_enabled=tools_enabled,
+                max_rounds=max_rounds, budget_usd=budget_usd,
+            ):
                 yield ev
         else:
-            async for ev in self._run_openai_compat(prompt, workdir=workdir, tools_enabled=tools_enabled,
-                                                    max_rounds=max_rounds, budget_usd=budget_usd):
+            async for ev in self._run_openai_compat(
+                prompt, workdir=workdir, tools_enabled=tools_enabled,
+                max_rounds=max_rounds, budget_usd=budget_usd,
+            ):
                 yield ev
 
     # ── OpenAI-compatible ─────────────────────────────────────────────────────
@@ -108,7 +115,9 @@ class ModelExecutor(Executor):
         max_rounds: int, budget_usd: float,
     ) -> AsyncIterator[ExecEvent]:
         import os
+
         from openai import AsyncOpenAI
+
         from app.credentials import resolve_api_key
 
         api_key = await resolve_api_key(self._cred_provider, self._def.env_key)
@@ -116,7 +125,10 @@ class ModelExecutor(Executor):
         if not api_key:
             yield ExecEvent(
                 kind=EventKind.error,
-                message=f"no credentials for {self.name}: set {self._def.env_key} or store a key via /api/credentials",
+                message=(
+                    f"no credentials for {self.name}: set {self._def.env_key} "
+                    "or store a key via /api/credentials"
+                ),
             )
             return
 
@@ -134,7 +146,9 @@ class ModelExecutor(Executor):
 
         for round_num in range(max_rounds):
             if total_usage.cost_usd > budget_usd:
-                yield ExecEvent(kind=EventKind.log, message=f"[{self.name}] budget exceeded ${budget_usd:.4f}")
+                yield ExecEvent(
+                    kind=EventKind.log, message=f"[{self.name}] budget exceeded ${budget_usd:.4f}"
+                )
                 break
 
             try:
@@ -219,13 +233,20 @@ class ModelExecutor(Executor):
         max_rounds: int, budget_usd: float,
     ) -> AsyncIterator[ExecEvent]:
         import anthropic
+
         from app.credentials import resolve_api_key
 
-        api_key = await resolve_api_key(self._cred_provider, self._def.env_key or "ANTHROPIC_API_KEY")
+        api_key = await resolve_api_key(
+            self._cred_provider, self._def.env_key or "ANTHROPIC_API_KEY"
+        )
         if not api_key:
             yield ExecEvent(
                 kind=EventKind.error,
-                message=f"no credentials for {self.name}: set {self._def.env_key or 'ANTHROPIC_API_KEY'} or store a key via /api/credentials",
+                message=(
+                    f"no credentials for {self.name}: "
+                    f"set {self._def.env_key or 'ANTHROPIC_API_KEY'} "
+                    "or store a key via /api/credentials"
+                ),
             )
             return
         client = anthropic.AsyncAnthropic(api_key=api_key)
@@ -286,10 +307,14 @@ class ModelExecutor(Executor):
                     messages.append({"role": "assistant", "content": final_msg.content})
                     tool_results = []
                     for tu in tool_uses:
-                        result = await self._call_tool(tu.name, json.dumps(tu.input), workdir=workdir)
+                        result = await self._call_tool(
+                            tu.name, json.dumps(tu.input), workdir=workdir
+                        )
                         yield ExecEvent(kind=EventKind.tool, message=f"[{tu.name}] called",
                                         data={"tool": tu.name, "result_chars": len(result)})
-                        tool_results.append({"type": "tool_result", "tool_use_id": tu.id, "content": result})
+                        tool_results.append(
+                            {"type": "tool_result", "tool_use_id": tu.id, "content": result}
+                        )
                     messages.append({"role": "user", "content": tool_results})
 
             except Exception as exc:

@@ -16,10 +16,20 @@ TOOL_SCHEMA = {
         "type": "object",
         "properties": {
             "origin": {"type": "string", "description": "IATA origin airport code (e.g. SYD)."},
-            "destination": {"type": "string", "description": "IATA destination airport code (e.g. LHR)."},
-            "date_window": {"type": "string", "description": "Date range, e.g. '2026-07-01 to 2026-07-07'."},
+            "destination": {
+                "type": "string",
+                "description": "IATA destination airport code (e.g. LHR).",
+            },
+            "date_window": {
+                "type": "string",
+                "description": "Date range, e.g. '2026-07-01 to 2026-07-07'.",
+            },
             "pax": {"type": "integer", "default": 1},
-            "cabin": {"type": "string", "default": "economy", "enum": ["economy", "business", "first"]},
+            "cabin": {
+                "type": "string",
+                "default": "economy",
+                "enum": ["economy", "business", "first"],
+            },
         },
         "required": ["origin", "destination", "date_window"],
     },

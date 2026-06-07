@@ -5,10 +5,9 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, field_validator
-
 
 # ── Routing policy (§4.3) ────────────────────────────────────────────────────
 
@@ -17,7 +16,7 @@ class RoutingPolicy(BaseModel):
     candidates: list[str] = ["mock"]
     capability_tags: list[str] = []
     failover: bool = True
-    overflow_to: Optional[str] = None
+    overflow_to: str | None = None
     max_attempts: int = 3
 
 
@@ -25,32 +24,32 @@ class RoutingPolicy(BaseModel):
 
 class TaskCreate(BaseModel):
     name: str
-    description: Optional[str] = None
-    category: Optional[str] = None
+    description: str | None = None
+    category: str | None = None
     prompt_template: str = ""
-    params: Optional[dict[str, Any]] = None
+    params: dict[str, Any] | None = None
     schedule_kind: str = "none"
-    schedule_expr: Optional[str] = None
+    schedule_expr: str | None = None
     timezone: str = "UTC"  # IANA tz for cron interpretation
     want_markdown: bool = True
     want_json: bool = False
     enabled: bool = True
-    routing: Optional[RoutingPolicy] = None
+    routing: RoutingPolicy | None = None
 
 
 class TaskUpdate(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-    category: Optional[str] = None
-    prompt_template: Optional[str] = None
-    params: Optional[dict[str, Any]] = None
-    schedule_kind: Optional[str] = None
-    schedule_expr: Optional[str] = None
-    timezone: Optional[str] = None
-    want_markdown: Optional[bool] = None
-    want_json: Optional[bool] = None
-    enabled: Optional[bool] = None
-    routing: Optional[RoutingPolicy] = None
+    name: str | None = None
+    description: str | None = None
+    category: str | None = None
+    prompt_template: str | None = None
+    params: dict[str, Any] | None = None
+    schedule_kind: str | None = None
+    schedule_expr: str | None = None
+    timezone: str | None = None
+    want_markdown: bool | None = None
+    want_json: bool | None = None
+    enabled: bool | None = None
+    routing: RoutingPolicy | None = None
 
 
 class TaskOut(BaseModel):
@@ -59,17 +58,17 @@ class TaskOut(BaseModel):
     id: int
     owner_id: str
     name: str
-    description: Optional[str]
-    category: Optional[str]
+    description: str | None
+    category: str | None
     prompt_template: str
-    params: Optional[dict[str, Any]]
+    params: dict[str, Any] | None
     schedule_kind: str
-    schedule_expr: Optional[str]
+    schedule_expr: str | None
     timezone: str
     want_markdown: bool
     want_json: bool
     enabled: bool
-    routing: Optional[dict[str, Any]]
+    routing: dict[str, Any] | None
     created_at: datetime
     updated_at: datetime
 
@@ -84,25 +83,25 @@ class RunOut(BaseModel):
     task_id: int
     trigger: str
     status: str
-    summary: Optional[str]
-    error: Optional[str]
-    provider: Optional[str]
-    model: Optional[str]
-    tier: Optional[str]
-    attempts: Optional[list[Any]]
+    summary: str | None
+    error: str | None
+    provider: str | None
+    model: str | None
+    tier: str | None
+    attempts: list[Any] | None
     overflow_used: bool
-    deferred_until: Optional[datetime]
+    deferred_until: datetime | None
     tokens_in: int
     tokens_out: int
     cost_usd: float
     subagents: int
     tool_calls: int
-    markdown_path: Optional[str]
-    json_path: Optional[str]
+    markdown_path: str | None
+    json_path: str | None
     created_at: datetime
-    started_at: Optional[datetime]
-    finished_at: Optional[datetime]
-    duration_ms: Optional[int]
+    started_at: datetime | None
+    finished_at: datetime | None
+    duration_ms: int | None
 
 
 # ── RunEvent ──────────────────────────────────────────────────────────────────
@@ -115,20 +114,20 @@ class RunEventOut(BaseModel):
     seq: int
     ts: datetime
     kind: str
-    phase: Optional[str]
-    message: Optional[str]
-    data: Optional[dict[str, Any]]
+    phase: str | None
+    message: str | None
+    data: dict[str, Any] | None
 
 
 # ── Build sessions (M1.1) ───────────────────────────────────────────────────
 
 class SessionCreate(BaseModel):
-    title: Optional[str] = None
-    goal: Optional[str] = None
+    title: str | None = None
+    goal: str | None = None
     # initial provider instance id (e.g. "grok", "agy", "mock")
-    provider: Optional[str] = None
+    provider: str | None = None
     # optional task-type template id (D-0011): seeds goal + guidance in SESSION.md
-    template: Optional[str] = None
+    template: str | None = None
     # P-0009 #1: pin this session to a local model (confidential — never off-box).
     confidential: bool = False
 
@@ -143,29 +142,29 @@ class SessionTemplateOut(BaseModel):
 
 class SessionUpdate(BaseModel):
     # rename a session (other fields like provider are switched via turns)
-    title: Optional[str] = None
+    title: str | None = None
     # toggle the P-0009 #1 confidential (local-only) pin
-    confidential: Optional[bool] = None
+    confidential: bool | None = None
 
 
 class TurnCreate(BaseModel):
     message: str
     # optional provider switch for this and subsequent turns
-    provider: Optional[str] = None
+    provider: str | None = None
 
 
 class CaptureRequest(BaseModel):
     """Capture the web-TTY terminal lane's workspace edits as a version + artifact
     turn (D-0017 thread 2). `instance` labels the turn with the CLI that drove it."""
 
-    instance: Optional[str] = None
+    instance: str | None = None
 
 
 class SummaryOut(BaseModel):
     """The session ledger's auto-maintained summary (D-0017 thread 1). `summary` is
     null when none has been produced (e.g. summarization disabled / skipped)."""
 
-    summary: Optional[str] = None
+    summary: str | None = None
 
 
 class FileChangeOut(BaseModel):
@@ -174,8 +173,8 @@ class FileChangeOut(BaseModel):
 
     path: str
     status: str
-    additions: Optional[int] = None
-    deletions: Optional[int] = None
+    additions: int | None = None
+    deletions: int | None = None
 
 
 class SessionTurnOut(BaseModel):
@@ -184,19 +183,19 @@ class SessionTurnOut(BaseModel):
     id: int
     session_id: str
     seq: int
-    provider: Optional[str]
+    provider: str | None
     prompt: str
-    response: Optional[str]
+    response: str | None
     status: str
-    error: Optional[str]
+    error: str | None
     # M1.3 versioning: the workspace commit this turn produced (if any) + summary.
-    commit_sha: Optional[str] = None
-    diffstat: Optional[str] = None
+    commit_sha: str | None = None
+    diffstat: str | None = None
     # D-0017 thread 2: the per-file artifacts this turn produced (the headline
     # result). Stored as a JSON string on the model; parsed to a list here.
-    changed_files: Optional[list[FileChangeOut]] = None
+    changed_files: list[FileChangeOut] | None = None
     created_at: datetime
-    finished_at: Optional[datetime]
+    finished_at: datetime | None
 
     @field_validator("changed_files", mode="before")
     @classmethod
@@ -232,7 +231,7 @@ class VersionDiffOut(BaseModel):
     commit: str
     diffstat: str
     diff: str
-    files: list["FileChangeOut"] = []
+    files: list[FileChangeOut] = []
 
 
 class RestoreRequest(BaseModel):
@@ -252,7 +251,7 @@ class UploadOut(BaseModel):
 
     paths: list[str]
     # the workspace commit the upload produced (a version), if anything changed
-    commit_sha: Optional[str] = None
+    commit_sha: str | None = None
 
 
 class ImportOut(BaseModel):
@@ -260,14 +259,14 @@ class ImportOut(BaseModel):
 
     paths: list[str]
     count: int
-    commit_sha: Optional[str] = None
+    commit_sha: str | None = None
 
 
 class GitImportIn(BaseModel):
     """Import a site by cloning a public https git URL."""
 
     url: str
-    branch: Optional[str] = None
+    branch: str | None = None
 
 
 class PublishOut(BaseModel):
@@ -275,13 +274,13 @@ class PublishOut(BaseModel):
 
     published: bool
     # public share token + relative URL path; None when revoked/never published
-    share_token: Optional[str] = None
-    share_path: Optional[str] = None  # e.g. "/api/share/<token>/"
+    share_token: str | None = None
+    share_path: str | None = None  # e.g. "/api/share/<token>/"
     # the workspace commit snapshotted into the live bundle
-    version: Optional[str] = None
+    version: str | None = None
     kind: str = "site"
-    file_count: Optional[int] = None
-    updated_at: Optional[datetime] = None
+    file_count: int | None = None
+    updated_at: datetime | None = None
 
 
 class CloudflareConfigIn(BaseModel):
@@ -295,13 +294,13 @@ class CloudflareStatusOut(BaseModel):
     """Connector state for the UI — never reveals the token."""
 
     configured: bool
-    account_id: Optional[str] = None
+    account_id: str | None = None
 
 
 class CloudflareDeployIn(BaseModel):
     """Per-deploy options. Project is per-session; omit to use the session's default."""
 
-    project_name: Optional[str] = None
+    project_name: str | None = None
 
 
 class CloudflareDeployOut(BaseModel):
@@ -317,11 +316,11 @@ class SessionOut(BaseModel):
     id: str
     owner_id: str
     title: str
-    provider: Optional[str]
+    provider: str | None
     workspace_path: str
     preview_token: str
     status: str
-    cf_project: Optional[str] = None  # Cloudflare Pages project this session deploys to
+    cf_project: str | None = None  # Cloudflare Pages project this session deploys to
     confidential: bool = False  # P-0009 #1: pinned to a local model
     created_at: datetime
     updated_at: datetime
@@ -333,13 +332,13 @@ class ProviderHealth(BaseModel):
     name: str          # instance id ("claude" or "claude:work")
     template: str      # provider template ("claude") — UI groups instances under this
     label: str         # human display label for the account
-    model: Optional[str] = None  # active model for API instances (None for CLI)
+    model: str | None = None  # active model for API instances (None for CLI)
     kind: str
     tier: str
     healthy: bool
-    cooldown_until: Optional[datetime]
-    last_reset_seen: Optional[datetime]
-    est_used_pct: Optional[float]
+    cooldown_until: datetime | None
+    last_reset_seen: datetime | None
+    est_used_pct: float | None
     mode: str  # plan | api | open | mock
 
 
@@ -351,7 +350,7 @@ class ProviderLimitsUpdate(BaseModel):
 
 class ProviderModelUpdate(BaseModel):
     """Set (or clear, when null/empty) an instance's runtime model override."""
-    model: Optional[str] = None
+    model: str | None = None
 
 
 class ConsoleConfig(BaseModel):
@@ -364,7 +363,7 @@ class ConsoleConfig(BaseModel):
 class StatsOut(BaseModel):
     runs_today: int
     success_rate: float
-    avg_duration_ms: Optional[float]
+    avg_duration_ms: float | None
     runs_by_provider: dict[str, int]
     failover_rate: float
     deferred_now: int
@@ -377,7 +376,7 @@ class StatsOut(BaseModel):
 class CredentialCreate(BaseModel):
     provider: str  # template name or instance id ("openai-api" / "openai-api:team")
     api_key: str  # plaintext; encrypted before storage
-    label: Optional[str] = None
+    label: str | None = None
 
 
 class CredentialOut(BaseModel):
@@ -386,10 +385,10 @@ class CredentialOut(BaseModel):
     id: int
     owner_id: str
     provider: str
-    label: Optional[str] = None
-    key_hint: Optional[str] = None  # non-secret last-4 ("…wxyz"), never the full key
+    label: str | None = None
+    key_hint: str | None = None  # non-secret last-4 ("…wxyz"), never the full key
     created_at: datetime
-    last_used_at: Optional[datetime] = None
+    last_used_at: datetime | None = None
 
 
 class UsageSummaryOut(BaseModel):
@@ -399,7 +398,7 @@ class UsageSummaryOut(BaseModel):
     spend_7d_usd: float
     by_provider_today: dict[str, float]
     daily_budget_usd: float           # 0 = unlimited
-    remaining_today_usd: Optional[float] = None  # None when unlimited
+    remaining_today_usd: float | None = None  # None when unlimited
     over_budget: bool
 
 
@@ -408,11 +407,11 @@ class SecretStatusOut(BaseModel):
 
     provider: str
     tier: str
-    env_key: Optional[str] = None
+    env_key: str | None = None
     local: bool = False
     source: str  # "stored" | "env" | "missing"
-    key_hint: Optional[str] = None
-    last_used_at: Optional[datetime] = None
+    key_hint: str | None = None
+    last_used_at: datetime | None = None
 
 
 # ── Mode ─────────────────────────────────────────────────────────────────────

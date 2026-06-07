@@ -19,9 +19,12 @@ import asyncio
 import json
 import logging
 import re
-from datetime import datetime, timedelta, timezone
-from typing import Any, AsyncIterator, Optional
+from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
+from app import sandbox
+from app.config import get_settings
 from app.providers.base import (
     EventKind,
     ExecEvent,
@@ -30,8 +33,6 @@ from app.providers.base import (
     Usage,
 )
 from app.providers.registry import ProviderDef, ProviderInstance
-from app.config import get_settings
-from app import sandbox
 
 logger = logging.getLogger(__name__)
 _settings = get_settings()
@@ -62,7 +63,7 @@ def _is_rate_limit(text: str) -> bool:
     return any(p.search(text) for p in _RATE_LIMIT_PATTERNS)
 
 
-def _parse_reset_at(text: str) -> Optional[datetime]:
+def _parse_reset_at(text: str) -> datetime | None:
     """Try to extract a reset timestamp from rate-limit error text."""
     for pat in _RESET_PATTERNS:
         m = pat.search(text)
@@ -70,19 +71,19 @@ def _parse_reset_at(text: str) -> Optional[datetime]:
             val = m.group(1).strip()
             # Seconds-based
             if val.isdigit():
-                return datetime.now(timezone.utc) + timedelta(seconds=int(val))
+                return datetime.now(UTC) + timedelta(seconds=int(val))
             # ISO-ish timestamp
             for fmt in ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%SZ"):
                 try:
-                    return datetime.strptime(val, fmt).replace(tzinfo=timezone.utc)
+                    return datetime.strptime(val, fmt).replace(tzinfo=UTC)
                 except ValueError:
                     continue
-    return datetime.now(timezone.utc) + timedelta(seconds=_DEFAULT_COOLDOWN_SECONDS)
+    return datetime.now(UTC) + timedelta(seconds=_DEFAULT_COOLDOWN_SECONDS)
 
 
 # ── Tolerant parser (§5.4) ────────────────────────────────────────────────────
 
-def parse_line(line: str, accumulated_text: list[str]) -> Optional[ExecEvent]:
+def parse_line(line: str, accumulated_text: list[str]) -> ExecEvent | None:
     """
     Parse one stdout line from a CLI agent.
     Returns an ExecEvent or None if the line should be buffered as plain text.
@@ -148,7 +149,9 @@ def parse_line(line: str, accumulated_text: list[str]) -> Optional[ExecEvent]:
             return ExecEvent(kind=EventKind.tool, message=obj.get("name", "tool_use"), data=obj)
 
         if obj_type == "subagent":
-            return ExecEvent(kind=EventKind.subagent, message=obj.get("message", "subagent"), data=obj)
+            return ExecEvent(
+                kind=EventKind.subagent, message=obj.get("message", "subagent"), data=obj
+            )
 
         # Claude stream-json v2: text delta {"type":"text","data":"..."}
         if obj_type == "text" and "data" in obj:
@@ -160,7 +163,9 @@ def parse_line(line: str, accumulated_text: list[str]) -> Optional[ExecEvent]:
         # Claude end-of-stream signal {"type":"end","stopReason":"..."}
         # Return as a log event with full data so the executor loop can detect it.
         if obj_type == "end":
-            return ExecEvent(kind=EventKind.log, message=f"[end] {obj.get('stopReason', '')}", data=obj)
+            return ExecEvent(
+                kind=EventKind.log, message=f"[end] {obj.get('stopReason', '')}", data=obj
+            )
 
         # Grok streaming-json delta (text field at top level)
         if "text" in obj and obj_type not in ("result",):
@@ -176,7 +181,9 @@ def parse_line(line: str, accumulated_text: list[str]) -> Optional[ExecEvent]:
             # (accumulated_text is replaced on each agent_message, so only the final remains).
             usage_raw = obj.get("usage", {})
             usage = Usage(
-                tokens_in=usage_raw.get("input_tokens", 0) + usage_raw.get("cached_input_tokens", 0),
+                tokens_in=(
+                    usage_raw.get("input_tokens", 0) + usage_raw.get("cached_input_tokens", 0)
+                ),
                 tokens_out=usage_raw.get("output_tokens", 0),
                 cost_usd=0.0,  # subscription plan — no per-token charge
             )
@@ -293,7 +300,7 @@ _HEADLESS_SUFFIX = (
 
 def _build_cmd(
     binary: str, prompt: str, *, tools_enabled: bool, max_rounds: int, budget_usd: float = 0.0,
-    model: Optional[str] = None,
+    model: str | None = None,
 ) -> list[str]:
     auto_approve = _settings.autonomous_tools and tools_enabled
     headless_prompt = prompt + _HEADLESS_SUFFIX
@@ -360,7 +367,7 @@ class CLIExecutor(Executor):
     manages its own auth entirely.
     """
 
-    def __init__(self, provider_def: ProviderDef, instance: Optional["ProviderInstance"] = None) -> None:
+    def __init__(self, provider_def: ProviderDef, instance: ProviderInstance | None = None) -> None:
         self._def = provider_def
         self._instance = instance
         # name is the instance id so run records / cooldown key per-account.
@@ -390,11 +397,13 @@ class CLIExecutor(Executor):
         tools_enabled: bool = True,
         max_rounds: int = 10,
         budget_usd: float = 1.0,
-        extra: Optional[dict[str, Any]] = None,
+        extra: dict[str, Any] | None = None,
     ) -> AsyncIterator[ExecEvent]:
         binary = self._def.cli_binary
         if not binary:
-            yield ExecEvent(kind=EventKind.error, message=f"No CLI binary configured for {self.name}")
+            yield ExecEvent(
+                kind=EventKind.error, message=f"No CLI binary configured for {self.name}"
+            )
             return
 
         cmd = _build_cmd(binary, prompt, tools_enabled=tools_enabled, max_rounds=max_rounds,
@@ -410,7 +419,7 @@ class CLIExecutor(Executor):
 
         accumulated_text: list[str] = []
         stderr_buf: list[str] = []
-        proc: Optional[asyncio.subprocess.Process] = None
+        proc: asyncio.subprocess.Process | None = None
 
         try:
             # All plan-CLIs are headless automation — none need stdin. DEVNULL prevents
@@ -425,7 +434,10 @@ class CLIExecutor(Executor):
                 env[self._instance.cli_config_env] = self._instance.cli_config_dir
                 yield ExecEvent(
                     kind=EventKind.log,
-                    message=f"[{self.name}] {self._instance.cli_config_env}={self._instance.cli_config_dir}",
+                    message=(
+                        f"[{self.name}] "
+                        f"{self._instance.cli_config_env}={self._instance.cli_config_dir}"
+                    ),
                 )
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -441,7 +453,7 @@ class CLIExecutor(Executor):
 
             # Merge stdout events and stderr log events through a single queue so
             # both stream to the UI in real time without blocking each other.
-            event_q: asyncio.Queue[Optional[ExecEvent]] = asyncio.Queue()
+            event_q: asyncio.Queue[ExecEvent | None] = asyncio.Queue()
 
             async def _stdout_worker() -> None:
                 """Parse stdout lines into events; puts None sentinel when done."""
@@ -492,7 +504,7 @@ class CLIExecutor(Executor):
                                 and isinstance(item.data, dict)
                                 and item.data.get("type") == "end"):
                             break
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 if proc.returncode is None:
                     proc.kill()
                 yield ExecEvent(
@@ -514,7 +526,10 @@ class CLIExecutor(Executor):
                 yield ExecEvent(
                     kind=EventKind.error,
                     message=f"rate_limit_reached: {stderr_all[:300]}",
-                    data={"rate_limit": True, "reset_at": reset_at.isoformat() if reset_at else None},
+                    data={
+                        "rate_limit": True,
+                        "reset_at": reset_at.isoformat() if reset_at else None,
+                    },
                 )
                 return
 

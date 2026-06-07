@@ -17,10 +17,8 @@ router.resolve() returns:
 from __future__ import annotations
 
 import logging
-import random
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
 
 from app.config import get_settings
 from app.providers.registry import (
@@ -42,13 +40,13 @@ _rr_counters: dict[tuple, int] = {}
 class CandidatePlan:
     """Router resolved successfully — ordered candidate list ready for failover loop."""
     candidates: list[str]
-    overflow_to: Optional[str] = None
+    overflow_to: str | None = None
 
 
 @dataclass
 class DeferredResult:
     """All candidates are cooling down; the run should be deferred."""
-    deferred_until: Optional[datetime]
+    deferred_until: datetime | None
     cooling_providers: list[str]
 
 
@@ -56,7 +54,7 @@ def resolve(
     routing: dict,
     quota: QuotaTracker,
     *,
-    deployment_mode: Optional[str] = None,
+    deployment_mode: str | None = None,
     degrade_to_free: bool = False,
 ) -> CandidatePlan | DeferredResult:
     """
@@ -77,7 +75,7 @@ def resolve(
     strategy = routing.get("strategy", "capability")
     raw_candidates: list[str] = routing.get("candidates", _settings.candidates_list)
     cap_tags: list[str] = routing.get("capability_tags", [])
-    overflow_to: Optional[str] = routing.get("overflow_to")
+    overflow_to: str | None = routing.get("overflow_to")
     max_attempts: int = routing.get("max_attempts", 3)
     failover: bool = routing.get("failover", True)
 

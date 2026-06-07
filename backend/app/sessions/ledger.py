@@ -19,7 +19,6 @@ failure must never break a turn.
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from app.config import get_settings
 from app.db import AsyncSessionLocal
@@ -51,7 +50,7 @@ ledger does not show. Output only the summary text (no preamble, no headings).
 """
 
 
-def _pick_summarizer(current_provider: Optional[str], confidential: bool) -> Optional[str]:
+def _pick_summarizer(current_provider: str | None, confidential: bool) -> str | None:
     """Choose the instance id to summarize with, honouring the sovereignty rule.
 
     Confidential → an available local instance only (or None to skip). Otherwise
@@ -78,7 +77,7 @@ def _pick_summarizer(current_provider: Optional[str], confidential: bool) -> Opt
 
 async def _run_single_shot(executor, prompt: str, workspace: str) -> str:
     """One model turn, no tools, tight budget — returns the result text or ''."""
-    final: Optional[ExecResult] = None
+    final: ExecResult | None = None
     try:
         async for ev in executor.run_stream(
             prompt,
@@ -101,7 +100,7 @@ async def _run_single_shot(executor, prompt: str, workspace: str) -> str:
 
 async def summarize_session(
     session_id: str, *, owner_id: str = "local", force: bool = False
-) -> Optional[str]:
+) -> str | None:
     """
     Refresh the session's ## Summary with a model-written digest of the ledger.
 

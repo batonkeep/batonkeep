@@ -9,9 +9,10 @@ EventKind: log | phase | token | tool | subagent | result | error | route
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, AsyncIterator, Optional
+from typing import Any
 
 
 class EventKind(str, Enum):
@@ -32,7 +33,7 @@ class ExecEvent:
     phase: str = ""
     data: dict[str, Any] = field(default_factory=dict)
     # For token events: the incremental text chunk
-    text: Optional[str] = None
+    text: str | None = None
 
     def is_terminal(self) -> bool:
         return self.kind in (EventKind.result, EventKind.error)
@@ -44,7 +45,7 @@ class Usage:
     tokens_out: int = 0
     cost_usd: float = 0.0
 
-    def __add__(self, other: "Usage") -> "Usage":
+    def __add__(self, other: Usage) -> Usage:
         return Usage(
             tokens_in=self.tokens_in + other.tokens_in,
             tokens_out=self.tokens_out + other.tokens_out,
@@ -83,7 +84,7 @@ class Executor(ABC):
         tools_enabled: bool = True,
         max_rounds: int = 10,
         budget_usd: float = 1.0,
-        extra: Optional[dict[str, Any]] = None,
+        extra: dict[str, Any] | None = None,
     ) -> AsyncIterator[ExecEvent]:
         """
         Yield ExecEvents. The terminal event (kind=result or kind=error)

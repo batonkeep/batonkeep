@@ -16,7 +16,11 @@ TOOL_SCHEMA = {
         "type": "object",
         "properties": {
             "url": {"type": "string", "description": "The URL to fetch."},
-            "max_chars": {"type": "integer", "default": 8000, "description": "Truncate to this many characters."},
+            "max_chars": {
+                "type": "integer",
+                "default": 8000,
+                "description": "Truncate to this many characters.",
+            },
         },
         "required": ["url"],
     },

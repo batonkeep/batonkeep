@@ -1,0 +1,64 @@
+name: CI
+
+# Enforces the Verify discipline at the PR boundary (P-0025 #4): backend lint +
+# tests (including the alembic drift guard, D-0021) and the frontend type-check/build.
+# The lint gate is a clean baseline — `ruff check` must report zero findings.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A newer push to the same ref cancels the in-flight run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: backend — lint + tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Sync dependencies (locked)
+        run: uv sync --frozen
+
+      # ruff version is pinned via the dev dependency group, so CI and local agree.
+      - name: Lint (ruff check — zero-finding gate)
+        run: uv run ruff check app/
+
+      - name: Tests (pytest + alembic drift guard)
+        run: uv run pytest tests/ -q
+
+  frontend:
+    name: frontend — typecheck + build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies (locked)
+        run: npm ci
+
+      # `npm run build` is `tsc --noEmit && vite build` — type-check + production bundle.
+      - name: Type-check + build
+        run: npm run build

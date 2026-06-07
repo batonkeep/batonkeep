@@ -25,7 +25,9 @@ def _ws(tmp_path, brief="# Build a landing page\n\nGoal: a catering site.", file
 
 def test_convention_file_per_provider():
     assert sc.context_filename("claude") == "CLAUDE.md"
-    assert sc.context_filename("agy") == "GEMINI.md"
+    # agy (Antigravity) auto-loads AGENTS.md in preference to GEMINI.md when both
+    # exist, so we unify on AGENTS.md to stay authoritative across provider switches.
+    assert sc.context_filename("agy") == "AGENTS.md"
     assert sc.context_filename("codex") == "AGENTS.md"
     assert sc.context_filename("unknown") == "AGENTS.md"  # default
 

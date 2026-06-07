@@ -29,10 +29,18 @@ logger = logging.getLogger(__name__)
 
 # Which file each CLI auto-reads from its working directory. Default to AGENTS.md
 # (the cross-tool convention) for providers we haven't mapped explicitly.
+#
+# agy (Antigravity) auto-loads BOTH AGENTS.md and GEMINI.md, but **AGENTS.md takes
+# precedence when both exist** (and Google's migration makes AGENTS.md the repo-root
+# standard). So agy maps to AGENTS.md, not GEMINI.md: in a mixed-provider session a
+# prior codex/grok turn (or an imported repo) leaves an AGENTS.md, and agy would
+# read that stale file over a freshly-seeded GEMINI.md — silently breaking the
+# context-transfers-on-switch guarantee. Unifying on AGENTS.md (only claude differs)
+# keeps the single seeded block authoritative across every CLI switch.
 _CONTEXT_FILES: dict[str, str] = {
     "claude": "CLAUDE.md",
     "codex": "AGENTS.md",
-    "agy": "GEMINI.md",
+    "agy": "AGENTS.md",
     "grok": "AGENTS.md",
 }
 _DEFAULT_CONTEXT_FILE = "AGENTS.md"
@@ -49,8 +57,11 @@ def context_filename(provider_name: str) -> str:
 
 
 def context_filenames() -> set[str]:
-    """All convention filenames we may write — for publish/asset exclusion."""
-    return set(_CONTEXT_FILES.values()) | {_DEFAULT_CONTEXT_FILE}
+    """All CLI convention filenames — for publish/asset exclusion. Includes
+    GEMINI.md: we no longer seed it (agy unified onto AGENTS.md), but agy still
+    auto-reads a GEMINI.md if one is present, so it stays a known convention file
+    we keep out of published bundles."""
+    return set(_CONTEXT_FILES.values()) | {_DEFAULT_CONTEXT_FILE, "GEMINI.md"}
 
 
 def render_session_context(workspace: str) -> str:

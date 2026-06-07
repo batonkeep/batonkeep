@@ -59,6 +59,7 @@ from app.schemas import (
     TaskOut,
     TaskUpdate,
     CaptureRequest,
+    SummaryOut,
     TurnCreate,
     UploadOut,
     VersionDiffOut,
@@ -599,6 +600,39 @@ async def capture_session_terminal(
         return None
     turn = await db.get(SessionTurn, turn_id)
     return SessionTurnOut.model_validate(turn)
+
+
+@app.get("/api/sessions/{session_id}/summary", response_model=SummaryOut, tags=["sessions"])
+async def get_session_summary(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """The session ledger's current auto-maintained summary (D-0017 thread 1)."""
+    session = await db.get(Session, session_id)
+    if session is None or session.owner_id != owner_id:
+        raise HTTPException(status_code=404, detail="Session not found")
+    from app.sessions import workspace as ws_mod
+    return SummaryOut(summary=ws_mod.read_summary(session.workspace_path) or None)
+
+
+@app.post("/api/sessions/{session_id}/summary", response_model=SummaryOut, tags=["sessions"])
+async def refresh_session_summary(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """
+    Refresh the ledger summary on demand (D-0017 thread 1). Forces a summarization
+    even if the auto cadence is off, but still honours the confidential→local rule.
+    Returns the new summary, or null if it was skipped (no eligible model, etc.).
+    """
+    session = await db.get(Session, session_id)
+    if session is None or session.owner_id != owner_id:
+        raise HTTPException(status_code=404, detail="Session not found")
+    from app.sessions.ledger import summarize_session
+    text = await summarize_session(session_id, owner_id=owner_id, force=True)
+    return SummaryOut(summary=text)
 
 
 @app.post("/api/sessions/{session_id}/uploads", response_model=UploadOut,

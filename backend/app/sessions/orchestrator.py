@@ -109,6 +109,15 @@ async def run_turn(
     if switched:
         await _broadcast_event(session_id, turn_id, seq, EventKind.route,
                                message=f"switched to {chosen}; continuing from workspace + SESSION.md")
+        # Refresh the ledger summary so the switched-in provider is richly primed
+        # (D-0017 thread 1; opt-in, sovereignty-aware). Best-effort — never blocks
+        # the turn. Runs before build_turn_context so the new summary is in-prompt.
+        if _settings.ledger_summary_enabled:
+            try:
+                from app.sessions.ledger import summarize_session
+                await summarize_session(session_id, owner_id=owner_id)
+            except Exception as exc:  # noqa: BLE001 — summarization is best-effort
+                logger.warning("[session] pre-switch ledger summary failed: %s", exc)
 
     # Build context from the workspace, not a replayed transcript (D-0008).
     prompt = ws.build_turn_context(workspace, message)

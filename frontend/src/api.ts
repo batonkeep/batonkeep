@@ -116,6 +116,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ instance: instance ?? null }),
     }),
+  // D-0017 thread 1: the session ledger's auto-maintained cross-provider memory.
+  getSummary: (id: string) => req<{ summary: string | null }>(`/sessions/${id}/summary`),
+  refreshSummary: (id: string) =>
+    req<{ summary: string | null }>(`/sessions/${id}/summary`, { method: "POST" }),
   // Asset upload-in (M1.5): drop files into the session; they land as workspace files
   // (assets/… or data/…) the agent can reference by name. multipart, so no JSON header.
   uploadAssets: (id: string, files: File[]) => {

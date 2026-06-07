@@ -161,6 +161,13 @@ class CaptureRequest(BaseModel):
     instance: Optional[str] = None
 
 
+class SummaryOut(BaseModel):
+    """The session ledger's auto-maintained summary (D-0017 thread 1). `summary` is
+    null when none has been produced (e.g. summarization disabled / skipped)."""
+
+    summary: Optional[str] = None
+
+
 class FileChangeOut(BaseModel):
     """One file a turn produced (D-0017 thread 2). status ∈ added/changed/removed;
     additions/deletions are None for binary files."""

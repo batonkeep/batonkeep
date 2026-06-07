@@ -482,6 +482,62 @@ class TestTerminalCapture:
             await orch.capture_terminal_snapshot("nope", owner_id="local")
 
 
+class TestLedgerSummary:
+    """D-0017 thread 1 slice 2: optional LLM summarizer + sovereignty rule."""
+
+    def test_pick_summarizer_confidential_is_local_only(self, monkeypatch):
+        from app.sessions import ledger
+        # A configured remote summarizer must NOT be chosen for a confidential session.
+        monkeypatch.setitem(ledger._settings.__dict__, "ledger_summary_provider", "claude")
+        monkeypatch.setattr(ledger, "local_candidate_ids", lambda: ["ollama"])
+        monkeypatch.setattr(ledger, "get_executor", lambda cid: object())
+        assert ledger._pick_summarizer("claude", confidential=True) == "ollama"
+        # No local available → skip entirely (fail closed, deterministic ledger stands).
+        monkeypatch.setattr(ledger, "local_candidate_ids", lambda: [])
+        assert ledger._pick_summarizer("claude", confidential=True) is None
+
+    @pytest.mark.asyncio
+    async def test_summarize_force_writes_summary(self, session_env, monkeypatch):
+        Maker, ws, orch, _ = session_env
+        await _make_session(Maker, ws)
+        from app.sessions import ledger
+        monkeypatch.setattr(ledger, "AsyncSessionLocal", Maker)
+        monkeypatch.setattr(ledger, "get_executor", lambda name: MockExecutor(name=name, latency_ms=1))
+
+        # Disabled + not forced → no-op.
+        monkeypatch.setitem(ledger._settings.__dict__, "ledger_summary_enabled", False)
+        assert await ledger.summarize_session("s1", force=False) is None
+        assert ws.read_summary((await _ws_root(Maker, "s1"))) == ""
+
+        # Forced → summarizes via the (mock) model and writes the block.
+        text = await ledger.summarize_session("s1", force=True)
+        assert text
+        assert ws.read_summary(await _ws_root(Maker, "s1")) == text
+
+    @pytest.mark.asyncio
+    async def test_summarize_confidential_skips_without_local(self, session_env, monkeypatch):
+        Maker, ws, orch, _ = session_env
+        root = await _make_session(Maker, ws, session_id="sc")
+        from app.models import Session as SessionModel
+        async with Maker() as db:
+            s = await db.get(SessionModel, "sc")
+            s.confidential = True
+            await db.commit()
+        from app.sessions import ledger
+        monkeypatch.setattr(ledger, "AsyncSessionLocal", Maker)
+        monkeypatch.setattr(ledger, "local_candidate_ids", lambda: [])  # no local model
+        monkeypatch.setattr(ledger, "get_executor", lambda name: MockExecutor(name=name))
+        # Confidential + no local → skip; nothing sent to a remote model.
+        assert await ledger.summarize_session("sc", force=True) is None
+        assert ws.read_summary(root) == ""
+
+
+async def _ws_root(Maker, session_id):
+    from app.models import Session as SessionModel
+    async with Maker() as db:
+        return (await db.get(SessionModel, session_id)).workspace_path
+
+
 class TestVersioningHTTP:
     """versions / diff / restore endpoints + owner_id isolation (M1.3 gate)."""
 

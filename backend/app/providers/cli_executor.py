@@ -226,6 +226,51 @@ def parse_line(line: str, accumulated_text: list[str]) -> Optional[ExecEvent]:
     return ExecEvent(kind=EventKind.log, message=line[:200])
 
 
+# ── Plain-text narration stripping (agy) ───────────────────────────────────────
+# Structured-stream CLIs (claude/grok/codex) separate planning/reasoning from the
+# final answer, so the parser can keep only the deliverable. `agy -p` emits plain
+# text with no such structure: the agent's step-by-step narration ("I will list…",
+# "I will run…") is interleaved ahead of the actual report and, without this,
+# every line is buffered into the result. We strip a *leading run* of first-person
+# planning narration when it sits in front of the real Markdown report.
+
+# First-person planning openers agy uses to narrate each tool action.
+_NARRATION_RE = re.compile(
+    r"^\s*(?:I['’]?\s*(?:will|ll|am going to|m going to|need to|should|have|"
+    r"can|now|next)\b|I\s+will\b|Let me\b|Let['’]?s\b|First,?\s+I\b|"
+    r"Next,?\s+I\b|Now\s+I\b|Then\s+I\b)",
+    re.IGNORECASE,
+)
+# A line that begins the structured report proper: heading, table row, fenced
+# block, blockquote, or list item. The deliverable starts at the first of these.
+_REPORT_START_RE = re.compile(r"^\s*(?:#{1,6}\s|\||```|>\s|[-*+]\s|\d+\.\s)")
+
+
+def strip_agent_narration(text: str) -> str:
+    """Drop a leading block of agent planning-narration from plain-text output.
+
+    Conservative: only strips when the text contains a real Markdown report
+    further down AND every non-blank line before it is first-person planning
+    narration. If the preamble holds any other prose, or there is no structured
+    report to fall back to, the text is returned unchanged (better a noisy report
+    than a blanked one — pure-narration runs, where the report was written only to
+    a file, are recovered by the orchestrator's agent-file scan instead).
+    """
+    lines = text.split("\n")
+    # Index of the first line that looks like the start of the real report.
+    start = next(
+        (i for i, ln in enumerate(lines) if _REPORT_START_RE.match(ln)),
+        None,
+    )
+    if start is None or start == 0:
+        return text  # nothing structured to keep, or report already leads
+    # Every non-blank line before the report must be planning narration.
+    preamble = [ln for ln in lines[:start] if ln.strip()]
+    if not preamble or not all(_NARRATION_RE.match(ln) for ln in preamble):
+        return text
+    return "\n".join(lines[start:]).lstrip("\n")
+
+
 # ── CLI command builders ──────────────────────────────────────────────────────
 # Verified against --help 2026-06-01:
 #   claude 2.1.159: -p/--print, --verbose, --output-format stream-json,
@@ -477,7 +522,11 @@ class CLIExecutor(Executor):
             # Covers: agy plain text, grok type:"end" format (text assembled from deltas).
             # NOT used for claude (which emits type:"result" with the full text).
             if not had_terminal_result and accumulated_text:
-                text = "".join(accumulated_text)
+                # Plain-text providers (agy) interleave planning narration ahead of
+                # the report; strip a leading narration block so it doesn't become
+                # the deliverable. No-op when the text already leads with the report
+                # (e.g. grok deltas), so structured-stream output is untouched.
+                text = strip_agent_narration("".join(accumulated_text))
                 usage = Usage()
                 result = ExecResult(text=text, usage=usage, provider=self.name, model=binary)
                 yield ExecEvent(

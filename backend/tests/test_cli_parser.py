@@ -8,7 +8,12 @@ from __future__ import annotations
 
 import json
 import pytest
-from app.providers.cli_executor import parse_line, _is_rate_limit, _parse_reset_at
+from app.providers.cli_executor import (
+    parse_line,
+    _is_rate_limit,
+    _parse_reset_at,
+    strip_agent_narration,
+)
 from app.providers.base import EventKind
 
 
@@ -287,3 +292,59 @@ class TestCodexJSON:
         # usage: input_tokens + cached_input_tokens
         assert ev.data["usage"]["tokens_in"] == 11813 + 2432
         assert ev.data["usage"]["tokens_out"] == 34
+
+
+# ── agy plain-text narration stripping ────────────────────────────────────────
+
+class TestStripAgentNarration:
+    """strip_agent_narration() drops leading agy planning narration but never
+    blanks a report or touches structured-stream output."""
+
+    def test_leading_narration_before_table_is_stripped(self):
+        text = (
+            "I will list the workspace to find the flight data.\n"
+            "I will run a SQLite query to inspect the tasks table.\n"
+            "I will write the comparison table to output.md.\n"
+            "\n"
+            "# Flight Watch\n\n"
+            "| Option | Price |\n|---|---|\n| SYD-LHR | $1200 |\n"
+        )
+        out = strip_agent_narration(text)
+        assert out.startswith("# Flight Watch")
+        assert "I will" not in out
+        assert "SYD-LHR" in out
+
+    def test_narration_before_fenced_block_is_stripped(self):
+        text = (
+            "Let me search for flights.\n"
+            "Now I will write the watchlist.\n"
+            "```json\n{\"top\": []}\n```\n"
+        )
+        out = strip_agent_narration(text)
+        assert out.startswith("```json")
+
+    def test_report_leading_text_is_untouched(self):
+        # grok-style clean output that already starts with the report.
+        text = "# Daily Brief\n\nMarkets were mixed today.\n"
+        assert strip_agent_narration(text) == text
+
+    def test_pure_narration_with_no_report_is_unchanged(self):
+        # Report was written only to a file; don't blank the text — the
+        # orchestrator's agent-file scan recovers the real content.
+        text = (
+            "I will list the directory.\n"
+            "I will write the report to output.md.\n"
+        )
+        assert strip_agent_narration(text) == text
+
+    def test_non_narration_preamble_is_preserved(self):
+        # A real prose intro before the heading must NOT be stripped.
+        text = (
+            "Here is the summary you asked for.\n\n"
+            "# Summary\n\nAll good.\n"
+        )
+        assert strip_agent_narration(text) == text
+
+    def test_normal_prose_report_unchanged(self):
+        text = "The answer is 42. No markdown structure here at all."
+        assert strip_agent_narration(text) == text

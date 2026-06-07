@@ -154,6 +154,40 @@ class TestStripJsonBlock:
         assert _strip_json_block("# Title\n\nbody") == "# Title\n\nbody"
 
 
+# ── Agent-written report recovery (_find_best_agent_md) ───────────────────────
+
+class TestFindBestAgentMd:
+    """The agent's per-run scratch holds only agent-authored .md (our canonical
+    output.md lives in the separate outputs dir post-P-0022), so output.md must be
+    recoverable — it's the filename agents most often write to."""
+
+    def test_recovers_agent_output_md(self, tmp_path):
+        # The regression: agy file-wrote its report to output.md and only narrated
+        # to stdout. output.md must NOT be excluded from recovery.
+        from app.orchestrator import _find_best_agent_md
+        report = "# Flight Watch\n\n| Option | Price |\n|---|---|\n| SYD-LHR | $1200 |\n"
+        (tmp_path / "output.md").write_text(report, encoding="utf-8")
+        assert _find_best_agent_md(str(tmp_path)) == report
+
+    def test_picks_largest_when_multiple(self, tmp_path):
+        from app.orchestrator import _find_best_agent_md
+        (tmp_path / "notes.md").write_text("short", encoding="utf-8")
+        big = "# Report\n" + ("data " * 200)
+        (tmp_path / "output.md").write_text(big, encoding="utf-8")
+        assert _find_best_agent_md(str(tmp_path)) == big
+
+    def test_none_when_no_md(self, tmp_path):
+        from app.orchestrator import _find_best_agent_md
+        (tmp_path / "output.json").write_text("{}", encoding="utf-8")
+        assert _find_best_agent_md(str(tmp_path)) is None
+
+    def test_exclude_still_honoured_when_requested(self, tmp_path):
+        # Back-compat: callers sharing a dir with our own writes can still exclude.
+        from app.orchestrator import _find_best_agent_md
+        (tmp_path / "output.md").write_text("ours", encoding="utf-8")
+        assert _find_best_agent_md(str(tmp_path), exclude="output.md") is None
+
+
 # ── Router + failover integration (no DB) ────────────────────────────────────
 
 class TestFailoverLogic:

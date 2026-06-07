@@ -316,10 +316,12 @@ async def _do_execute(run_id: int, task: Task) -> None:
         json_block: Optional[str] = None
 
         # Agent-written files: CLI agents (grok, agy) sometimes use file_write to
-        # save the actual report and only print a short summary in their final text.
-        # Scan the workdir for any .md files the agent wrote; if the largest is
-        # substantially bigger than the CLI's final text, use it as the primary content.
-        agent_md = _find_best_agent_md(workdir, exclude="output.md")
+        # save the actual report and only print a short summary (or, for agy, just
+        # planning narration) in their final text. The workdir is the agent's own
+        # per-run scratch (our canonical output.md lives in outputs_dir), so scan
+        # it for the largest agent-written .md — including output.md, the filename
+        # agents most often pick — and prefer it when it dwarfs the CLI final text.
+        agent_md = _find_best_agent_md(workdir)
         if agent_md and len(agent_md) > max(len(full_text) * 2, 500):
             logger.info("[orchestrator] using agent-written .md (%d bytes) over CLI final text (%d bytes)",
                         len(agent_md), len(full_text))
@@ -434,20 +436,28 @@ def _extract_json_block(text: str) -> Optional[str]:
     return matches[-1].strip() if matches else None
 
 
-def _find_best_agent_md(workdir: str, exclude: str = "output.md") -> Optional[str]:
+def _find_best_agent_md(workdir: str, exclude: Optional[str] = None) -> Optional[str]:
     """
-    Scan workdir for .md files written by the agent (excluding our own output.md).
-    Returns the content of the largest file, or None if none found.
+    Scan workdir for .md files written by the agent. Returns the content of the
+    largest one, or None if none found.
 
-    CLI agents like grok/agy often use file_write to persist the actual report
-    and only print a short summary in their final text. This lets us recover the
-    real content without changing the agent's prompting.
+    CLI agents like grok/agy often use file_write to persist the actual report and
+    only print a short summary (or, for agy, just planning narration) in their
+    final text. This recovers the real content without changing the agent's prompt.
+
+    Post-P-0022, `workdir` is the agent's own per-run `current/` scratch and our
+    canonical output.md is written to the separate outputs dir — so every .md here
+    is agent-authored, *including* `output.md`, which is the most natural filename
+    an agent picks ("…write the report to output.md"). It must therefore NOT be
+    excluded: excluding it discarded exactly the report we wanted and let the
+    plain-text narration become the deliverable. `exclude` is kept optional only
+    for callers that still share a dir with our own writes.
     """
     import glob
     pattern = os.path.join(workdir, "*.md")
     candidates = [
         p for p in glob.glob(pattern)
-        if os.path.basename(p) != exclude
+        if exclude is None or os.path.basename(p) != exclude
     ]
     if not candidates:
         return None

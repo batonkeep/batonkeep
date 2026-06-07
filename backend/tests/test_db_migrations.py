@@ -1,99 +1,124 @@
 """
-tests/test_db_migrations.py — additive SQLite migrations on startup.
+tests/test_db_migrations.py — schema is managed by alembic (D-0021).
 
-Regression: M1.3 added session_turns.commit_sha/diffstat. On a persisted volume
-(e.g. after a Docker rebuild) create_all() leaves the existing table untouched, so
-queries over SessionTurn failed with "no such column" and the chat history
-vanished while the git-backed version history still worked. init_db() must
-backfill missing additive columns on an existing SQLite DB.
+`init_db()` brings the DB to alembic head. This replaced the old SQLite-only
+additive-column backfill. These tests cover the three startup states init_db must
+handle (fresh / already-managed / legacy-pre-alembic) plus a drift guard that fails
+if the models diverge from the latest migration (the regression the old backfill
+existed to prevent — a model column with no schema change — now caught at CI).
 """
 from __future__ import annotations
 
 import pytest
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy import create_engine, inspect, text
+
+
+def _use_db(monkeypatch, url_path: str) -> None:
+    """Point app settings at a tmp SQLite file and clear the cached Settings."""
+    from app.config import get_settings
+
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{url_path}")
+    get_settings.cache_clear()
+
+
+def _sync_engine(url_path: str):
+    return create_engine(f"sqlite:///{url_path}")
 
 
 @pytest.mark.asyncio
-async def test_init_db_backfills_missing_columns(tmp_path, monkeypatch):
+async def test_fresh_db_upgrade_creates_full_schema(tmp_path, monkeypatch):
+    """A fresh DB is brought to head — every table + every column the old backfill added."""
     import app.db as db
 
-    url = f"sqlite+aiosqlite:///{tmp_path}/stale.db"
-    engine = create_async_engine(url)
-
-    # Simulate a pre-M1.3 schema: session_turns WITHOUT commit_sha / diffstat.
-    async with engine.begin() as conn:
-        await conn.exec_driver_sql(
-            "CREATE TABLE session_turns ("
-            "id INTEGER PRIMARY KEY, session_id VARCHAR, owner_id VARCHAR, "
-            "seq INTEGER, provider VARCHAR, prompt TEXT, response TEXT, "
-            "status VARCHAR, error TEXT, created_at DATETIME, finished_at DATETIME)"
-        )
-
-    # Point init_db at this stale engine and run the startup path.
-    monkeypatch.setattr(db, "engine", engine)
+    path = f"{tmp_path}/fresh.db"
+    _use_db(monkeypatch, path)
     await db.init_db()
 
-    async with engine.begin() as conn:
-        cols = {
-            row[1]
-            for row in (await conn.exec_driver_sql("PRAGMA table_info(session_turns)")).fetchall()
-        }
-    assert "commit_sha" in cols and "diffstat" in cols
-
-    # Idempotent: a second run doesn't error or duplicate columns.
-    await db.init_db()
-    await engine.dispose()
+    eng = _sync_engine(path)
+    insp = inspect(eng)
+    tables = set(insp.get_table_names())
+    # All app tables + the alembic bookkeeping table.
+    assert {"owners", "tasks", "runs", "run_events", "sessions",
+            "session_turns", "artifacts", "credentials", "alembic_version"} <= tables
+    # The columns the legacy backfill used to add must be present from the baseline.
+    turn_cols = {c["name"] for c in insp.get_columns("session_turns")}
+    assert {"commit_sha", "diffstat", "changed_files"} <= turn_cols
+    cred_cols = {c["name"] for c in insp.get_columns("credentials")}
+    assert {"label", "key_hint", "last_used_at"} <= cred_cols
+    sess_cols = {c["name"] for c in insp.get_columns("sessions")}
+    assert {"cf_project", "confidential"} <= sess_cols
+    eng.dispose()
 
 
 @pytest.mark.asyncio
-async def test_init_db_backfills_credentials_label(tmp_path, monkeypatch):
+async def test_idempotent_second_run_is_noop(tmp_path, monkeypatch):
+    import app.db as db
+
+    path = f"{tmp_path}/idem.db"
+    _use_db(monkeypatch, path)
+    await db.init_db()
+    await db.init_db()  # must not error or duplicate anything
+
+    eng = _sync_engine(path)
+    with eng.connect() as conn:
+        version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
+    assert version  # stamped at a real revision
+    eng.dispose()
+
+
+@pytest.mark.asyncio
+async def test_legacy_db_is_stamped_not_recreated(tmp_path, monkeypatch):
+    """A pre-alembic DB (tables, no alembic_version) is adopted via `stamp`, not re-created.
+
+    Re-creating would raise "table already exists"; stamping must preserve existing rows.
     """
-    Regression: credentials.label was added to the model after early DBs existed,
-    but wasn't in the backfill map — so credential reads (e.g. the Cloudflare
-    connector) hit "no such column: credentials.label" on a persisted volume.
-    """
     import app.db as db
-
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/stale_creds.db")
-    async with engine.begin() as conn:
-        await conn.exec_driver_sql(
-            "CREATE TABLE credentials ("
-            "id INTEGER PRIMARY KEY, owner_id VARCHAR, provider VARCHAR, "
-            "ciphertext TEXT, created_at DATETIME)"  # pre-label schema
-        )
-
-    monkeypatch.setattr(db, "engine", engine)
-    await db.init_db()
-
-    async with engine.begin() as conn:
-        cols = {
-            row[1]
-            for row in (await conn.exec_driver_sql("PRAGMA table_info(credentials)")).fetchall()
-        }
-    assert "label" in cols
-    # P-0009 #3 secrets surface columns must backfill on the same stale schema.
-    assert "key_hint" in cols
-    assert "last_used_at" in cols
-    await engine.dispose()
-
-
-@pytest.mark.asyncio
-async def test_backfill_is_noop_on_fresh_db(tmp_path, monkeypatch):
-    """A fresh DB gets columns from create_all; backfill finds nothing to add."""
-    import app.db as db
+    import app.models  # noqa: F401 — register metadata
     from app.db import Base
-    # Register all models on the metadata.
+
+    path = f"{tmp_path}/legacy.db"
+    # Build a legacy schema with create_all (the old world) + a row, no alembic_version.
+    eng = _sync_engine(path)
+    Base.metadata.create_all(eng)
+    with eng.begin() as conn:
+        conn.execute(text("INSERT INTO owners (id, label) VALUES ('local', 'Legacy')"))
+    assert "alembic_version" not in set(inspect(eng).get_table_names())
+
+    _use_db(monkeypatch, path)
+    await db.init_db()  # should stamp, not re-create
+
+    insp = inspect(eng)
+    assert "alembic_version" in set(insp.get_table_names())
+    with eng.connect() as conn:
+        # existing data survived (stamp doesn't touch app tables)
+        assert conn.execute(text("SELECT label FROM owners WHERE id='local'")).scalar() == "Legacy"
+    eng.dispose()
+
+
+def test_models_match_head_migration_no_drift(tmp_path, monkeypatch):
+    """Drift guard: the models must equal the latest migration.
+
+    If someone adds/changes a model column without a new migration, alembic's
+    compare_metadata returns diffs and this fails — the modern replacement for the
+    old hand-maintained _ADDITIVE_COLUMNS map.
+    """
+    import app.db as db
     import app.models  # noqa: F401
+    from alembic import command
+    from alembic.autogenerate import compare_metadata
+    from alembic.runtime.migration import MigrationContext
+    from app.db import Base
 
-    url = f"sqlite+aiosqlite:///{tmp_path}/fresh.db"
-    engine = create_async_engine(url)
-    monkeypatch.setattr(db, "engine", engine)
-    await db.init_db()
+    path = f"{tmp_path}/drift.db"
+    _use_db(monkeypatch, path)
+    # Upgrade a fresh DB to head via the real migration scripts.
+    command.upgrade(db._alembic_config(), "head")
 
-    async with engine.begin() as conn:
-        cols = {
-            row[1]
-            for row in (await conn.exec_driver_sql("PRAGMA table_info(session_turns)")).fetchall()
-        }
-    assert {"commit_sha", "diffstat"} <= cols
-    await engine.dispose()
+    eng = _sync_engine(path)
+    with eng.connect() as conn:
+        ctx = MigrationContext.configure(
+            conn, opts={"compare_type": True, "render_as_batch": True}
+        )
+        diffs = compare_metadata(ctx, Base.metadata)
+    eng.dispose()
+    assert diffs == [], f"models diverge from head migration — generate a new revision: {diffs}"

@@ -8,7 +8,7 @@ import { marked } from "marked";
 import hljs from "highlight.js/lib/common";
 import "highlight.js/styles/github-dark.css";
 import { Activity, Archive, Check, ChevronLeft, ChevronRight, Cloud, Copy, Download, FileCode, Globe, History, Link2, Loader2, Lock, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, Shield, SquareTerminal, X } from "lucide-react";
-import type { CloudflareStatus, ProviderHealth, Publish, Session, SessionTemplate, SessionTurn, Version } from "../types";
+import type { CloudflareStatus, FileChange, ProviderHealth, Publish, Session, SessionTemplate, SessionTurn, Version } from "../types";
 import { api } from "../api";
 import { useSessionEvents, type SessionEvent } from "../useLiveFeed";
 import { fmtTime } from "../format";
@@ -73,6 +73,57 @@ function GeneratingIndicator({ latest }: { latest?: string }) {
       <Loader2 size={14} className="animate-spin" />
       <span>Generating…</span>
       {latest && <span className="truncate font-mono text-[11px] text-muted">{latest}</span>}
+    </div>
+  );
+}
+
+// D-0017 thread 2: the turn *result* is the workspace files it produced — the
+// "capture the artifacts" reframe. Renders the changed files as the headline,
+// each clickable to open in the viewer; agent prose is demoted to a caption.
+const STATUS_DOT: Record<string, string> = {
+  added: "text-ok",
+  changed: "text-brand",
+  removed: "text-bad",
+};
+
+function ArtifactList({
+  files,
+  onOpen,
+}: {
+  files: FileChange[];
+  onOpen: (path: string) => void;
+}) {
+  if (files.length === 0) return null;
+  return (
+    <div className="rounded-lg border border-edge bg-base/60 px-2 py-1.5">
+      <div className="px-1 pb-1 text-[11px] font-medium text-muted">
+        {files.length} {files.length === 1 ? "file" : "files"} ·{" "}
+        <span className="text-muted/80">result</span>
+      </div>
+      <ul className="space-y-0.5">
+        {files.map((f) => (
+          <li key={f.path}>
+            <button
+              onClick={() => onOpen(f.path)}
+              className="group flex w-full items-center gap-2 rounded px-1 py-0.5 text-left hover:bg-edge/40"
+              title={`Open ${f.path}`}
+            >
+              <FileCode size={13} className={`shrink-0 ${STATUS_DOT[f.status] || "text-muted"}`} />
+              <span className="flex-1 truncate font-mono text-xs text-ink group-hover:underline">
+                {f.path}
+              </span>
+              <span className="shrink-0 font-mono text-[11px]">
+                {f.additions != null && <span className="text-ok">+{f.additions}</span>}
+                {f.additions != null && f.deletions != null && " "}
+                {f.deletions != null && <span className="text-bad">−{f.deletions}</span>}
+                {f.additions == null && f.deletions == null && (
+                  <span className="text-muted">bin</span>
+                )}
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -932,9 +983,18 @@ export default function SessionView({
                       </button>
                     )}
                   </div>
+                  {/* The result is the artifacts the turn produced (D-0017 thread 2);
+                      the agent's prose is demoted to a caption beneath them. */}
+                  {t.changed_files && t.changed_files.length > 0 && (
+                    <ArtifactList files={t.changed_files} onOpen={viewFile} />
+                  )}
                   {t.response && (
                     <div
-                      className="markdown px-1 text-sm text-ink/80"
+                      className={`markdown px-1 text-sm ${
+                        t.changed_files && t.changed_files.length > 0
+                          ? "text-muted"
+                          : "text-ink/80"
+                      }`}
                       onClick={onChatClick}
                       dangerouslySetInnerHTML={{ __html: renderMarkdown(t.response) }}
                     />

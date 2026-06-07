@@ -215,6 +215,15 @@ export interface SessionInput {
   confidential?: boolean;
 }
 
+// One file a turn produced (D-0017 thread 2). status ∈ added/changed/removed;
+// additions/deletions are null for binary files.
+export interface FileChange {
+  path: string;
+  status: string;
+  additions: number | null;
+  deletions: number | null;
+}
+
 export interface SessionTurn {
   id: number;
   session_id: string;
@@ -227,6 +236,9 @@ export interface SessionTurn {
   // M1.3 versioning: the workspace commit this turn produced (if any) + summary.
   commit_sha: string | null;
   diffstat: string | null;
+  // D-0017 thread 2: the per-file artifacts this turn produced (the headline
+  // result surfaced to the user, above any scraped agent text).
+  changed_files: FileChange[] | null;
   created_at: string;
   finished_at: string | null;
 }
@@ -244,6 +256,7 @@ export interface VersionDiff {
   commit: string;
   diffstat: string;
   diff: string;
+  files: FileChange[];
 }
 
 // Publish/share state of a session's build (M1.4).

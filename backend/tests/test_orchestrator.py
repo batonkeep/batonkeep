@@ -284,6 +284,7 @@ class TestOrchestratorSmoke:
 
         outputs = str(base_path / "outputs")
         orch_mod._settings.__dict__["outputs_dir"] = outputs  # bypass frozen pydantic
+        orch_mod._settings.__dict__["work_dir"] = str(base_path / "work")  # P-0022 task workspaces
 
         try:
             from app.models import Task
@@ -335,6 +336,8 @@ class TestOrchestratorSmoke:
             orch_mod.AsyncSessionLocal = orig_session_local
             if "outputs_dir" in orch_mod._settings.__dict__:
                 del orch_mod._settings.__dict__["outputs_dir"]
+            if "work_dir" in orch_mod._settings.__dict__:
+                del orch_mod._settings.__dict__["work_dir"]
 
     @pytest.mark.asyncio
     async def test_scheduled_run_filters_no_headless_candidate(self, fresh_db, tmp_path, monkeypatch):
@@ -351,6 +354,7 @@ class TestOrchestratorSmoke:
         # would remove the field entirely and break later tests).
         monkeypatch.setattr(orch_mod, "AsyncSessionLocal", Session)
         monkeypatch.setitem(orch_mod._settings.__dict__, "outputs_dir", str(base_path / "outputs"))
+        monkeypatch.setitem(orch_mod._settings.__dict__, "work_dir", str(base_path / "work"))
         monkeypatch.setitem(orch_mod._settings.__dict__, "cron_allow_no_headless_providers", False)
         monkeypatch.setitem(orch_mod._settings.__dict__, "deployment_mode", DeploymentMode.personal)
         # No real CLI lacks headless anymore, so simulate one to test the filter.

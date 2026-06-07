@@ -15,10 +15,31 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 ENV UV_SYSTEM_PYTHON=1 \
     UV_NO_CACHE=1
 
-# ── Non-root agent user ────────────────────────────────────────────────────────
-# OAuth state for plan-CLI logins persists on the agent_home named volume.
-RUN useradd -m -s /bin/bash agent
-ENV HOME=/home/agent
+# ── Privilege separation: batond (control plane) vs sandbox (agent CLIs) ────────
+# P-0022 / D-0020. The backend runs as `batond`; agent CLIs are launched as the
+# low-privilege `sandbox` user via the setuid helper below, so kernel DAC fences
+# the agent off from /app and control-plane /data (it cannot read what it does
+# not own). `sandbox` is created FIRST so it inherits uid 1000 — the uid the
+# former single `agent` user held — keeping the existing agent_home OAuth volume
+# and per-instance CLI auth dirs valid without a chown. Its home stays
+# /home/agent (the agent_home mount path) for the same reason.
+# A shared `agents` group lets batond (git init/commit/restore) and sandbox
+# (file edits) co-write session/work trees; setgid dirs + umask 002 preserve it.
+RUN groupadd agents \
+ && useradd -u 1000 -m -d /home/agent -s /bin/bash -G agents sandbox \
+ && useradd -m -d /home/batond -s /bin/bash -G agents batond
+ENV HOME=/home/batond
+
+# ── setuid privilege-drop helper (the single privileged surface) ───────────────
+# Built here; installed 4750 root:batond so ONLY the backend (batond group) may
+# exec it. Drops to `sandbox` and execs the agent CLI; also reaps web-TTY trees.
+COPY sandbox-spawn.c /tmp/sandbox-spawn.c
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
+ && gcc -O2 -Wall -Wextra -o /usr/local/bin/sandbox-spawn /tmp/sandbox-spawn.c \
+ && chown root:batond /usr/local/bin/sandbox-spawn \
+ && chmod 4750 /usr/local/bin/sandbox-spawn \
+ && rm -f /tmp/sandbox-spawn.c \
+ && apt-get purge -y gcc libc6-dev && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -29,5 +50,11 @@ RUN uv sync --frozen --no-dev
 ENV PATH="/app/.venv/bin:$PATH" \
     VIRTUAL_ENV="/app/.venv"
 
-# ── Data directory + ownership ─────────────────────────────────────────────────
-RUN mkdir -p /data && chown -R agent:agent /app /data
+# ── Data directories + ownership ───────────────────────────────────────────────
+# Control plane (/app, /data root, the DB) is batond-owned and unreadable to
+# sandbox. /work (task workspaces) and /data/sessions (build sessions) are
+# agents-group, setgid, group-writable — the shared lane both users co-write.
+RUN mkdir -p /data /data/sessions /work \
+ && chown -R batond:batond /app /data \
+ && chown batond:agents /data/sessions /work \
+ && chmod 2770 /data/sessions /work

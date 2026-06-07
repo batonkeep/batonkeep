@@ -17,7 +17,7 @@ FROM ${REGISTRY_PREFIX}batonkeep-backend-base:${TAG}
 # doesn't abort the build. Manual `make auth` activates subscriptions.
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl git gnupg \
+    curl git gnupg gosu \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
@@ -38,10 +38,14 @@ RUN (export HOME=/usr/local; curl -fsSL https://chatgpt.com/codex/install.sh | s
     || true
 
 # ── Application code ───────────────────────────────────────────────────────────
-COPY --chown=agent:agent app/ app/
-COPY --chown=agent:agent scripts/ scripts/
-RUN chmod +x scripts/*.sh
+# Owned by batond (control plane), unreadable to the sandbox user — P-0022/D-0020.
+COPY --chown=batond:batond app/ app/
+COPY --chown=batond:batond scripts/ scripts/
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x scripts/*.sh /usr/local/bin/entrypoint.sh
 
-USER agent
-
+# Start as root so the entrypoint can run the one-shot volume-ownership migration
+# (P-0022/D-0020), then it execs the backend as the non-root `batond` via gosu.
+# Only this brief init is privileged; the network-facing process never is.
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

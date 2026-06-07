@@ -35,6 +35,7 @@ from app.quota import quota_tracker
 from app.router import CandidatePlan, DeferredResult, resolve
 from app.schemas import RunOut, RunEventOut
 from app.ws import ws_manager
+from app import task_workspace
 
 logger = logging.getLogger(__name__)
 _settings = get_settings()
@@ -149,6 +150,14 @@ async def _do_execute(run_id: int, task: Task) -> None:
 
         # ── 3. Build prompt ──────────────────────────────────────────────────
         prompt = _render_prompt(task)
+        # Inject the previous run's output so monitoring/diff tasks can reason
+        # about what changed, without the agent browsing the filesystem (P-0022).
+        prior = task_workspace.latest_history(task.id)
+        if prior:
+            prompt = (
+                f"{prompt}\n\n---\nFor reference, the previous run of this task produced "
+                f"the following output. Note what has changed since then:\n\n{prior}\n---"
+            )
 
         # ── 4. Failover loop ─────────────────────────────────────────────────
         attempts: list[dict] = []
@@ -157,8 +166,13 @@ async def _do_execute(run_id: int, task: Task) -> None:
         subagents = 0
         tool_calls = 0
 
-        workdir = os.path.join(_settings.outputs_dir, f"run_{run_id}")
-        os.makedirs(workdir, exist_ok=True)
+        # Per-task isolated workspace: the agent (running as `sandbox`) cwd's into
+        # a fresh current/ scratch and cannot reach /app or control-plane /data
+        # (P-0022/D-0020). Canonical outputs are copied to /data/outputs/run_<id>
+        # and promoted to read-only history/ after success.
+        workdir = task_workspace.prepare_current(task.id)
+        outputs_dir = os.path.join(_settings.outputs_dir, f"run_{run_id}")
+        os.makedirs(outputs_dir, exist_ok=True)
 
         for provider_name in candidates:
             executor = get_executor(provider_name)
@@ -311,20 +325,26 @@ async def _do_execute(run_id: int, task: Task) -> None:
                         len(agent_md), len(full_text))
             full_text = agent_md
 
+        # Canonical outputs land in the control-plane outputs dir (batond-owned),
+        # not the agent's sandbox workspace, then get promoted to read-only history.
         if task.want_json:
             json_block = _extract_json_block(full_text)
             if json_block:
-                json_path = os.path.join(workdir, "output.json")
+                json_path = os.path.join(outputs_dir, "output.json")
                 with open(json_path, "w", encoding="utf-8") as f:
                     f.write(json_block)
                 run.json_path = json_path
                 full_text = _strip_json_block(full_text)
 
         if task.want_markdown:
-            md_path = os.path.join(workdir, "output.md")
+            md_path = os.path.join(outputs_dir, "output.md")
             with open(md_path, "w", encoding="utf-8") as f:
                 f.write(full_text)
             run.markdown_path = md_path
+
+        # Promote this run's output into the task's read-only history so the next
+        # run can read it (injected into its prompt) but cannot mutate it (P-0022).
+        task_workspace.promote(task.id, run_id, outputs_dir)
 
 
         # ── 6. Finalise ───────────────────────────────────────────────────────

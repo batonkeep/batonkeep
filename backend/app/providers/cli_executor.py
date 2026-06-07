@@ -31,6 +31,7 @@ from app.providers.base import (
 )
 from app.providers.registry import ProviderDef, ProviderInstance
 from app.config import get_settings
+from app import sandbox
 
 logger = logging.getLogger(__name__)
 _settings = get_settings()
@@ -353,6 +354,10 @@ class CLIExecutor(Executor):
 
         cmd = _build_cmd(binary, prompt, tools_enabled=tools_enabled, max_rounds=max_rounds,
                          budget_usd=budget_usd, model=self._model)
+        # Privilege drop: launch the CLI as the low-priv `sandbox` user via the
+        # setuid helper so it cannot read /app or control-plane /data (P-0022/D-0020).
+        # No-op outside the container, where the helper is absent.
+        cmd = sandbox.wrap(cmd)
         timeout = _settings.run_timeout_seconds
 
         yield ExecEvent(kind=EventKind.log, message=f"[{self.name}] spawning: {' '.join(cmd[:4])}…")

@@ -26,9 +26,12 @@ services:
     image: ${REGISTRY_PREFIX:-}batonkeep-backend:${TAG:-latest}
     env_file: .env
     environment:
-      - HOME=/home/agent
+      # Backend runs as batond (P-0022/D-0020); agent CLIs get sandbox's HOME
+      # (/home/agent) via the setuid spawner, not from this process env.
+      - HOME=/home/batond
     volumes:
       - appdata:/data
+      # sandbox's home — plan-CLI OAuth; mount path unchanged across the split.
       - agent_home:/home/agent
     ports:
       - "8000:8000"

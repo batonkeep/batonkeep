@@ -120,6 +120,17 @@ class Settings(BaseSettings):
     # ── Outputs ───────────────────────────────────────────────────────────────
     outputs_dir: str = "/data/outputs"
 
+    # ── Agent filesystem isolation (P-0022 / D-0020) ────────────────────────────
+    # Privilege separation: the backend runs as `batond`; agent CLIs are launched
+    # as the low-privilege `sandbox` user through the setuid spawner, so kernel DAC
+    # fences them off from /app and control-plane /data. When the spawner is
+    # absent (local dev, tests) the executors fall back to a direct spawn.
+    sandbox_spawn_path: str = "/usr/local/bin/sandbox-spawn"
+    # Per-task isolated workspaces: /work/task_<id>/{current,history}. The agent
+    # cwd's into current/ (writable); history/ holds prior runs' outputs read-only,
+    # promoted by the orchestrator (never the agent) so it can't be poisoned.
+    work_dir: str = "/work"
+
     # ── Build sessions (M1) ─────────────────────────────────────────────────────
     # Base dir for sandboxed, git-init'd per-session workspaces (one subdir each).
     sessions_dir: str = "/data/sessions"

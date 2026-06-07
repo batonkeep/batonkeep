@@ -16,6 +16,14 @@ build:
 
 # ── Developer shortcuts ───────────────────────────────────────────────────────
 
+# Auth/login must run as the SAME identity the agent CLIs run as at runtime —
+# the low-privilege `sandbox` user with HOME=/home/agent (P-0022/D-0020). A plain
+# `docker compose exec` runs as root with HOME=/home/batond, so logins would write
+# root-owned token files (or to the wrong HOME entirely), leaving the sandbox agent
+# unable to read its own auth. Pin both here so credentials land where the agent
+# reads them and stay sandbox-owned.
+EXEC_AS_AGENT = docker compose exec -u sandbox -e HOME=/home/agent backend
+
 ## Guided plan-CLI login walkthrough inside the backend container. Logins persist
 ## on the agent_home volume; auth-once, run forever. Falls back to manual-install
 ## hints for any CLI not present in the image.
@@ -24,11 +32,12 @@ build:
 ##   make auth p="grok agy"  # a subset
 ##   make auth p=claude:work # an extra instance (declared in PROVIDER_INSTANCES_CONFIG)
 auth:
-	docker compose exec backend bash /app/scripts/auth.sh $(p)
+	$(EXEC_AS_AGENT) bash /app/scripts/auth.sh $(p)
 
-## Drop into a raw shell in the backend container (manual CLI install/login).
+## Drop into a raw shell AS THE SANDBOX AGENT (manual CLI login / inspect auth).
+## For root tasks like installing a CLI globally, use `make shell` instead.
 auth-shell:
-	docker compose exec backend bash
+	$(EXEC_AS_AGENT) bash
 
 ## Re-insert seed tasks (safe to run multiple times — inserts only if table empty).
 seed:

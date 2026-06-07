@@ -31,6 +31,14 @@ _settings = get_settings()
 
 BRIEF_FILENAME = "SESSION.md"
 
+# Markers for the auto-maintained summary block (D-0017 thread 1). Everything
+# between them is owned by the summarizer (deterministic placeholder until an LLM
+# summary runs); content outside is left untouched.
+SUMMARY_BEGIN = "<!-- BATONKEEP:SUMMARY -->"
+SUMMARY_END = "<!-- /BATONKEEP:SUMMARY -->"
+ACTIVITY_HEADER = "## Activity"
+_SUMMARY_PLACEHOLDER = "_(auto-maintained summary appears here once summarization runs)_"
+
 _BRIEF_TEMPLATE = """\
 # Session brief
 
@@ -41,7 +49,12 @@ _BRIEF_TEMPLATE = """\
 - **Title:** {title}
 - **Goal:** {goal}
 {guidance}
-## Decisions / progress
+## Summary
+{summary_begin}
+{summary_placeholder}
+{summary_end}
+
+## Activity
 _(none yet)_
 """
 
@@ -108,6 +121,8 @@ async def create_workspace(
         with open(brief_path, "w", encoding="utf-8") as f:
             f.write(_BRIEF_TEMPLATE.format(
                 title=title, goal=goal or "_(not yet stated)_", guidance=guidance_block,
+                summary_begin=SUMMARY_BEGIN, summary_end=SUMMARY_END,
+                summary_placeholder=_SUMMARY_PLACEHOLDER,
             ))
 
     if not os.path.isdir(os.path.join(root, ".git")):
@@ -130,26 +145,102 @@ def read_brief(workspace: str) -> str:
         return ""
 
 
-def append_progress(workspace: str, note: str) -> None:
+def _format_files(files: Optional[list[dict]]) -> str:
+    """Compact one-line render of a turn's changed files (D-0017 thread 2 artifacts),
+    grounded in git — the anti-drift anchor for the ledger."""
+    if not files:
+        return "(no file changes)"
+    parts = []
+    for f in files[:8]:
+        adds, dels = f.get("additions"), f.get("deletions")
+        delta = ""
+        if adds is not None or dels is not None:
+            bits = []
+            if adds:
+                bits.append(f"+{adds}")
+            if dels:
+                bits.append(f"−{dels}")
+            delta = f" ({' '.join(bits)})" if bits else ""
+        parts.append(f"{f['path']}{delta}")
+    if len(files) > 8:
+        parts.append(f"…+{len(files) - 8} more")
+    return ", ".join(parts)
+
+
+def record_turn(
+    workspace: str,
+    *,
+    seq: int,
+    provider: str,
+    summary: str,
+    files: Optional[list[dict]] = None,
+    lane: str = "chat",
+) -> None:
     """
-    Append a progress note to SESSION.md. In M1.1 the orchestrator maintains the
-    brief on the agent's behalf (agent-prepared/orchestrator-reviewed per D-0008);
-    real agents will write it themselves as the model matures.
+    Append a structured entry to the ledger's Activity log (D-0017 thread 1).
+
+    Each entry records the turn's provider/lane, a one-line summary, and the files
+    it changed (the thread-2 artifacts, grounded in git so the ledger can't drift
+    from what's actually on disk). This replaces the v0 flat note-log; the rich
+    `## Summary` section above it is maintained separately by the summarizer.
+    The orchestrator owns this on the agent's behalf (D-0008).
     """
+    headline = (summary.strip().splitlines() or [""])[0][:140] if summary else ""
+    headline = headline or "_(no text response)_"
+    entry = f"- **turn {seq}** · {provider} · {lane} — {headline} — changed: {_format_files(files)}\n"
+
     path = os.path.join(workspace, BRIEF_FILENAME)
-    line = f"- {note.strip()}\n"
     try:
         existing = read_brief(workspace)
-        # Drop the placeholder once real progress arrives.
-        if "_(none yet)_" in existing:
-            existing = existing.replace("_(none yet)_\n", "").replace("_(none yet)_", "")
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(existing.rstrip() + "\n" + line)
+        if ACTIVITY_HEADER in existing:
+            head, _, tail = existing.partition(ACTIVITY_HEADER)
+            # Drop the "(none yet)" placeholder on the first real entry.
+            tail = tail.replace("_(none yet)_\n", "").replace("_(none yet)_", "")
+            new = f"{head}{ACTIVITY_HEADER}{tail.rstrip()}\n{entry}"
         else:
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(line)
+            # Older ledger without the section (or a hand-edited brief): append one.
+            new = existing.rstrip() + f"\n\n{ACTIVITY_HEADER}\n{entry}"
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(new)
     except OSError as exc:
-        logger.warning("[workspace] could not update brief: %s", exc)
+        logger.warning("[workspace] could not update ledger: %s", exc)
+
+
+def set_summary(workspace: str, text: str) -> None:
+    """
+    Replace the auto-maintained `## Summary` block (D-0017 thread 1). Upserts the
+    managed block between SUMMARY markers, preserving everything else. If the brief
+    predates the markers, inserts a `## Summary` section before `## Activity`
+    (or at the end). Best-effort — never raises.
+    """
+    body = (text.strip() or _SUMMARY_PLACEHOLDER)
+    block = f"{SUMMARY_BEGIN}\n{body}\n{SUMMARY_END}"
+    path = os.path.join(workspace, BRIEF_FILENAME)
+    try:
+        existing = read_brief(workspace)
+        if SUMMARY_BEGIN in existing and SUMMARY_END in existing:
+            pre = existing[: existing.index(SUMMARY_BEGIN)]
+            post = existing[existing.index(SUMMARY_END) + len(SUMMARY_END):]
+            new = pre + block + post
+        elif ACTIVITY_HEADER in existing:
+            head, _, tail = existing.partition(ACTIVITY_HEADER)
+            new = f"{head.rstrip()}\n\n## Summary\n{block}\n\n{ACTIVITY_HEADER}{tail}"
+        else:
+            new = existing.rstrip() + f"\n\n## Summary\n{block}\n"
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(new)
+    except OSError as exc:
+        logger.warning("[workspace] could not update summary: %s", exc)
+
+
+def read_summary(workspace: str) -> str:
+    """The current auto-maintained summary text (without markers), or '' if unset
+    / still the placeholder."""
+    existing = read_brief(workspace)
+    if SUMMARY_BEGIN not in existing or SUMMARY_END not in existing:
+        return ""
+    body = existing[existing.index(SUMMARY_BEGIN) + len(SUMMARY_BEGIN): existing.index(SUMMARY_END)].strip()
+    return "" if body == _SUMMARY_PLACEHOLDER else body
 
 
 def list_files(workspace: str) -> list[str]:

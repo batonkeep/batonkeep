@@ -148,14 +148,15 @@ async def run_turn(
         response_text = rewrite_workspace_file_links(response_text, session_id, workspace)
     version: Optional[dict] = None
     if final_result is not None:
-        ws.append_progress(
-            workspace,
-            f"turn {seq} ({chosen}): {(response_text.splitlines() or [''])[0][:120]}",
-        )
         # Engine owns the commit boundary (D-0008): commit the workspace as a
         # version once the turn's edits have landed. None if nothing changed.
         version = await ws.commit_turn(
             workspace, seq=seq, provider=chosen, summary=response_text
+        )
+        # Structured ledger entry grounded in the turn's artifacts (D-0017 thread 1).
+        ws.record_turn(
+            workspace, seq=seq, provider=chosen, summary=response_text,
+            files=(version["files"] if version else None), lane="chat",
         )
 
     if version is not None:
@@ -250,6 +251,12 @@ async def capture_terminal_snapshot(
         await db.commit()
         await db.refresh(turn)
         turn_id = turn.id
+
+    # Structured ledger entry for the terminal session (D-0017 thread 1).
+    ws.record_turn(
+        workspace, seq=seq, provider=label,
+        summary="terminal session", files=version["files"], lane="terminal",
+    )
 
     await _broadcast_turn(turn_id, session_id, seq, label, "succeeded")
     await _broadcast_event(

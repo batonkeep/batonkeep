@@ -32,6 +32,49 @@ class TestWorkspace:
         assert os.path.exists(os.path.join(root, ws.BRIEF_FILENAME)) # SESSION.md brief
         assert "Landing page" in ws.read_brief(root)
 
+    @pytest.mark.asyncio
+    async def test_record_turn_logs_structured_entry_with_artifacts(self, tmp_path, monkeypatch):
+        """D-0017 thread 1: ledger entries are grounded in the turn's artifacts."""
+        from app.sessions import workspace as ws
+        monkeypatch.setitem(ws._settings.__dict__, "sessions_dir", str(tmp_path))
+        root = await ws.create_workspace("led1", title="T", goal="G")
+
+        ws.record_turn(
+            root, seq=0, provider="claude", summary="built the hero\nand more",
+            files=[{"path": "index.html", "status": "added", "additions": 12, "deletions": 0},
+                   {"path": "style.css", "status": "changed", "additions": 3, "deletions": 1}],
+            lane="chat",
+        )
+        brief = ws.read_brief(root)
+        assert "_(none yet)_" not in brief                      # placeholder dropped
+        assert "**turn 0** · claude · chat" in brief
+        assert "built the hero" in brief and "and more" not in brief  # first line only
+        assert "index.html (+12)" in brief
+        assert "style.css (+3 −1)" in brief
+
+        # A turn with no file changes is honest about it.
+        ws.record_turn(root, seq=1, provider="agy", summary="answered a question", lane="chat", files=None)
+        brief = ws.read_brief(root)
+        assert "**turn 1** · agy · chat" in brief
+        assert "(no file changes)" in brief
+
+    @pytest.mark.asyncio
+    async def test_summary_block_upsert_and_read(self, tmp_path, monkeypatch):
+        from app.sessions import workspace as ws
+        monkeypatch.setitem(ws._settings.__dict__, "sessions_dir", str(tmp_path))
+        root = await ws.create_workspace("led2", title="T", goal="G")
+
+        assert ws.read_summary(root) == ""                      # placeholder → empty
+        ws.set_summary(root, "Goal is a landing page. Hero + pricing done; nav pending.")
+        assert "Hero + pricing done" in ws.read_summary(root)
+        # Idempotent upsert — single managed block, Activity section intact.
+        ws.record_turn(root, seq=0, provider="mock", summary="x", lane="chat")
+        ws.set_summary(root, "Updated: nav added.")
+        brief = ws.read_brief(root)
+        assert brief.count(ws.SUMMARY_BEGIN) == 1
+        assert ws.read_summary(root) == "Updated: nav added."
+        assert "**turn 0** · mock" in brief                     # activity preserved
+
     def test_safe_join_blocks_traversal(self, tmp_path):
         from app.sessions import workspace as ws
         root = str(tmp_path)
@@ -52,7 +95,7 @@ class TestWorkspace:
         from app.sessions import workspace as ws
         monkeypatch.setitem(ws._settings.__dict__, "sessions_dir", str(tmp_path))
         root = await ws.create_workspace("sess2", title="T", goal="G")
-        ws.append_progress(root, "turn 0 (grok): built hero section")
+        ws.record_turn(root, seq=0, provider="grok", summary="built hero section", lane="chat")
 
         ctx = ws.build_turn_context(root, "make the hero bigger")
         assert "built hero section" in ctx     # from SESSION.md brief
@@ -167,7 +210,7 @@ class TestSessionTurns:
         # The new agent continued from the workspace + SESSION.md — the brief
         # carries both turns' progress, and a switch route event was emitted.
         brief = ws.read_brief(root)
-        assert "turn 0 (mock)" in brief and "turn 1 (grok-mock)" in brief
+        assert "**turn 0** · mock" in brief and "**turn 1** · grok-mock" in brief
         assert any(
             b["type"] == "session.event" and b["event"]["kind"] == "route"
             and "switched to grok-mock" in (b["event"]["message"] or "")

@@ -109,6 +109,15 @@ async def run_turn(
     if switched:
         await _broadcast_event(session_id, turn_id, seq, EventKind.route,
                                message=f"switched to {chosen}; continuing from workspace + SESSION.md")
+        # Refresh the ledger summary so the switched-in provider is richly primed
+        # (D-0017 thread 1; opt-in, sovereignty-aware). Best-effort — never blocks
+        # the turn. Runs before build_turn_context so the new summary is in-prompt.
+        if _settings.ledger_summary_enabled:
+            try:
+                from app.sessions.ledger import summarize_session
+                await summarize_session(session_id, owner_id=owner_id)
+            except Exception as exc:  # noqa: BLE001 — summarization is best-effort
+                logger.warning("[session] pre-switch ledger summary failed: %s", exc)
 
     # Build context from the workspace, not a replayed transcript (D-0008).
     prompt = ws.build_turn_context(workspace, message)
@@ -148,14 +157,15 @@ async def run_turn(
         response_text = rewrite_workspace_file_links(response_text, session_id, workspace)
     version: Optional[dict] = None
     if final_result is not None:
-        ws.append_progress(
-            workspace,
-            f"turn {seq} ({chosen}): {(response_text.splitlines() or [''])[0][:120]}",
-        )
         # Engine owns the commit boundary (D-0008): commit the workspace as a
         # version once the turn's edits have landed. None if nothing changed.
         version = await ws.commit_turn(
             workspace, seq=seq, provider=chosen, summary=response_text
+        )
+        # Structured ledger entry grounded in the turn's artifacts (D-0017 thread 1).
+        ws.record_turn(
+            workspace, seq=seq, provider=chosen, summary=response_text,
+            files=(version["files"] if version else None), lane="chat",
         )
 
     if version is not None:
@@ -250,6 +260,12 @@ async def capture_terminal_snapshot(
         await db.commit()
         await db.refresh(turn)
         turn_id = turn.id
+
+    # Structured ledger entry for the terminal session (D-0017 thread 1).
+    ws.record_turn(
+        workspace, seq=seq, provider=label,
+        summary="terminal session", files=version["files"], lane="terminal",
+    )
 
     await _broadcast_turn(turn_id, session_id, seq, label, "succeeded")
     await _broadcast_event(

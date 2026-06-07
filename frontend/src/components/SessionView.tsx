@@ -186,6 +186,8 @@ export default function SessionView({
   const [diffText, setDiffText] = useState<string>("");
   const [restoring, setRestoring] = useState<string | null>(null); // commit being restored
   const [capturing, setCapturing] = useState(false); // terminal-lane artifact capture in flight
+  const [summary, setSummary] = useState<string | null>(null); // ledger cross-provider memory (D-0017 thread 1)
+  const [summarizing, setSummarizing] = useState(false);
   const [publish, setPublish] = useState<Publish | null>(null);
   const [publishing, setPublishing] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -271,6 +273,7 @@ export default function SessionView({
     setSendError(null);
     setHistoryOpen(false);
     setVersions([]);
+    setSummary(null);
     setDiffFor(null);
     setDiffText("");
     setPublish(null);
@@ -558,6 +561,30 @@ export default function SessionView({
       setCapturing(false);
     }
   }, [selectedId, activeInstance, capturing, loadTurns, loadVersions, onSessionsChanged]);
+
+  // Cross-provider memory (D-0017 thread 1): load the ledger summary when History
+  // opens, and let the user refresh it on demand.
+  const loadSummary = useCallback(() => {
+    if (!selectedId) return;
+    api.getSummary(selectedId).then((s) => setSummary(s.summary)).catch(() => { });
+  }, [selectedId]);
+
+  const refreshSummary = useCallback(async () => {
+    if (!selectedId || summarizing) return;
+    setSummarizing(true);
+    try {
+      const s = await api.refreshSummary(selectedId);
+      setSummary(s.summary);
+    } catch (e) {
+      setSendError(e instanceof Error ? e.message : "Could not refresh memory");
+    } finally {
+      setSummarizing(false);
+    }
+  }, [selectedId, summarizing]);
+
+  useEffect(() => {
+    if (historyOpen) loadSummary();
+  }, [historyOpen, loadSummary]);
 
   // Intercept clicks on the agent's rewritten artifact links
   // (/api/sessions/<id>/files/raw/<path>) and open them in the viewer instead of
@@ -946,6 +973,29 @@ export default function SessionView({
               {/* Undo/History — previous versions of the build, newest first. */}
               {historyOpen && (
                 <div className="space-y-1 rounded-lg border border-edge bg-base/60 p-3">
+                  {/* Cross-provider memory (D-0017 thread 1): the auto-maintained
+                      ledger summary that primes a switched-in agent. */}
+                  <div className="mb-2 rounded-md border border-edge/60 bg-panel/40 p-2">
+                    <div className="flex items-center gap-1.5 pb-1 font-mono text-[11px] uppercase tracking-widest text-muted">
+                      <Activity size={12} /> Memory
+                      <button
+                        onClick={() => void refreshSummary()}
+                        disabled={summarizing}
+                        title="Summarize the session so a switched-in agent is primed"
+                        className="ml-auto inline-flex items-center gap-1 rounded border border-edge px-1.5 py-0.5 text-[10px] normal-case tracking-normal text-muted hover:text-ink disabled:opacity-40"
+                      >
+                        {summarizing ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />}
+                        Refresh
+                      </button>
+                    </div>
+                    {summary ? (
+                      <p className="whitespace-pre-wrap text-xs text-ink/80">{summary}</p>
+                    ) : (
+                      <p className="text-xs text-muted">
+                        No summary yet — Refresh to distil the session into portable memory.
+                      </p>
+                    )}
+                  </div>
                   <div className="flex items-center gap-1.5 pb-1 font-mono text-[11px] uppercase tracking-widest text-muted">
                     <History size={12} /> History
                   </div>

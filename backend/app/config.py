@@ -86,6 +86,17 @@ class Settings(BaseSettings):
     autonomous_tools: bool = True
     seed_examples: bool = True
 
+    # ── Ledger summarization (D-0017 thread 1) ────────────────────────────────
+    # Opt-in: when enabled, a cheap model maintains the SESSION.md ## Summary so
+    # provider switches are richly primed (deterministic Activity log is always on).
+    # Confidential sessions never use a remote model — they summarize on a local
+    # model or skip. Cadence: on provider-switch + on-demand.
+    ledger_summary_enabled: bool = False
+    # Optional explicit summarizer instance; empty → fall back to the session's
+    # current provider (or, for confidential sessions, an available local one).
+    ledger_summary_provider: str = ""
+    ledger_summary_max_chars: int = 1200
+
     # ── Security ──────────────────────────────────────────────────────────────
     app_secret: str = ""
 

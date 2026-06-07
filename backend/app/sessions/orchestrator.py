@@ -17,6 +17,7 @@ API (see main.py /versions, /diff, /restore).
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Optional
@@ -164,7 +165,8 @@ async def run_turn(
             message=f"version {version['short']} committed",
             phase="version",
             data={"commit": version["commit"], "short": version["short"],
-                  "diffstat": version["diffstat"], "diff": version["diff"]},
+                  "diffstat": version["diffstat"], "diff": version["diff"],
+                  "files": version.get("files", [])},
         )
 
     async with AsyncSessionLocal() as db:
@@ -180,6 +182,9 @@ async def run_turn(
             if version is not None:
                 turn.commit_sha = version["commit"]
                 turn.diffstat = version["diffstat"]
+                # Persist the per-file artifact list so reloads surface the same
+                # result (D-0017 thread 2), not just the live event stream.
+                turn.changed_files = json.dumps(version.get("files", []))
             await db.commit()
         session = await db.get(Session, session_id)
         if session is not None:

@@ -3,10 +3,11 @@ schemas.py — Pydantic request/response schemas for the REST API (§10).
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 
 # ── Routing policy (§4.3) ────────────────────────────────────────────────────
@@ -153,6 +154,16 @@ class TurnCreate(BaseModel):
     provider: Optional[str] = None
 
 
+class FileChangeOut(BaseModel):
+    """One file a turn produced (D-0017 thread 2). status ∈ added/changed/removed;
+    additions/deletions are None for binary files."""
+
+    path: str
+    status: str
+    additions: Optional[int] = None
+    deletions: Optional[int] = None
+
+
 class SessionTurnOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -167,8 +178,21 @@ class SessionTurnOut(BaseModel):
     # M1.3 versioning: the workspace commit this turn produced (if any) + summary.
     commit_sha: Optional[str] = None
     diffstat: Optional[str] = None
+    # D-0017 thread 2: the per-file artifacts this turn produced (the headline
+    # result). Stored as a JSON string on the model; parsed to a list here.
+    changed_files: Optional[list[FileChangeOut]] = None
     created_at: datetime
     finished_at: Optional[datetime]
+
+    @field_validator("changed_files", mode="before")
+    @classmethod
+    def _parse_changed_files(cls, v):
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except (ValueError, TypeError):
+                return None
+        return v
 
 
 class FileEntryOut(BaseModel):
@@ -189,11 +213,12 @@ class VersionOut(BaseModel):
 
 
 class VersionDiffOut(BaseModel):
-    """The diff a single version introduced (M1.3)."""
+    """The diff a single version introduced (M1.3) + its per-file list (D-0017)."""
 
     commit: str
     diffstat: str
     diff: str
+    files: list["FileChangeOut"] = []
 
 
 class RestoreRequest(BaseModel):

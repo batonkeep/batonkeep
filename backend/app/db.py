@@ -56,6 +56,8 @@ _ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
     "session_turns": {
         "commit_sha": "VARCHAR(40)",
         "diffstat": "TEXT",
+        # D-0017 thread 2: per-file artifact list (JSON) the turn produced.
+        "changed_files": "TEXT",
     },
     "sessions": {
         "cf_project": "VARCHAR(64)",

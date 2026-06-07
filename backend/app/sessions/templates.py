@@ -72,7 +72,9 @@ _TEMPLATES: list[SessionTemplate] = [
     SessionTemplate(
         id="data",
         label="Fetch & analyze data",
-        description="Pull data from an API or the web, analyze it, and produce a result you can re-run.",
+        description=(
+            "Pull data from an API or the web, analyze it, and produce a result you can re-run."
+        ),
         goal="Fetch data (API/web), analyze it, and produce a clear result.",
         guidance=(
             "This is a **data / scripting** session: fetch → analyze → compile, backed by a "
@@ -84,7 +86,8 @@ _TEMPLATES: list[SessionTemplate] = [
             "you need with `uv` at the start of the session, and **re-install if the environment "
             "was reset** (a missing-module error means re-run the install). Record the deps in a "
             "`requirements.txt` so the script stays reproducible.\n"
-            "- Cache fetched data in the workspace (e.g. `cache/`) to avoid re-hitting rate limits.\n"
+            "- Cache fetched data in the workspace (e.g. `cache/`) to avoid "
+            "re-hitting rate limits.\n"
             "- Produce a clear result: tabulated/markdown output in the chat **and** a workspace "
             "file (e.g. `result.md` or `data.csv`) the user can open or download.\n"
             "- Reference any file you create by its workspace path so the user can open it.\n"

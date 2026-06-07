@@ -16,11 +16,10 @@ import base64
 import hashlib
 import logging
 import os
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete
 
 from app.config import get_settings
 from app.models import Credential
@@ -73,7 +72,7 @@ def _key_hint(api_key: str) -> str:
 
 async def store_credential(
     db: AsyncSession, owner_id: str, provider: str, api_key: str,
-    label: Optional[str] = None,
+    label: str | None = None,
 ) -> Credential:
     """Encrypt and upsert a BYO key for owner+provider (provider may be an instance id)."""
     ciphertext = _encrypt(api_key)
@@ -104,7 +103,7 @@ async def store_credential(
     return cred
 
 
-async def get_credential(db: AsyncSession, owner_id: str, provider: str) -> Optional[str]:
+async def get_credential(db: AsyncSession, owner_id: str, provider: str) -> str | None:
     """Return the decrypted API key, or None if not set."""
     result = await db.execute(
         select(Credential).where(
@@ -135,9 +134,9 @@ async def delete_credential(db: AsyncSession, owner_id: str, provider: str) -> b
 
 async def resolve_api_key(
     provider: str,
-    env_key: Optional[str],
-    owner_id: Optional[str] = None,
-) -> Optional[str]:
+    env_key: str | None,
+    owner_id: str | None = None,
+) -> str | None:
     """
     Resolve the API key an executor should use for a provider, in priority order:
       1. A BYO key stored via the UI for this owner+provider (explicit user intent).
@@ -160,7 +159,7 @@ async def resolve_api_key(
             if cred is not None:
                 stored = _decrypt(cred.ciphertext)
                 # Observability: record that this stored key was actually used.
-                cred.last_used_at = datetime.now(timezone.utc)
+                cred.last_used_at = datetime.now(UTC)
                 await db.commit()
                 return stored
     except Exception as exc:  # DB unavailable (e.g. unit context) — fall back to env

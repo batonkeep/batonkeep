@@ -7,15 +7,14 @@ Wired into main.py lifespan.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
-from apscheduler.triggers.date import DateTrigger
 
 from app.db import AsyncSessionLocal
-from app.models import Task, Run
+from app.models import Run, Task
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +87,7 @@ async def _sync_all_tasks(sched: AsyncIOScheduler) -> None:
     """Load all tasks from DB and register their jobs."""
     async with AsyncSessionLocal() as db:
         from sqlalchemy import select
-        result = await db.execute(select(Task).where(Task.enabled == True))
+        result = await db.execute(select(Task).where(Task.enabled is True))
         tasks = result.scalars().all()
 
     for task in tasks:
@@ -160,9 +159,10 @@ def _sync_task(sched: AsyncIOScheduler, task: Task) -> None:
 async def _sweep_deferred_runs() -> None:
     """Re-enqueue any deferred runs whose deferred_until has passed."""
     from sqlalchemy import select
+
     from app.orchestrator import enqueue_run
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             select(Run).where(

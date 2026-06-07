@@ -16,7 +16,6 @@ from __future__ import annotations
 import mimetypes
 import os
 import re
-from typing import Optional
 
 from app.sessions import workspace as ws
 
@@ -62,7 +61,7 @@ def resolve_preview_file(workspace: str, relpath: str) -> tuple[str, str]:
     return target, media or "application/octet-stream"
 
 
-def check_token(expected: Optional[str], provided: Optional[str]) -> None:
+def check_token(expected: str | None, provided: str | None) -> None:
     """Raise PreviewError(403) unless a non-empty token matches exactly."""
     if not expected or not provided or provided != expected:
         raise PreviewError(403, "Invalid or missing preview token")

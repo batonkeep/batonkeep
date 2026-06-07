@@ -23,9 +23,9 @@ import shutil
 import tarfile
 import tempfile
 import zipfile
-from typing import Callable, Iterable, Optional
+from collections.abc import Callable, Iterable
 
-from app.sessions.workspace import safe_join, group_writable
+from app.sessions.workspace import group_writable, safe_join
 
 # Bombs / runaway archives: cap count + total uncompressed bytes.
 _MAX_FILES = 2000
@@ -173,7 +173,7 @@ def _validate_git_url(url: str) -> None:
     is an SSRF surface — reuse the web-fetch guard to block loopback/private/
     link-local/metadata targets. ssh/git/file URLs are refused (creds / internal).
     """
-    from app.providers.tools._ssrf import assert_url_allowed, SSRFError
+    from app.providers.tools._ssrf import SSRFError, assert_url_allowed
 
     if not url.lower().startswith("https://"):
         raise ImportArchiveError(400, "only https:// git URLs are supported")
@@ -198,19 +198,19 @@ def _dir_entries(root: str) -> list[tuple[str, int, Callable[[], bytes]]]:
     return out
 
 
-async def _run_git(cmd: list[str], env: dict, cwd: Optional[str] = None) -> tuple[int, str]:
+async def _run_git(cmd: list[str], env: dict, cwd: str | None = None) -> tuple[int, str]:
     proc = await asyncio.create_subprocess_exec(
         *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=env, cwd=cwd,
     )
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=_CLONE_TIMEOUT_S)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         proc.kill()
         raise ImportArchiveError(504, "git clone timed out")
     return proc.returncode, (out or b"").decode("utf-8", errors="replace")
 
 
-async def clone_repo(workspace: str, url: str, branch: Optional[str] = None) -> list[str]:
+async def clone_repo(workspace: str, url: str, branch: str | None = None) -> list[str]:
     """
     Shallow-clone a public https git URL and import its working tree into the
     workspace (structure preserved; the repo's .git is dropped — the session keeps

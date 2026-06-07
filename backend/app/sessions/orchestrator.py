@@ -19,8 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 
@@ -28,7 +27,7 @@ from app.config import get_settings
 from app.db import AsyncSessionLocal
 from app.logging_config import owner_id_var, session_id_var
 from app.models import Session, SessionTurn
-from app.providers.base import EventKind, ExecResult, Usage
+from app.providers.base import EventKind, ExecResult
 from app.providers.registry import (
     get_executor,
     is_local_instance,
@@ -65,7 +64,7 @@ async def run_turn(
     session_id: str,
     message: str,
     *,
-    provider: Optional[str] = None,
+    provider: str | None = None,
     owner_id: str = "local",
 ) -> int:
     """
@@ -110,8 +109,10 @@ async def run_turn(
     await _broadcast_turn(turn_id, session_id, seq, chosen, "running",
                           extra={"switched": switched})
     if switched:
-        await _broadcast_event(session_id, turn_id, seq, EventKind.route,
-                               message=f"switched to {chosen}; continuing from workspace + SESSION.md")
+        await _broadcast_event(
+            session_id, turn_id, seq, EventKind.route,
+            message=f"switched to {chosen}; continuing from workspace + SESSION.md",
+        )
         # Refresh the ledger summary so the switched-in provider is richly primed
         # (D-0017 thread 1; opt-in, sovereignty-aware). Best-effort — never blocks
         # the turn. Runs before build_turn_context so the new summary is in-prompt.
@@ -125,8 +126,8 @@ async def run_turn(
     # Build context from the workspace, not a replayed transcript (D-0008).
     prompt = ws.build_turn_context(workspace, message)
 
-    final_result: Optional[ExecResult] = None
-    error_msg: Optional[str] = None
+    final_result: ExecResult | None = None
+    error_msg: str | None = None
 
     try:
         async for ev in executor.run_stream(
@@ -158,7 +159,7 @@ async def run_turn(
         # Persist with file:// links rewritten so reloads also get clickable
         # artifacts, not just the live stream (P-0016 b).
         response_text = rewrite_workspace_file_links(response_text, session_id, workspace)
-    version: Optional[dict] = None
+    version: dict | None = None
     if final_result is not None:
         # Engine owns the commit boundary (D-0008): commit the workspace as a
         # version once the turn's edits have landed. None if nothing changed.
@@ -185,7 +186,7 @@ async def run_turn(
     async with AsyncSessionLocal() as db:
         turn = await db.get(SessionTurn, turn_id)
         if turn is not None:
-            turn.finished_at = datetime.now(timezone.utc)
+            turn.finished_at = datetime.now(UTC)
             if final_result is not None:
                 turn.status = "succeeded"
                 turn.response = response_text
@@ -201,7 +202,7 @@ async def run_turn(
             await db.commit()
         session = await db.get(Session, session_id)
         if session is not None:
-            session.updated_at = datetime.now(timezone.utc)
+            session.updated_at = datetime.now(UTC)
             await db.commit()
 
     await _broadcast_turn(turn_id, session_id, seq, chosen,
@@ -212,9 +213,9 @@ async def run_turn(
 async def capture_terminal_snapshot(
     session_id: str,
     *,
-    provider: Optional[str] = None,
+    provider: str | None = None,
     owner_id: str = "local",
-) -> Optional[int]:
+) -> int | None:
     """
     Capture the web-TTY terminal lane's output as artifacts (D-0017 thread 2).
 
@@ -254,12 +255,12 @@ async def capture_terminal_snapshot(
             commit_sha=version["commit"],
             diffstat=version["diffstat"],
             changed_files=json.dumps(version["files"]),
-            finished_at=datetime.now(timezone.utc),
+            finished_at=datetime.now(UTC),
         )
         db.add(turn)
         session = await db.get(Session, session_id)
         if session is not None:
-            session.updated_at = datetime.now(timezone.utc)
+            session.updated_at = datetime.now(UTC)
         await db.commit()
         await db.refresh(turn)
         turn_id = turn.id
@@ -297,7 +298,7 @@ async def _next_turn_seq(db, session_id: str) -> int:
 
 async def _broadcast_turn(
     turn_id: int, session_id: str, seq: int, provider: str, status: str,
-    *, extra: Optional[dict] = None,
+    *, extra: dict | None = None,
 ) -> None:
     try:
         await ws_manager.broadcast({
@@ -312,8 +313,8 @@ async def _broadcast_turn(
 
 async def _broadcast_event(
     session_id: str, turn_id: int, seq: int, kind: EventKind,
-    *, message: str = "", text: Optional[str] = None, phase: str = "",
-    data: Optional[dict] = None,
+    *, message: str = "", text: str | None = None, phase: str = "",
+    data: dict | None = None,
 ) -> None:
     try:
         safe_data = {k: v for k, v in (data or {}).items() if not isinstance(v, ExecResult)}

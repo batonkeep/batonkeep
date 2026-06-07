@@ -15,17 +15,16 @@ enqueue_run(task_id, trigger): create Run(status=queued), create_task(execute_ru
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import re
-import unicodedata
 from collections import defaultdict
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import select
 
+from app import task_workspace
 from app.config import get_settings
 from app.db import AsyncSessionLocal
 from app.logging_config import bind_run
@@ -33,10 +32,9 @@ from app.models import Run, RunEvent, Task
 from app.providers.base import EventKind, ExecEvent, ExecResult, Usage
 from app.providers.registry import get_executor
 from app.quota import quota_tracker
-from app.router import CandidatePlan, DeferredResult, resolve
-from app.schemas import RunOut, RunEventOut
+from app.router import DeferredResult, resolve
+from app.schemas import RunOut
 from app.ws import ws_manager
-from app import task_workspace
 
 logger = logging.getLogger(__name__)
 _settings = get_settings()
@@ -79,7 +77,7 @@ async def _do_execute(run_id: int, task: Task) -> None:
 
         # ── 1. Planning ──────────────────────────────────────────────────────
         run.status = "planning"
-        run.started_at = datetime.now(timezone.utc)
+        run.started_at = datetime.now(UTC)
         await db.commit()
         await _broadcast_run(run)
 
@@ -98,7 +96,8 @@ async def _do_execute(run_id: int, task: Task) -> None:
             dropped = [c for c in raw_candidates if c not in cron_candidates]
             if dropped:
                 logger.info(
-                    "[orchestrator] run %d (scheduled): filtered no-headless candidates %s (D-0016)",
+                    "[orchestrator] run %d (scheduled): filtered no-headless "
+                    "candidates %s (D-0016)",
                     run_id, dropped,
                 )
                 await _emit_event(
@@ -117,7 +116,9 @@ async def _do_execute(run_id: int, task: Task) -> None:
         if degrade:
             await _emit_event(db, run, EventKind.route, "budget_degraded",
                               data={"daily_budget_usd": _settings.daily_budget_usd})
-            logger.info("[orchestrator] run %d over daily budget — degrading to free providers", run_id)
+            logger.info(
+                "[orchestrator] run %d over daily budget — degrading to free providers", run_id
+            )
         route_result = resolve(routing, quota_tracker, degrade_to_free=degrade)
 
         if isinstance(route_result, DeferredResult):
@@ -139,9 +140,10 @@ async def _do_execute(run_id: int, task: Task) -> None:
                 )
             await db.commit()
             await _broadcast_run(run)
+            deferred_until = run.deferred_until.isoformat() if run.deferred_until else None
             await _emit_event(db, run, EventKind.route, "deferred",
                               data={"cooling": route_result.cooling_providers,
-                                    "deferred_until": run.deferred_until.isoformat() if run.deferred_until else None})
+                                    "deferred_until": deferred_until})
             logger.info("[orchestrator] run %d deferred until %s", run_id, run.deferred_until)
             return
 
@@ -164,7 +166,7 @@ async def _do_execute(run_id: int, task: Task) -> None:
 
         # ── 4. Failover loop ─────────────────────────────────────────────────
         attempts: list[dict] = []
-        final_result: Optional[ExecResult] = None
+        final_result: ExecResult | None = None
         final_usage = Usage()
         subagents = 0
         tool_calls = 0
@@ -197,7 +199,7 @@ async def _do_execute(run_id: int, task: Task) -> None:
                 await db.commit()
 
                 rate_limited = False
-                error_msg: Optional[str] = None
+                error_msg: str | None = None
                 seq = await _next_seq(db, run_id)
 
                 try:
@@ -262,7 +264,9 @@ async def _do_execute(run_id: int, task: Task) -> None:
                             break
 
                 except Exception as exc:
-                    logger.exception("[orchestrator] run %d provider %s error", run_id, provider_name)
+                    logger.exception(
+                        "[orchestrator] run %d provider %s error", run_id, provider_name
+                    )
                     attempt["outcome"] = "error"
                     error_msg = str(exc)
 
@@ -301,7 +305,12 @@ async def _do_execute(run_id: int, task: Task) -> None:
                         if ev.kind == EventKind.result:
                             final_result = ev.data.get("result")
                             usage_raw = ev.data.get("usage", {})
-                            final_usage = Usage(**{k: usage_raw.get(k, 0) for k in ("tokens_in", "tokens_out", "cost_usd")})
+                            final_usage = Usage(
+                                **{
+                                    k: usage_raw.get(k, 0)
+                                    for k in ("tokens_in", "tokens_out", "cost_usd")
+                                }
+                            )
                             run.overflow_used = True
                             break
 
@@ -316,7 +325,7 @@ async def _do_execute(run_id: int, task: Task) -> None:
 
         # ── 5. Post-process outputs ───────────────────────────────────────────
         full_text = final_result.text if final_result else ""
-        json_block: Optional[str] = None
+        json_block: str | None = None
 
         # Agent-written files: CLI agents (grok, agy) sometimes use file_write to
         # save the actual report and only print a short summary (or, for agy, just
@@ -326,8 +335,10 @@ async def _do_execute(run_id: int, task: Task) -> None:
         # agents most often pick — and prefer it when it dwarfs the CLI final text.
         agent_md = _find_best_agent_md(workdir)
         if agent_md and len(agent_md) > max(len(full_text) * 2, 500):
-            logger.info("[orchestrator] using agent-written .md (%d bytes) over CLI final text (%d bytes)",
-                        len(agent_md), len(full_text))
+            logger.info(
+                "[orchestrator] using agent-written .md (%d bytes) over CLI final text (%d bytes)",
+                len(agent_md), len(full_text),
+            )
             full_text = agent_md
 
         # Canonical outputs land in the control-plane outputs dir (batond-owned),
@@ -354,7 +365,7 @@ async def _do_execute(run_id: int, task: Task) -> None:
 
         # ── 6. Finalise ───────────────────────────────────────────────────────
         run.status = "succeeded"
-        run.finished_at = datetime.now(timezone.utc)
+        run.finished_at = datetime.now(UTC)
         run.summary = full_text[:500].strip() if full_text else ""
         run.tokens_in = final_usage.tokens_in
         run.tokens_out = final_usage.tokens_out
@@ -365,11 +376,15 @@ async def _do_execute(run_id: int, task: Task) -> None:
         run.tier = _get_tier(run.provider or "")
         run.attempts = attempts
 
-        quota_tracker.record_invocation(run.provider or "unknown", final_usage.tokens_in + final_usage.tokens_out)
+        quota_tracker.record_invocation(
+            run.provider or "unknown", final_usage.tokens_in + final_usage.tokens_out
+        )
 
         await db.commit()
         await _broadcast_run(run)
-        logger.info("[orchestrator] run %d succeeded via %s (%.4f USD)", run_id, run.provider, run.cost_usd)
+        logger.info(
+            "[orchestrator] run %d succeeded via %s (%.4f USD)", run_id, run.provider, run.cost_usd
+        )
 
 
 # ── startup reaper (D-0021) ─────────────────────────────────────────────────────
@@ -384,7 +399,7 @@ async def reap_orphaned_runs() -> int:
     `deferred` runs are intentionally left alone — the scheduler's deferred-sweep owns
     those. Durable queueing/auto-requeue is a later managed-scale graduation (D-0021).
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     reaped = 0
     async with AsyncSessionLocal() as db:
         result = await db.execute(
@@ -439,7 +454,7 @@ async def cancel_run(run_id: int) -> bool:
             run = await db.get(Run, run_id)
             if run:
                 run.status = "cancelled"
-                run.finished_at = datetime.now(timezone.utc)
+                run.finished_at = datetime.now(UTC)
                 await db.commit()
                 await _broadcast_run(run)
         return True
@@ -463,13 +478,13 @@ def _render_prompt(task: Task) -> str:
         return template
 
 
-def _extract_json_block(text: str) -> Optional[str]:
+def _extract_json_block(text: str) -> str | None:
     """Extract the last fenced ```json block from the output."""
     matches = re.findall(r"```json\s*(.*?)```", text, re.DOTALL)
     return matches[-1].strip() if matches else None
 
 
-def _find_best_agent_md(workdir: str, exclude: Optional[str] = None) -> Optional[str]:
+def _find_best_agent_md(workdir: str, exclude: str | None = None) -> str | None:
     """
     Scan workdir for .md files written by the agent. Returns the content of the
     largest one, or None if none found.
@@ -557,7 +572,9 @@ def _strip_json_block(text: str) -> str:
     text = re.sub(r"\n{3,}", "\n\n", text)
     # Trim trailing thematic breaks (---, ***, ___) the model placed before the
     # now-removed JSON section, so the report doesn't end on a dangling separator.
-    text = re.sub(r"(?:\s*^[ \t]*(?:-{3,}|\*{3,}|_{3,})[ \t]*$)+\s*\Z", "", text, flags=re.MULTILINE)
+    text = re.sub(
+        r"(?:\s*^[ \t]*(?:-{3,}|\*{3,}|_{3,})[ \t]*$)+\s*\Z", "", text, flags=re.MULTILINE
+    )
     return text.strip()
 
 
@@ -573,7 +590,7 @@ def _get_tier(instance_id: str) -> str:
 async def _fail(db, run: Run, error: str) -> None:
     run.status = "failed"
     run.error = error
-    run.finished_at = datetime.now(timezone.utc)
+    run.finished_at = datetime.now(UTC)
     await db.commit()
     await _broadcast_run(run)
 
@@ -588,7 +605,7 @@ async def _next_seq(db, run_id: int) -> int:
 
 async def _emit_event(
     db, run: Run, kind: EventKind, message: str, *,
-    data: Optional[dict] = None, seq_override: Optional[int] = None, phase: str = ""
+    data: dict | None = None, seq_override: int | None = None, phase: str = ""
 ) -> None:
     seq = seq_override if seq_override is not None else await _next_seq(db, run.id)
     # Strip non-JSON-serializable objects (ExecResult dataclasses) before DB persistence

@@ -21,8 +21,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 from app.providers.base import EventKind
 from app.providers.registry import get_instance, get_interactive_executor, get_provider_def
@@ -71,12 +70,12 @@ _HINT_TRIM = "│|╮╯╭╰─━█▌▔ \t"
 @dataclass
 class SubscriptionUsage:
     instance_id: str
-    used_pct: Optional[float] = None      # 0..1, the highest limit-bar found
-    reset_hint: Optional[str] = None      # raw human reset string, if any
-    captured_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    used_pct: float | None = None      # 0..1, the highest limit-bar found
+    reset_hint: str | None = None      # raw human reset string, if any
+    captured_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     raw: str = ""                          # scraped panel text (trimmed)
     ok: bool = False                       # whether we got a usable reading
-    error: Optional[str] = None
+    error: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -144,7 +143,9 @@ def parse_usage_panel(text: str, instance_id: str = "") -> SubscriptionUsage:
     return out
 
 
-async def capture_subscription_usage(instance_id: str, *, timeout_hint: float = 20.0) -> SubscriptionUsage:
+async def capture_subscription_usage(
+    instance_id: str, *, timeout_hint: float = 20.0
+) -> SubscriptionUsage:
     """Drive `/usage` through the terminal seam for one instance and parse it.
 
     Returns a SubscriptionUsage; on a usable reading, pushes used_pct into the
@@ -156,7 +157,9 @@ async def capture_subscription_usage(instance_id: str, *, timeout_hint: float = 
     # task turns stay headless.
     executor = get_interactive_executor(instance_id)
     if executor is None:
-        return SubscriptionUsage(instance_id=instance_id, error="no interactive CLI for this instance")
+        return SubscriptionUsage(
+            instance_id=instance_id, error="no interactive CLI for this instance"
+        )
 
     # Pick the usage-panel command for this provider (differs per CLI).
     inst = get_instance(instance_id)
@@ -165,7 +168,7 @@ async def capture_subscription_usage(instance_id: str, *, timeout_hint: float = 
     command = _USAGE_COMMAND.get(provider, _DEFAULT_USAGE_COMMAND)
 
     scraped: list[str] = []
-    err: Optional[str] = None
+    err: str | None = None
     try:
         async for ev in executor.run_stream(
             "",  # no task prompt — we only want the usage panel
@@ -189,5 +192,7 @@ async def capture_subscription_usage(instance_id: str, *, timeout_hint: float = 
     usage = parse_usage_panel("".join(scraped), instance_id=instance_id)
     if usage.ok:
         quota_tracker.set_subscription_usage(instance_id, used_pct=usage.used_pct)
-        logger.info("[subscription_usage] %s at %.0f%% used", instance_id, (usage.used_pct or 0) * 100)
+        logger.info(
+            "[subscription_usage] %s at %.0f%% used", instance_id, (usage.used_pct or 0) * 100
+        )
     return usage

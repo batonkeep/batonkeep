@@ -23,7 +23,6 @@ import asyncio
 import contextlib
 import logging
 import os
-from typing import Optional
 
 from app.config import get_settings
 
@@ -115,7 +114,9 @@ async def _git_out(workspace: str, *args: str) -> tuple[int, str]:
     )
     out, err = await proc.communicate()
     if proc.returncode != 0:
-        logger.warning("[workspace] git %s failed: %s", args, err.decode("utf-8", "replace").strip())
+        logger.warning(
+            "[workspace] git %s failed: %s", args, err.decode("utf-8", "replace").strip()
+        )
     return proc.returncode, out.decode("utf-8", "replace")
 
 
@@ -171,7 +172,7 @@ def read_brief(workspace: str) -> str:
         return ""
 
 
-def _format_files(files: Optional[list[dict]]) -> str:
+def _format_files(files: list[dict] | None) -> str:
     """Compact one-line render of a turn's changed files (D-0017 thread 2 artifacts),
     grounded in git — the anti-drift anchor for the ledger."""
     if not files:
@@ -199,7 +200,7 @@ def record_turn(
     seq: int,
     provider: str,
     summary: str,
-    files: Optional[list[dict]] = None,
+    files: list[dict] | None = None,
     lane: str = "chat",
 ) -> None:
     """
@@ -213,7 +214,9 @@ def record_turn(
     """
     headline = (summary.strip().splitlines() or [""])[0][:140] if summary else ""
     headline = headline or "_(no text response)_"
-    entry = f"- **turn {seq}** · {provider} · {lane} — {headline} — changed: {_format_files(files)}\n"
+    entry = (
+        f"- **turn {seq}** · {provider} · {lane} — {headline} — changed: {_format_files(files)}\n"
+    )
 
     path = os.path.join(workspace, BRIEF_FILENAME)
     try:
@@ -265,7 +268,9 @@ def read_summary(workspace: str) -> str:
     existing = read_brief(workspace)
     if SUMMARY_BEGIN not in existing or SUMMARY_END not in existing:
         return ""
-    body = existing[existing.index(SUMMARY_BEGIN) + len(SUMMARY_BEGIN): existing.index(SUMMARY_END)].strip()
+    body = existing[
+        existing.index(SUMMARY_BEGIN) + len(SUMMARY_BEGIN): existing.index(SUMMARY_END)
+    ].strip()
     return "" if body == _SUMMARY_PLACEHOLDER else body
 
 
@@ -342,7 +347,7 @@ def _trunc(text: str) -> str:
 
 async def commit_turn(
     workspace: str, *, seq: int, provider: str, summary: str = ""
-) -> Optional[dict]:
+) -> dict | None:
     """
     Stage and commit the workspace after a turn. Returns a version dict
     {commit, short, message, diffstat, diff} for the commit just made, or None if
@@ -376,7 +381,7 @@ async def commit_turn(
     }
 
 
-async def commit_snapshot(workspace: str, *, message: str) -> Optional[dict]:
+async def commit_snapshot(workspace: str, *, message: str) -> dict | None:
     """
     Commit the current workspace state as a version and return the full version
     dict {commit, short, message, diffstat, diff, files} — or None if nothing
@@ -405,7 +410,7 @@ async def commit_snapshot(workspace: str, *, message: str) -> Optional[dict]:
     }
 
 
-async def commit_paths(workspace: str, *, message: str) -> Optional[str]:
+async def commit_paths(workspace: str, *, message: str) -> str | None:
     """
     Stage the whole workspace and commit, returning the new commit sha (or None if
     nothing changed). Used for out-of-turn changes like asset uploads (M1.5) — the
@@ -467,7 +472,7 @@ async def commit_changed_files(workspace: str, sha: str) -> list[dict]:
     _, num_out = await _git_out(
         workspace, "show", "--no-color", "--format=", "--numstat", sha
     )
-    counts_by_path: dict[str, tuple[Optional[int], Optional[int]]] = {}
+    counts_by_path: dict[str, tuple[int | None, int | None]] = {}
     order: list[str] = []
     for line in num_out.splitlines():
         parts = line.split("\t")
@@ -512,14 +517,14 @@ async def list_versions(workspace: str) -> list[dict]:
     return versions
 
 
-async def head_commit(workspace: str) -> Optional[str]:
+async def head_commit(workspace: str) -> str | None:
     """The current HEAD commit sha, or None if the workspace has no commits."""
     code, out = await _git_out(workspace, "rev-parse", "HEAD")
     sha = out.strip()
     return sha if code == 0 and sha else None
 
 
-async def version_diff(workspace: str, commit: str) -> Optional[dict]:
+async def version_diff(workspace: str, commit: str) -> dict | None:
     """Diff + diffstat introduced by a specific version, or None if unknown."""
     if not _is_valid_sha(commit):
         return None
@@ -534,7 +539,7 @@ async def version_diff(workspace: str, commit: str) -> Optional[dict]:
     }
 
 
-async def restore_version(workspace: str, commit: str) -> Optional[dict]:
+async def restore_version(workspace: str, commit: str) -> dict | None:
     """
     Restore the workspace to an earlier version (Undo/History). Implemented as a
     checkout-restore: the tree of `commit` is checked out over the working tree and
@@ -567,4 +572,7 @@ async def restore_version(workspace: str, commit: str) -> Optional[dict]:
 
 def _is_valid_sha(commit: str) -> bool:
     """A commit ref must be a bare hex sha (full or abbreviated) — no refspecs."""
-    return bool(commit) and len(commit) <= 40 and all(c in "0123456789abcdef" for c in commit.lower())
+    return (
+        bool(commit) and len(commit) <= 40
+        and all(c in "0123456789abcdef" for c in commit.lower())
+    )

@@ -14,7 +14,6 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import Optional
 
 from app.config import get_settings
 from app.providers.base import Executor
@@ -30,12 +29,12 @@ class ProviderDef:
     tier: str          # open | frontier | agent | mock
     # Capability tags for routing (§4.3)
     capability_tags: list[str] = field(default_factory=list)
-    base_url: Optional[str] = None
-    model: Optional[str] = None
+    base_url: str | None = None
+    model: str | None = None
     cost_in_per_mtok: float = 0.0
     cost_out_per_mtok: float = 0.0
-    env_key: Optional[str] = None       # env var holding the API key
-    cli_binary: Optional[str] = None    # for kind=cli
+    env_key: str | None = None       # env var holding the API key
+    cli_binary: str | None = None    # for kind=cli
     mode: str = "mock"                  # plan | api | open | mock
     # Sovereignty boundary (P-0009 #1): True iff inference runs on infrastructure
     # we control and the prompt never leaves the box (a local model). Confidential
@@ -207,13 +206,13 @@ class ProviderInstance:
     template: str                 # "claude" — FK to ProviderDef.name
     label: str                    # UI display, e.g. "Claude (work)"
     # CLI accounts: own config dir, exported to the subprocess via this env var.
-    cli_config_dir: Optional[str] = None
-    cli_config_env: Optional[str] = None
+    cli_config_dir: str | None = None
+    cli_config_env: str | None = None
     # API accounts: which stored-credential provider key backs this instance
     # (defaults to the template name → reuses the existing single-key behaviour).
-    credential_provider: Optional[str] = None
+    credential_provider: str | None = None
     # Optional per-instance overrides (else inherit from the template):
-    model_override: Optional[str] = None
+    model_override: str | None = None
     enabled: bool = True
 
     @property
@@ -297,11 +296,11 @@ def _load_model_overrides() -> dict[str, str]:
 _MODEL_OVERRIDES: dict[str, str] = _load_model_overrides()
 
 
-def get_model_override(instance_id: str) -> Optional[str]:
+def get_model_override(instance_id: str) -> str | None:
     return _MODEL_OVERRIDES.get(instance_id)
 
 
-def set_model_override(instance_id: str, model: Optional[str]) -> None:
+def set_model_override(instance_id: str, model: str | None) -> None:
     """Set (or clear, when model is falsy) an instance's runtime model + persist."""
     if model:
         _MODEL_OVERRIDES[instance_id] = model
@@ -354,7 +353,7 @@ def is_headless_capable(candidate: str) -> bool:
 # for internal single-shot meta capture.
 
 
-def effective_model(inst: ProviderInstance, pdef: ProviderDef) -> Optional[str]:
+def effective_model(inst: ProviderInstance, pdef: ProviderDef) -> str | None:
     """
     The model an instance will actually use.
 
@@ -373,7 +372,7 @@ _CLI_DEFAULT_DIR = {"claude": ".claude", "grok": ".grok", "agy": ".gemini", "cod
 _CLI_MODEL_KEY = {"codex": "model", "grok": "default_model"}  # in <dir>/config.toml
 
 
-def cli_configured_model(inst: ProviderInstance, pdef: ProviderDef) -> Optional[str]:
+def cli_configured_model(inst: ProviderInstance, pdef: ProviderDef) -> str | None:
     """Best-effort read of a plan-CLI's currently selected model from its config."""
     key = _CLI_MODEL_KEY.get(pdef.name)
     if not key:
@@ -400,7 +399,7 @@ def cli_configured_model(inst: ProviderInstance, pdef: ProviderDef) -> Optional[
     return None
 
 
-def get_instance(instance_id: str) -> Optional[ProviderInstance]:
+def get_instance(instance_id: str) -> ProviderInstance | None:
     """
     Resolve an instance id → ProviderInstance, honouring DEPLOYMENT_MODE.
 
@@ -420,7 +419,9 @@ def get_instance(instance_id: str) -> Optional[ProviderInstance]:
 
     # Undeclared "template:slug" — refuse rather than silently colliding on auth.
     if ":" in instance_id:
-        logger.warning("[registry] instance %s not declared in PROVIDER_INSTANCES_CONFIG", instance_id)
+        logger.warning(
+            "[registry] instance %s not declared in PROVIDER_INSTANCES_CONFIG", instance_id
+        )
         return None
 
     # Bare template name → the implicit default instance.
@@ -488,7 +489,7 @@ def list_providers(include_cli: bool | None = None) -> list[ProviderDef]:
     return result
 
 
-def get_provider_def(name: str) -> Optional[ProviderDef]:
+def get_provider_def(name: str) -> ProviderDef | None:
     pdef = _REGISTRY.get(name)
     if pdef is None:
         return None
@@ -543,7 +544,7 @@ async def is_instance_connected(inst: ProviderInstance) -> bool:
     return False
 
 
-def get_executor(instance_id: str) -> Optional[Executor]:
+def get_executor(instance_id: str) -> Executor | None:
     """
     Instantiate the appropriate Executor for the given instance id (e.g. "claude"
     or "claude:work"). Returns None if the instance/template is unknown or
@@ -585,7 +586,7 @@ def get_executor(instance_id: str) -> Optional[Executor]:
     return None
 
 
-def get_interactive_executor(instance_id: str) -> Optional[Executor]:
+def get_interactive_executor(instance_id: str) -> Executor | None:
     """The full-TTY single-shot driver for a CLI instance — automated-internal only.
 
     Used to drive ONE read-only meta command (e.g. /usage) and read one screen

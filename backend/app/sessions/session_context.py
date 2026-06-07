@@ -47,7 +47,7 @@ _DEFAULT_CONTEXT_FILE = "AGENTS.md"
 
 # Managed-block markers. Everything between them is ours and is overwritten on each
 # terminal launch; anything outside is user/agent content and is left untouched.
-_BEGIN = "<!-- BATONKEEP:SESSION-CONTEXT (auto-generated — overwritten on each terminal launch; edit elsewhere) -->"
+_BEGIN = "<!-- BATONKEEP:SESSION-CONTEXT (auto-generated — overwritten on each terminal launch; edit elsewhere) -->"  # noqa: E501
 _END = "<!-- /BATONKEEP:SESSION-CONTEXT -->"
 
 

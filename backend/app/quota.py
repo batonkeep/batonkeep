@@ -14,9 +14,8 @@ from __future__ import annotations
 import logging
 import threading
 from collections import defaultdict
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -26,21 +25,21 @@ _DEFAULT_COOLDOWN_SECONDS = 300  # 5-min fallback when no reset timestamp parsed
 @dataclass
 class ProviderHealth:
     healthy: bool = True
-    cooldown_until: Optional[datetime] = None
-    last_reset_seen: Optional[datetime] = None
+    cooldown_until: datetime | None = None
+    last_reset_seen: datetime | None = None
     # Best-effort estimates (approximate — clearly labelled in UI)
     est_invocations: int = 0
     est_tokens: int = 0
     # Operator-declared limit window (optional; used for headroom estimate)
-    declared_window_seconds: Optional[int] = None
-    declared_window_limit: Optional[int] = None
+    declared_window_seconds: int | None = None
+    declared_window_limit: int | None = None
     # Subscription quota scraped from the plan-CLI's /usage panel (D-0015 slice 4).
     # A real reading, so it takes precedence over the invocation-count estimate.
-    subscription_used_pct: Optional[float] = None
-    subscription_seen_at: Optional[datetime] = None
+    subscription_used_pct: float | None = None
+    subscription_seen_at: datetime | None = None
 
     @property
-    def est_used_pct(self) -> Optional[float]:
+    def est_used_pct(self) -> float | None:
         if self.subscription_used_pct is not None:
             return min(1.0, max(0.0, self.subscription_used_pct))
         if self.declared_window_limit and self.declared_window_limit > 0:
@@ -63,7 +62,7 @@ class QuotaTracker:
         """Check if cooldown expired; reset if so. Caller MUST hold _lock."""
         h = self._health[provider]
         if h.cooldown_until is not None:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             if now >= h.cooldown_until:
                 logger.info("[quota] %s cooldown expired, marking healthy", provider)
                 h.healthy = True
@@ -76,7 +75,7 @@ class QuotaTracker:
         with self._lock:
             return self._check_expiry(provider)
 
-    def mark_cooldown(self, provider: str, reset_at: Optional[datetime] = None) -> None:
+    def mark_cooldown(self, provider: str, reset_at: datetime | None = None) -> None:
         """
         Called when a provider returns a rate-limit signal.
         Sets cooldown_until = reset_at (or now + default if not parsed).
@@ -88,7 +87,7 @@ class QuotaTracker:
             if reset_at is not None:
                 h.cooldown_until = reset_at
             else:
-                h.cooldown_until = datetime.now(timezone.utc) + timedelta(
+                h.cooldown_until = datetime.now(UTC) + timedelta(
                     seconds=_DEFAULT_COOLDOWN_SECONDS
                 )
             logger.warning(
@@ -120,7 +119,7 @@ class QuotaTracker:
             h.declared_window_limit = window_limit
 
     def set_subscription_usage(
-        self, provider: str, *, used_pct: Optional[float], reset_at: Optional[datetime] = None
+        self, provider: str, *, used_pct: float | None, reset_at: datetime | None = None
     ) -> None:
         """Record a subscription-quota reading scraped from a plan-CLI /usage panel.
 
@@ -130,7 +129,7 @@ class QuotaTracker:
         with self._lock:
             h = self._health[provider]
             h.subscription_used_pct = used_pct
-            h.subscription_seen_at = datetime.now(timezone.utc)
+            h.subscription_seen_at = datetime.now(UTC)
             if reset_at is not None and used_pct is not None and used_pct >= 1.0:
                 h.healthy = False
                 h.cooldown_until = reset_at
@@ -144,7 +143,7 @@ class QuotaTracker:
         with self._lock:
             return dict(self._health)
 
-    def earliest_reset(self, providers: list[str]) -> Optional[datetime]:
+    def earliest_reset(self, providers: list[str]) -> datetime | None:
         """Return the earliest cooldown_until across a list of providers."""
         times = []
         with self._lock:

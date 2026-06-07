@@ -18,7 +18,7 @@ import re
 from typing import BinaryIO
 
 from app.config import get_settings
-from app.sessions.workspace import safe_join, group_writable
+from app.sessions.workspace import group_writable, safe_join
 
 _settings = get_settings()
 

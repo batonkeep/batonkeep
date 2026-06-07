@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import asyncio
 import os
-from typing import Any, AsyncIterator, Optional
+from collections.abc import AsyncIterator
+from typing import Any
 
 from app.providers.base import (
     EventKind,
@@ -78,7 +79,7 @@ class MockExecutor(Executor):
         tools_enabled: bool = True,
         max_rounds: int = 10,
         budget_usd: float = 1.0,
-        extra: Optional[dict[str, Any]] = None,
+        extra: dict[str, Any] | None = None,
     ) -> AsyncIterator[ExecEvent]:
         delay = self._latency_ms / 1000
 

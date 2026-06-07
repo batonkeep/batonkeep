@@ -11,37 +11,41 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
-from typing import Any, Optional
-
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import (
-    Depends, FastAPI, File, Header, HTTPException, UploadFile, WebSocket, WebSocketDisconnect,
+    Depends,
+    FastAPI,
+    File,
+    Header,
+    HTTPException,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
-from starlette.datastructures import Headers, MutableHeaders
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.datastructures import Headers, MutableHeaders
 
-from app.config import get_settings, DeploymentMode
+from app.config import get_settings
 from app.db import get_db, init_db
 from app.logging_config import configure_logging, owner_id_var, request_id_var
-from app.models import Artifact, Credential, Owner, Session, SessionTurn, Task, Run, RunEvent
+from app.models import Artifact, Credential, Owner, Run, RunEvent, Session, SessionTurn, Task
 from app.schemas import (
-    CredentialCreate,
-    CredentialOut,
-    SecretStatusOut,
-    UsageSummaryOut,
-    ModeOut,
+    CaptureRequest,
     CloudflareConfigIn,
     CloudflareDeployIn,
     CloudflareDeployOut,
     CloudflareStatusOut,
     ConsoleConfig,
+    CredentialCreate,
+    CredentialOut,
     FileEntryOut,
     GitImportIn,
     ImportOut,
+    ModeOut,
     ProviderHealth,
     ProviderLimitsUpdate,
     ProviderModelUpdate,
@@ -50,19 +54,20 @@ from app.schemas import (
     RestoreRequest,
     RunEventOut,
     RunOut,
+    SecretStatusOut,
     SessionCreate,
     SessionOut,
     SessionTemplateOut,
     SessionTurnOut,
     SessionUpdate,
     StatsOut,
+    SummaryOut,
     TaskCreate,
     TaskOut,
     TaskUpdate,
-    CaptureRequest,
-    SummaryOut,
     TurnCreate,
     UploadOut,
+    UsageSummaryOut,
     VersionDiffOut,
     VersionOut,
 )
@@ -163,7 +168,9 @@ class PrivateNetworkAccessMiddleware:
 
         async def send_wrapper(message):
             if message["type"] == "http.response.start":
-                MutableHeaders(raw=message["headers"])["Access-Control-Allow-Private-Network"] = "true"
+                MutableHeaders(raw=message["headers"])[
+                    "Access-Control-Allow-Private-Network"
+                ] = "true"
             await send(message)
 
         await self.app(scope, receive, send_wrapper)
@@ -339,8 +346,8 @@ async def delete_task(
 
 @app.get("/api/runs", response_model=list[RunOut], tags=["runs"])
 async def list_runs(
-    task_id: Optional[int] = None,
-    status: Optional[str] = None,
+    task_id: int | None = None,
+    status: str | None = None,
     limit: int = 50,
     db: AsyncSession = Depends(get_db),
     owner_id: str = Depends(_owner_id),
@@ -487,8 +494,9 @@ async def create_session(
     """
     import secrets
     import uuid
-    from app.sessions import workspace as ws
+
     from app.sessions import templates as tmpl
+    from app.sessions import workspace as ws
 
     tpl = tmpl.get_template(body.template) if body.template else None
     if body.template and tpl is None:
@@ -610,9 +618,11 @@ async def create_session_turn(
     if not body.message.strip():
         raise HTTPException(status_code=400, detail="message must not be empty")
 
-    from app.sessions.orchestrator import run_turn, SessionError
+    from app.sessions.orchestrator import SessionError, run_turn
     try:
-        turn_id = await run_turn(session_id, body.message, provider=body.provider, owner_id=owner_id)
+        turn_id = await run_turn(
+            session_id, body.message, provider=body.provider, owner_id=owner_id
+        )
     except SessionError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -621,7 +631,7 @@ async def create_session_turn(
 
 
 @app.post("/api/sessions/{session_id}/capture",
-          response_model=Optional[SessionTurnOut], tags=["sessions"])
+          response_model=SessionTurnOut | None, tags=["sessions"])
 async def capture_session_terminal(
     session_id: str,
     body: CaptureRequest,
@@ -638,7 +648,7 @@ async def capture_session_terminal(
     if session is None or session.owner_id != owner_id:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    from app.sessions.orchestrator import capture_terminal_snapshot, SessionError
+    from app.sessions.orchestrator import SessionError, capture_terminal_snapshot
     try:
         turn_id = await capture_terminal_snapshot(
             session_id, provider=body.instance, owner_id=owner_id
@@ -700,7 +710,8 @@ async def upload_session_assets(
     (Undo/History). Enforces the env-configurable size + extension allowlist;
     nothing leaves the backend.
     """
-    from app.sessions import uploads, workspace as ws
+    from app.sessions import uploads
+    from app.sessions import workspace as ws
 
     session = await _owned_session(session_id, owner_id, db)
     if not files:
@@ -719,7 +730,7 @@ async def upload_session_assets(
 
     names = ", ".join(saved)
     commit_sha = await ws.commit_paths(session.workspace_path, message=f"upload: {names}")
-    session.updated_at = datetime.now(timezone.utc)
+    session.updated_at = datetime.now(UTC)
     await db.commit()
     return UploadOut(paths=saved, commit_sha=commit_sha)
 
@@ -740,7 +751,9 @@ async def import_session_archive(
     keeps its own engine-owned history. Nothing leaves the backend.
     """
     import tempfile
-    from app.sessions import imports, workspace as ws
+
+    from app.sessions import imports
+    from app.sessions import workspace as ws
 
     session = await _owned_session(session_id, owner_id, db)
 
@@ -764,9 +777,10 @@ async def import_session_archive(
             pass
 
     commit_sha = await ws.commit_paths(
-        session.workspace_path, message=f"import: {len(paths)} files from {file.filename or 'archive'}"
+        session.workspace_path,
+        message=f"import: {len(paths)} files from {file.filename or 'archive'}",
     )
-    session.updated_at = datetime.now(timezone.utc)
+    session.updated_at = datetime.now(UTC)
     await db.commit()
     return ImportOut(paths=paths, count=len(paths), commit_sha=commit_sha)
 
@@ -784,7 +798,8 @@ async def import_session_git(
     (structure preserved; the repo's .git is dropped — the session keeps its own
     history). SSRF-guarded (public hosts only); private repos fail fast (no creds).
     """
-    from app.sessions import imports, workspace as ws
+    from app.sessions import imports
+    from app.sessions import workspace as ws
 
     session = await _owned_session(session_id, owner_id, db)
     try:
@@ -795,7 +810,7 @@ async def import_session_git(
     commit_sha = await ws.commit_paths(
         session.workspace_path, message=f"import: {len(paths)} files from {body.url}"
     )
-    session.updated_at = datetime.now(timezone.utc)
+    session.updated_at = datetime.now(UTC)
     await db.commit()
     return ImportOut(paths=paths, count=len(paths), commit_sha=commit_sha)
 
@@ -818,7 +833,7 @@ async def session_preview(
     HTML rewriting. The workspace is never reachable without session auth, and
     paths are confined to the session's own workspace.
     """
-    from app.sessions.preview import resolve_preview_file, check_token, PreviewError
+    from app.sessions.preview import PreviewError, check_token, resolve_preview_file
 
     session = await db.get(Session, session_id)
     if session is None or session.owner_id != owner_id:
@@ -869,7 +884,7 @@ async def get_session_file(
     dialog; otherwise the browser renders inline. Path-traversal safe and confined
     to this session's own workspace.
     """
-    from app.sessions.preview import resolve_workspace_file, PreviewError
+    from app.sessions.preview import PreviewError, resolve_workspace_file
 
     session = await db.get(Session, session_id)
     if session is None or session.owner_id != owner_id:
@@ -950,7 +965,7 @@ async def restore_session_version(
         raise HTTPException(
             status_code=400, detail="Unknown version, or workspace already matches it",
         )
-    session.updated_at = datetime.now(timezone.utc)
+    session.updated_at = datetime.now(UTC)
     await db.commit()
     return RestoreOut.model_validate(result)
 
@@ -962,7 +977,7 @@ async def restore_session_version(
 # session under the caller first; the public share route is gated only by the
 # unguessable token (its capability), never by owner.
 
-def _artifact_to_publish_out(artifact: Optional[Artifact]) -> PublishOut:
+def _artifact_to_publish_out(artifact: Artifact | None) -> PublishOut:
     if artifact is None or not artifact.published or not artifact.share_token:
         return PublishOut(published=False)
     file_count = None
@@ -979,7 +994,7 @@ def _artifact_to_publish_out(artifact: Optional[Artifact]) -> PublishOut:
     )
 
 
-async def _get_artifact(db: AsyncSession, session_id: str) -> Optional[Artifact]:
+async def _get_artifact(db: AsyncSession, session_id: str) -> Artifact | None:
     return (await db.execute(
         select(Artifact).where(Artifact.session_id == session_id)
     )).scalar_one_or_none()
@@ -1008,6 +1023,7 @@ async def publish_session(
     (re-publishing rotates the token + refreshes the snapshot).
     """
     import secrets
+
     from app.sessions import publish as pub
     from app.sessions import workspace as ws
 
@@ -1097,7 +1113,9 @@ async def download_session(
 
     session = await _owned_session(session_id, owner_id, db)
     data = pub.zip_workspace(session.workspace_path)
-    safe_name = "".join(c if c.isalnum() or c in "-_" else "-" for c in session.title)[:48] or "site"
+    safe_name = (
+        "".join(c if c.isalnum() or c in "-_" else "-" for c in session.title)[:48] or "site"
+    )
     return Response(
         content=data,
         media_type="application/zip",
@@ -1117,7 +1135,7 @@ async def serve_share(
     auth — the unguessable token is the capability. Revoked/unknown tokens 404, and
     only the published bundle is reachable (the live workspace is never exposed here).
     """
-    from app.sessions.preview import resolve_preview_file, PreviewError
+    from app.sessions.preview import PreviewError, resolve_preview_file
 
     artifact = (await db.execute(
         select(Artifact).where(Artifact.share_token == token)
@@ -1139,8 +1157,8 @@ async def get_stats(
     db: AsyncSession = Depends(get_db),
     owner_id: str = Depends(_owner_id),
 ):
-    """Dashboard aggregates (§10): runs today, success rate, runs_by_provider, failover, deferred."""
-    start_of_day = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    """Dashboard aggregates (§10): runs today, success rate, runs_by_provider, failover, deferred."""  # noqa: E501
+    start_of_day = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
 
     rows = (await db.execute(
         select(Run).where(Run.owner_id == owner_id, Run.created_at >= start_of_day)
@@ -1313,10 +1331,10 @@ async def list_providers():
     NOTE: est_used_pct is approximate — reliable guarantee is failover on observed limits.
     """
     from app.providers.registry import (
-        list_instances,
+        effective_model,
         get_provider_def,
         is_instance_connected,
-        effective_model,
+        list_instances,
     )
     from app.quota import quota_tracker
 
@@ -1368,7 +1386,7 @@ async def reset_provider_cooldown(provider_name: str):
 
 # ── In-UI console (scoped actions: set model, run auth) ────────────────────────
 
-def _require_console(x_console_token: Optional[str] = Header(default=None)) -> None:
+def _require_console(x_console_token: str | None = Header(default=None)) -> None:
     """Gate console actions behind the env flag + token (never in managed mode)."""
     if not settings.web_console_available:
         raise HTTPException(status_code=404, detail="Console is not enabled")
@@ -1421,7 +1439,10 @@ async def capture_subscription_usage_endpoint(
         raise HTTPException(status_code=404, detail="Unknown provider instance")
     pdef = get_provider_def(inst.template)
     if not (pdef and pdef.kind == "cli"):
-        raise HTTPException(status_code=400, detail="Subscription usage applies to plan-CLI instances only.")
+        raise HTTPException(
+            status_code=400,
+            detail="Subscription usage applies to plan-CLI instances only.",
+        )
     usage = await capture_subscription_usage(instance_id)
     return usage.to_dict()
 

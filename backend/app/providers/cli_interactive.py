@@ -42,11 +42,13 @@ import re
 import signal
 import struct
 import termios
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Optional
+from typing import Any
 
 import pyte
 
+from app import sandbox
 from app.cli_policy import get_policy
 from app.config import DeploymentMode, get_settings
 from app.providers.base import (
@@ -57,7 +59,6 @@ from app.providers.base import (
     Usage,
 )
 from app.providers.registry import ProviderDef, ProviderInstance
-from app import sandbox
 
 logger = logging.getLogger(__name__)
 _settings = get_settings()
@@ -110,7 +111,7 @@ def strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text)
 
 
-def render_screen(screen: "pyte.Screen") -> str:
+def render_screen(screen: pyte.Screen) -> str:
     """Read back the final rendered state of an emulated terminal screen.
 
     pyte pads every line to the full screen width and keeps cleared rows blank,
@@ -199,7 +200,7 @@ class CLIInteractiveExecutor(Executor):
     tokens — the binary owns its own auth via its config dir, exactly as headless.
     """
 
-    def __init__(self, provider_def: ProviderDef, instance: Optional["ProviderInstance"] = None) -> None:
+    def __init__(self, provider_def: ProviderDef, instance: ProviderInstance | None = None) -> None:
         self._def = provider_def
         self._instance = instance
         self.name = instance.id if instance else provider_def.name
@@ -240,11 +241,13 @@ class CLIInteractiveExecutor(Executor):
         tools_enabled: bool = True,
         max_rounds: int = 10,
         budget_usd: float = 1.0,
-        extra: Optional[dict[str, Any]] = None,
+        extra: dict[str, Any] | None = None,
     ) -> AsyncIterator[ExecEvent]:
         binary = self._def.cli_binary
         if not binary:
-            yield ExecEvent(kind=EventKind.error, message=f"No CLI binary configured for {self.name}")
+            yield ExecEvent(
+                kind=EventKind.error, message=f"No CLI binary configured for {self.name}"
+            )
             return
 
         policy = get_policy()
@@ -265,7 +268,9 @@ class CLIInteractiveExecutor(Executor):
         for cmd in control_commands:
             ok, reason = policy.check_command(cmd)
             if not ok:
-                logger.warning("[%s] terminal seam refused control command %r: %s", self.name, cmd, reason)
+                logger.warning(
+                    "[%s] terminal seam refused control command %r: %s", self.name, cmd, reason
+                )
                 yield ExecEvent(
                     kind=EventKind.error,
                     message=f"[{self.name}] control command refused: {reason}",
@@ -308,14 +313,19 @@ class CLIInteractiveExecutor(Executor):
         # Force a predictable terminal so the TUI emits a stable escape vocabulary.
         env["TERM"] = "xterm-256color"
 
-        yield ExecEvent(kind=EventKind.log,
-                        message=f"[{self.name}] PTY seam launching: {' '.join(launch)} (allow_shell={policy.allow_shell})")
+        yield ExecEvent(
+            kind=EventKind.log,
+            message=(
+                f"[{self.name}] PTY seam launching: {' '.join(launch)} "
+                f"(allow_shell={policy.allow_shell})"
+            ),
+        )
         yield ExecEvent(kind=EventKind.phase, phase="running")
 
         master_fd, slave_fd = pty.openpty()
         _set_winsize(master_fd, _PTY_ROWS, _PTY_COLS)
 
-        proc: Optional[asyncio.subprocess.Process] = None
+        proc: asyncio.subprocess.Process | None = None
         accumulated: list[str] = []
         try:
             # Privilege drop: run the TUI as the low-priv `sandbox` user via the
@@ -351,7 +361,9 @@ class CLIInteractiveExecutor(Executor):
             def _write(s: str) -> None:
                 os.write(master_fd, s.encode("utf-8"))
 
-            async def _drain_until_idle(*, capture: bool, first_timeout: float = idle_timeout) -> None:
+            async def _drain_until_idle(
+                *, capture: bool, first_timeout: float = idle_timeout
+            ) -> None:
                 """Read PTY output until it goes idle, feeding every byte into the
                 emulated screen. When capture, snapshot the final rendered screen
                 (the TUI's response) once idle; otherwise just advance the screen
@@ -361,7 +373,7 @@ class CLIInteractiveExecutor(Executor):
                 while True:
                     try:
                         chunk = await asyncio.wait_for(reader.read(4096), timeout=timeout)
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         break  # idle → turn done
                     if not chunk:
                         break  # EOF
@@ -400,8 +412,11 @@ class CLIInteractiveExecutor(Executor):
             try:
                 async with asyncio.timeout(hard_timeout):
                     await _interact()
-            except asyncio.TimeoutError:
-                yield ExecEvent(kind=EventKind.error, message=f"[{self.name}] PTY seam timeout after {hard_timeout}s")
+            except TimeoutError:
+                yield ExecEvent(
+                    kind=EventKind.error,
+                    message=f"[{self.name}] PTY seam timeout after {hard_timeout}s",
+                )
                 return
             finally:
                 transport.close()
@@ -419,7 +434,9 @@ class CLIInteractiveExecutor(Executor):
             )
 
         except FileNotFoundError:
-            yield ExecEvent(kind=EventKind.error, message=f"[{self.name}] binary not found: {binary}")
+            yield ExecEvent(
+                kind=EventKind.error, message=f"[{self.name}] binary not found: {binary}"
+            )
         except Exception as exc:
             logger.exception("[%s] PTY seam error", self.name)
             yield ExecEvent(kind=EventKind.error, message=f"[{self.name}] {exc}")
@@ -443,5 +460,5 @@ class CLIInteractiveExecutor(Executor):
                         pass
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=5)
-                except (asyncio.TimeoutError, Exception):
+                except (TimeoutError, Exception):
                     pass

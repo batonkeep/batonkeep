@@ -7,9 +7,7 @@ managed (H3) without a schema rewrite.
 """
 from __future__ import annotations
 
-import json
 from datetime import datetime
-from typing import Any, Optional
 
 from sqlalchemy import (
     JSON,
@@ -38,9 +36,9 @@ class Owner(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    tasks: Mapped[list["Task"]] = relationship(back_populates="owner")
-    runs: Mapped[list["Run"]] = relationship(back_populates="owner")
-    credentials: Mapped[list["Credential"]] = relationship(back_populates="owner")
+    tasks: Mapped[list[Task]] = relationship(back_populates="owner")
+    runs: Mapped[list[Run]] = relationship(back_populates="owner")
+    credentials: Mapped[list[Credential]] = relationship(back_populates="owner")
 
 
 class Task(Base):
@@ -51,15 +49,15 @@ class Task(Base):
         String(64), ForeignKey("owners.id"), nullable=False, default="local", index=True
     )
     name: Mapped[str] = mapped_column(String(256), nullable=False)
-    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    category: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    category: Mapped[str | None] = mapped_column(String(64), nullable=True)
     prompt_template: Mapped[str] = mapped_column(Text, nullable=False, default="")
     # {key: value} filled into prompt via str.format_map with defaultdict
-    params: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    params: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # "none" | "interval" | "cron"
     schedule_kind: Mapped[str] = mapped_column(String(16), default="none")
     # cron expression or interval seconds
-    schedule_expr: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    schedule_expr: Mapped[str | None] = mapped_column(String(128), nullable=True)
     # IANA timezone the cron expression is interpreted in (e.g. "America/Los_Angeles").
     # "UTC" by default; ignored for interval/none schedules.
     timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="UTC")
@@ -67,7 +65,7 @@ class Task(Base):
     want_json: Mapped[bool] = mapped_column(Boolean, default=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     # Routing policy JSON (§4.3)
-    routing: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    routing: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -75,8 +73,8 @@ class Task(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-    owner: Mapped["Owner"] = relationship(back_populates="tasks")
-    runs: Mapped[list["Run"]] = relationship(back_populates="task", cascade="all, delete-orphan")
+    owner: Mapped[Owner] = relationship(back_populates="tasks")
+    runs: Mapped[list[Run]] = relationship(back_populates="task", cascade="all, delete-orphan")
 
 
 class Run(Base):
@@ -86,42 +84,44 @@ class Run(Base):
     owner_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("owners.id"), nullable=False, default="local", index=True
     )
-    task_id: Mapped[int] = mapped_column(Integer, ForeignKey("tasks.id"), nullable=False, index=True)
+    task_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("tasks.id"), nullable=False, index=True
+    )
     # "manual" | "schedule"
     trigger: Mapped[str] = mapped_column(String(16), default="manual")
     # "queued" | "running" | "succeeded" | "failed" | "deferred" | "cancelled"
     status: Mapped[str] = mapped_column(String(16), default="queued", index=True)
-    summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
     # provider instance id that ultimately produced the result (e.g. "claude:work")
-    provider: Mapped[Optional[str]] = mapped_column(String(96), nullable=True)
-    model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
-    tier: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    provider: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    tier: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # ordered list of attempt outcomes: [{provider, outcome, reset_at?}]
-    attempts: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    attempts: Mapped[list | None] = mapped_column(JSON, nullable=True)
     overflow_used: Mapped[bool] = mapped_column(Boolean, default=False)
-    deferred_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    deferred_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     tokens_in: Mapped[int] = mapped_column(Integer, default=0)
     tokens_out: Mapped[int] = mapped_column(Integer, default=0)
     cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
     subagents: Mapped[int] = mapped_column(Integer, default=0)
     tool_calls: Mapped[int] = mapped_column(Integer, default=0)
-    markdown_path: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
-    json_path: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    markdown_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    json_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
-    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    owner: Mapped["Owner"] = relationship(back_populates="runs")
-    task: Mapped["Task"] = relationship(back_populates="runs")
-    events: Mapped[list["RunEvent"]] = relationship(
+    owner: Mapped[Owner] = relationship(back_populates="runs")
+    task: Mapped[Task] = relationship(back_populates="runs")
+    events: Mapped[list[RunEvent]] = relationship(
         back_populates="run", cascade="all, delete-orphan", order_by="RunEvent.seq"
     )
 
     @property
-    def duration_ms(self) -> Optional[int]:
+    def duration_ms(self) -> int | None:
         if self.started_at and self.finished_at:
             return int((self.finished_at - self.started_at).total_seconds() * 1000)
         return None
@@ -136,11 +136,11 @@ class RunEvent(Base):
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     # EventKind: log | phase | token | tool | subagent | result | error | route
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
-    phase: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    data: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    phase: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
-    run: Mapped["Run"] = relationship(back_populates="events")
+    run: Mapped[Run] = relationship(back_populates="events")
 
 
 class Session(Base):
@@ -162,7 +162,7 @@ class Session(Base):
     )
     title: Mapped[str] = mapped_column(String(256), nullable=False, default="Untitled session")
     # currently-selected provider instance id (e.g. "grok", "agy", "mock")
-    provider: Mapped[Optional[str]] = mapped_column(String(96), nullable=True)
+    provider: Mapped[str | None] = mapped_column(String(96), nullable=True)
     # absolute path to the sandboxed workspace directory
     workspace_path: Mapped[str] = mapped_column(String(512), nullable=False)
     # unguessable token gating the live preview (M1.2). Required on every preview
@@ -173,7 +173,7 @@ class Session(Base):
     # Cloudflare Pages project this session deploys to (D-0009). The token+account
     # are owner-level (encrypted store); the *project* is per-session so each build
     # gets its own site. Remembered after the first deploy; defaults from the title.
-    cf_project: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    cf_project: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # Sovereignty toggle (P-0009 #1): when set, every turn is pinned to a local
     # model — the workspace + prompt never leave the box, and a remote provider
     # selection is overridden to a local one (fail closed if none is available).
@@ -185,7 +185,7 @@ class Session(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-    turns: Mapped[list["SessionTurn"]] = relationship(
+    turns: Mapped[list[SessionTurn]] = relationship(
         back_populates="session", cascade="all, delete-orphan", order_by="SessionTurn.seq"
     )
 
@@ -204,25 +204,25 @@ class SessionTurn(Base):
     )
     seq: Mapped[int] = mapped_column(Integer, nullable=False)
     # the provider instance id that handled this turn (records the agent switch)
-    provider: Mapped[Optional[str]] = mapped_column(String(96), nullable=True)
+    provider: Mapped[str | None] = mapped_column(String(96), nullable=True)
     prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    response: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    response: Mapped[str | None] = mapped_column(Text, nullable=True)
     # "running" | "succeeded" | "failed"
     status: Mapped[str] = mapped_column(String(16), default="running", index=True)
-    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
     # M1.3 versioning: the workspace commit this turn produced (None if the turn
     # changed no files), plus a `git --stat` summary for the History/event view.
-    commit_sha: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
-    diffstat: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    diffstat: Mapped[str | None] = mapped_column(Text, nullable=True)
     # D-0017 thread 2: per-file artifact list (JSON) the turn produced — the result
     # surfaced to the user is the workspace files changed, not scraped agent text.
-    changed_files: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    changed_files: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
-    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    session: Mapped["Session"] = relationship(back_populates="turns")
+    session: Mapped[Session] = relationship(back_populates="turns")
 
 
 class Artifact(Base):
@@ -249,14 +249,14 @@ class Artifact(Base):
     )
     kind: Mapped[str] = mapped_column(String(32), default="site")
     # the workspace commit snapshotted at publish time
-    version: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    version: Mapped[str | None] = mapped_column(String(40), nullable=True)
     # public, unguessable share token; NULL when revoked/never published
-    share_token: Mapped[Optional[str]] = mapped_column(
+    share_token: Mapped[str | None] = mapped_column(
         String(64), nullable=True, unique=True, index=True
     )
     published: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     # absolute path to the materialized publish bundle dir (NULL when revoked)
-    path: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -278,18 +278,18 @@ class Credential(Base):
     # or an instance id ("openai-api:team") for an extra same-provider subscription.
     provider: Mapped[str] = mapped_column(String(96), nullable=False)
     # optional human label for the account (e.g. "Work key")
-    label: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    label: Mapped[str | None] = mapped_column(String(128), nullable=True)
     ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
     # Non-secret last-4 fingerprint so the secrets surface can distinguish keys
     # without ever decrypting them. Set at write time; never the full value.
-    key_hint: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
+    key_hint: Mapped[str | None] = mapped_column(String(8), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
     # Touched whenever an executor resolves this key — turns the store into an
     # observable surface ("is this key actually in use, and when last?").
-    last_used_at: Mapped[Optional[datetime]] = mapped_column(
+    last_used_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 
-    owner: Mapped["Owner"] = relationship(back_populates="credentials")
+    owner: Mapped[Owner] = relationship(back_populates="credentials")

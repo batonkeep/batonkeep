@@ -7,6 +7,7 @@ All seeds use candidates=["mock"] so they run with zero credentials.
 from __future__ import annotations
 
 import logging
+
 from app.db import AsyncSessionLocal
 from app.models import Task
 
@@ -26,13 +27,16 @@ _MOCK_ROUTING = {
 SEED_TASKS = [
     {
         "name": "Daily AI Ecosystem Brief",
-        "description": "Latest AI model releases, coding agents/CLIs, launches, and notable papers.",
+        "description": (
+            "Latest AI model releases, coding agents/CLIs, launches, and notable papers."
+        ),
         "category": "research",
         "prompt_template": (
             "You are an autonomous research agent. Survey the most important AI/ML developments "
             "in the last 24–48 hours: model releases, coding-agent/CLI launches, notable papers, "
             "and significant product updates. Group findings by theme. For each item include a "
-            "brief description and a source link. Produce a polished Markdown report with a # title, "
+            "brief description and a source link. Produce a polished Markdown "
+            "report with a # title, "
             "2–3 sentence executive summary, then organised sections."
         ),
         "params": {},
@@ -71,11 +75,14 @@ SEED_TASKS = [
     },
     {
         "name": "Frontier LLM Comparison",
-        "description": "Side-by-side comparison of the latest frontier models across all major labs.",
+        "description": (
+            "Side-by-side comparison of the latest frontier models across all major labs."
+        ),
         "category": "comparison",
         "prompt_template": (
             "Compare the latest frontier LLMs from {labs}. For each: name/version, context window, "
-            "key capabilities, notable strengths and weaknesses, and pricing. End with a recommendation "
+            "key capabilities, notable strengths and weaknesses, and pricing. "
+            "End with a recommendation "
             "table (model / best-for / price tier) and a 2–3 sentence verdict. Output a Markdown "
             "report and a structured ```json block with the comparison data."
         ),
@@ -95,13 +102,16 @@ SEED_TASKS = [
     },
     {
         "name": "Flight Watch",
-        "description": "Best-value flight search for flexible date windows; flag the single best pick.",
+        "description": (
+            "Best-value flight search for flexible date windows; flag the single best pick."
+        ),
         "category": "action",
         "prompt_template": (
             "Search for the best-value flights from {origin} to {destination} around {date_window} "
             "for {pax} passenger(s) in {cabin} class. Rank by total cost, then travel time. "
             "Flag the single best value option with a clear recommendation. "
-            "Output a Markdown comparison table and a ```json watchlist block with the top 5 options."
+            "Output a Markdown comparison table and a ```json watchlist block "
+            "with the top 5 options."
         ),
         "params": {
             "origin": "SYD",
@@ -125,7 +135,7 @@ SEED_TASKS = [
 
 async def seed_if_empty(owner_id: str = "local") -> None:
     """Insert seed tasks only if the tasks table is empty."""
-    from sqlalchemy import select, func
+    from sqlalchemy import func, select
     async with AsyncSessionLocal() as db:
         count = await db.scalar(select(func.count(Task.id)))
         if count and count > 0:

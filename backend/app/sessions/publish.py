@@ -19,7 +19,6 @@ import logging
 import os
 import shutil
 import zipfile
-from typing import Optional
 
 from app.config import get_settings
 from app.sessions import workspace as ws
@@ -79,7 +78,7 @@ def build_bundle(workspace: str, share_token: str) -> str:
     return dest
 
 
-def remove_bundle(share_token: Optional[str], path: Optional[str]) -> None:
+def remove_bundle(share_token: str | None, path: str | None) -> None:
     """Remove a published bundle dir (revoke). Best-effort; never raises."""
     target = path
     if not target and share_token:

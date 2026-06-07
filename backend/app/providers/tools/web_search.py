@@ -15,7 +15,11 @@ TOOL_SCHEMA = {
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "The search query."},
-            "num_results": {"type": "integer", "default": 5, "description": "Max results to return."},
+            "num_results": {
+                "type": "integer",
+                "default": 5,
+                "description": "Max results to return.",
+            },
         },
         "required": ["query"],
     },
@@ -57,6 +61,7 @@ def _parse_ddg_html(html: str, max_results: int) -> list[dict]:
         re.DOTALL,
     )
     for url, title, snippet in blocks[:max_results]:
-        clean = lambda s: re.sub(r"<[^>]+>", "", s).strip()
+        def clean(s):
+            return re.sub(r"<[^>]+>", "", s).strip()
         results.append({"url": url, "title": clean(title), "snippet": clean(snippet)})
     return results

@@ -9,9 +9,8 @@ from __future__ import annotations
 
 from enum import Enum
 from functools import lru_cache
-from typing import Optional
 
-from pydantic import field_validator, model_validator
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -146,10 +145,10 @@ class Settings(BaseSettings):
     upload_allowed_ext: str = "png,jpg,jpeg,svg,webp,csv,pdf,txt,md"
 
     # ── Optional API keys (metered / BYO-key providers) ──────────────────────
-    openai_api_key: Optional[str] = None
-    openai_base_url: Optional[str] = None
-    anthropic_api_key: Optional[str] = None
-    xai_api_key: Optional[str] = None
+    openai_api_key: str | None = None
+    openai_base_url: str | None = None
+    anthropic_api_key: str | None = None
+    xai_api_key: str | None = None
 
     # ── Logging ───────────────────────────────────────────────────────────────
     log_level: str = "INFO"
@@ -163,7 +162,11 @@ class Settings(BaseSettings):
     @property
     def upload_allowed_ext_set(self) -> set[str]:
         """Lowercased extension allowlist (no leading dots) for asset upload-in."""
-        return {e.strip().lstrip(".").lower() for e in self.upload_allowed_ext.split(",") if e.strip()}
+        return {
+            e.strip().lstrip(".").lower()
+            for e in self.upload_allowed_ext.split(",")
+            if e.strip()
+        }
 
     @property
     def plan_cli_allowed(self) -> bool:
@@ -171,7 +174,7 @@ class Settings(BaseSettings):
         return self.deployment_mode != DeploymentMode.managed
 
     @model_validator(mode="after")
-    def _assert_managed_mode_guardrail(self) -> "Settings":
+    def _assert_managed_mode_guardrail(self) -> Settings:
         """
         Legal guardrail (§1a / §4.1): managed mode must NEVER instantiate plan-CLI.
         This is a structural check at config load, not a runtime promise.

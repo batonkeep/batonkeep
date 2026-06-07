@@ -72,7 +72,7 @@ def latest_history(task_id: int, max_chars: int = 8000) -> str | None:
     for d in runs:
         md = os.path.join(history, d, "output.md")
         if os.path.isfile(md):
-            with open(md, "r", encoding="utf-8") as f:
+            with open(md, encoding="utf-8") as f:
                 text = f.read().strip()
             return text[:max_chars] if text else None
     return None

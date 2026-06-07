@@ -33,7 +33,8 @@ make auth                     # log in to your subscription-plan CLIs (claude, g
 
 ## License
 
-AGPLv3. See `LICENSE`. Enterprise/commercial licensing available — open an issue.
+Copyright © 2026 BLAZE LABS PTY LTD. Batonkeep is licensed under the **AGPLv3** — see
+`LICENSE`. Enterprise/commercial licensing available — open an issue.
 
 ## Contributing
 

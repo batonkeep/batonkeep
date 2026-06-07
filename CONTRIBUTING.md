@@ -1,7 +1,12 @@
 # Contributing to Batonkeep
 
-Batonkeep is licensed under the GNU Affero General Public License v3.0 (AGPLv3).
-By contributing, you agree that your contributions will be licensed under the same license.
+Batonkeep is owned by **BLAZE LABS PTY LTD** and licensed under the GNU Affero General
+Public License v3.0 (AGPLv3). By contributing, you agree that your contributions will be
+licensed under the same license.
+
+**You keep the copyright in what you contribute.** Batonkeep uses a lightweight Developer
+Certificate of Origin (DCO), not a copyright assignment or CLA — contributors retain
+ownership of their contributions and license them under the AGPLv3 via the DCO sign-off below.
 
 ## Developer Certificate of Origin (DCO)
 

@@ -18,7 +18,7 @@ import re
 from typing import BinaryIO
 
 from app.config import get_settings
-from app.sessions.workspace import safe_join
+from app.sessions.workspace import safe_join, group_writable
 
 _settings = get_settings()
 
@@ -81,22 +81,26 @@ def save_upload(workspace: str, filename: str, src: BinaryIO) -> str:
     """
     relpath = dest_relpath(filename)
     abs_path = safe_join(workspace, relpath)  # defence-in-depth vs traversal
-    os.makedirs(os.path.dirname(abs_path), exist_ok=True)
 
     max_bytes = _settings.upload_max_bytes
     written = 0
     try:
-        with open(abs_path, "wb") as out:
-            while True:
-                chunk = src.read(64 * 1024)
-                if not chunk:
-                    break
-                written += len(chunk)
-                if written > max_bytes:
-                    raise UploadError(
-                        413, f"file exceeds max upload size ({max_bytes} bytes)"
-                    )
-                out.write(chunk)
+        # Group-write umask so the asset lands co-writable by the sandbox-user
+        # agent (P-0022/D-0020), not just readable — assets/ and data/ inherit the
+        # setgid `agents` group from the workspace root. No await inside the block.
+        with group_writable():
+            os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+            with open(abs_path, "wb") as out:
+                while True:
+                    chunk = src.read(64 * 1024)
+                    if not chunk:
+                        break
+                    written += len(chunk)
+                    if written > max_bytes:
+                        raise UploadError(
+                            413, f"file exceeds max upload size ({max_bytes} bytes)"
+                        )
+                    out.write(chunk)
     except UploadError:
         _remove_quiet(abs_path)
         raise

@@ -549,6 +549,20 @@ class CLIExecutor(Executor):
                     message=f"[{self.name}] complete (plain-text fallback)",
                     data={"result": result, "usage": usage.__dict__},
                 )
+            elif not had_terminal_result:
+                # Stream ended with no result event AND no usable text (e.g. the agent
+                # emitted only reasoning/thoughts then EndTurn, or exited non-zero).
+                # Emit an explicit error so the orchestrator records an honest failure
+                # instead of receiving no terminal event and silently re-running.
+                tail = (stderr_all or "")[-300:]
+                yield ExecEvent(
+                    kind=EventKind.error,
+                    message=(
+                        f"[{self.name}] agent exited without output "
+                        f"(returncode={proc.returncode})"
+                        + (f": {tail}" if tail else "")
+                    ),
+                )
 
         except FileNotFoundError:
             yield ExecEvent(

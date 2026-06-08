@@ -87,7 +87,7 @@ async def _sync_all_tasks(sched: AsyncIOScheduler) -> None:
     """Load all tasks from DB and register their jobs."""
     async with AsyncSessionLocal() as db:
         from sqlalchemy import select
-        result = await db.execute(select(Task).where(Task.enabled is True))
+        result = await db.execute(select(Task).where(Task.enabled.is_(True)))
         tasks = result.scalars().all()
 
     for task in tasks:

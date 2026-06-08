@@ -372,6 +372,29 @@ _CLI_DEFAULT_DIR = {"claude": ".claude", "grok": ".grok", "agy": ".gemini", "cod
 _CLI_MODEL_KEY = {"codex": "model", "grok": "default_model"}  # in <dir>/config.toml
 
 
+def _cli_auth_home() -> str:
+    """Home dir under which a default plan-CLI instance's auth lives.
+
+    Plan-CLIs run as the low-priv `sandbox` user (HOME=/home/agent) through the
+    setuid spawner, so their auth dirs (~/.claude, ~/.codex, …) sit under THAT
+    user's home — not the backend process's HOME (/home/batond). Resolving against
+    the process HOME made /api/providers report every plan-CLI disconnected even
+    though task runs (which spawn as `sandbox`) authenticated fine. When the
+    sandbox split is active, resolve against the sandbox user's home; otherwise
+    (local dev / tests / non-container) fall back to the process HOME.
+    """
+    from app import sandbox
+
+    if sandbox.available():
+        try:
+            import pwd
+
+            return pwd.getpwnam("sandbox").pw_dir
+        except (KeyError, ImportError):
+            return "/home/agent"
+    return os.environ.get("HOME") or os.path.expanduser("~")
+
+
 def cli_configured_model(inst: ProviderInstance, pdef: ProviderDef) -> str | None:
     """Best-effort read of a plan-CLI's currently selected model from its config."""
     key = _CLI_MODEL_KEY.get(pdef.name)
@@ -380,7 +403,7 @@ def cli_configured_model(inst: ProviderInstance, pdef: ProviderDef) -> str | Non
     if inst.cli_config_dir:
         cfg_dir = inst.cli_config_dir
     else:
-        home = os.environ.get("HOME") or os.path.expanduser("~")
+        home = _cli_auth_home()
         sub = _CLI_DEFAULT_DIR.get(pdef.name)
         cfg_dir = os.path.join(home, sub) if sub else None
     if not cfg_dir:
@@ -524,16 +547,21 @@ async def is_instance_connected(inst: ProviderInstance) -> bool:
     if pdef.kind == "cli":
         import shutil
 
+        from app import sandbox
+
         if not (pdef.cli_binary and shutil.which(pdef.cli_binary)):
             return False
-        # Logged-in heuristic: the account's config dir exists.
+        # Logged-in heuristic: the account's auth dir exists. The check runs through
+        # the sandbox spawner (as the `sandbox` user) because the CLI auth lives under
+        # /home/agent, which the control-plane `batond` user cannot traverse — a direct
+        # os.path.exists would always report "offline" even when the CLI is logged in.
         if inst.cli_config_dir:
-            return os.path.exists(inst.cli_config_dir)
-        # Default instance → the CLI's own auth dir under $HOME.
-        home = os.environ.get("HOME") or os.path.expanduser("~")
-        auth_dirs = {"claude": ".claude", "grok": ".grok", "agy": ".gemini", "codex": ".codex"}
-        sub = auth_dirs.get(pdef.name)
-        return os.path.exists(os.path.join(home, sub)) if sub else True
+            return await sandbox.path_exists(inst.cli_config_dir)
+        # Default instance → the CLI's own auth dir under the sandbox user's HOME
+        # (where headless task turns authenticate), not the backend process HOME.
+        home = _cli_auth_home()
+        sub = _CLI_DEFAULT_DIR.get(pdef.name)
+        return await sandbox.path_exists(os.path.join(home, sub)) if sub else True
 
     if pdef.kind in ("openai_compatible", "anthropic"):
         from app.credentials import resolve_api_key

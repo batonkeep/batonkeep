@@ -106,14 +106,19 @@ function AppShell() {
     api.getConsoleConfig().then((c) => setConsoleAvailable(c.available)).catch(() => { });
   }, [loadTasks, loadRuns, loadProviders, loadStats, loadCreds, loadSessions]);
 
-  // Poll the slowly-changing aggregates; live run state comes over the WS.
+  // Poll the slowly-changing aggregates. Run state is driven live over the WS, but
+  // we also re-fetch runs here as a safety net: a single dropped run.update frame
+  // (e.g. the terminal "succeeded" lost under a heavy token-stream) would otherwise
+  // strand a finished run showing "running" until a manual reload. Polling lets the
+  // status self-heal within the interval.
   useEffect(() => {
     const id = setInterval(() => {
       loadStats();
       loadProviders();
+      loadRuns();
     }, 5000);
     return () => clearInterval(id);
-  }, [loadStats, loadProviders]);
+  }, [loadStats, loadProviders, loadRuns]);
 
   // 1s clock for countdowns / elapsed timers.
   useEffect(() => {
@@ -122,11 +127,21 @@ function AppShell() {
   }, []);
 
   // ── Merge fetched runs with live WS updates ─────────────────────────────────
+  // Live WS state is normally freshest, so it wins — EXCEPT when the fetched run is
+  // already terminal but the live one isn't. That happens when the terminal
+  // run.update frame was dropped: the REST poll then carries the true final state,
+  // which must not be clobbered by the stale "running" still sitting in liveRuns.
+  const TERMINAL = ["succeeded", "failed", "cancelled"];
   const mergedRuns = useMemo(() => {
     const byId = new Map<number, Run>();
     for (const r of runs) byId.set(r.id, r);
-    for (const r of Object.values(liveRuns)) byId.set(r.id, r);
+    for (const r of Object.values(liveRuns)) {
+      const fetched = byId.get(r.id);
+      if (fetched && TERMINAL.includes(fetched.status) && !TERMINAL.includes(r.status)) continue;
+      byId.set(r.id, r);
+    }
     return Array.from(byId.values()).sort((a, b) => b.id - a.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runs, liveRuns]);
 
   const latestRunByTask = useMemo(() => {

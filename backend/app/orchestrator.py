@@ -66,7 +66,21 @@ async def execute_run(run_id: int) -> None:
 
     with bind_run(run_id, owner_id):
         async with _global_sem:
-            await _do_execute(run_id, task)
+            try:
+                await _do_execute(run_id, task)
+            except asyncio.CancelledError:
+                # Cancellation is owned by cancel_run (it sets status=cancelled);
+                # don't mask it as a failure — just propagate.
+                raise
+            except Exception as exc:
+                # Without this, an unhandled error after the run went non-terminal
+                # (e.g. a post-processing crash) would strand it in "running"
+                # forever and the fire-and-forget task would swallow the error.
+                logger.exception("[orchestrator] run %d crashed in _do_execute", run_id)
+                async with AsyncSessionLocal() as db:
+                    run = await db.get(Run, run_id)
+                    if run is not None and run.status not in _TERMINAL_RUN_STATUSES:
+                        await _fail(db, run, f"internal error: {exc}")
 
 
 async def _do_execute(run_id: int, task: Task) -> None:
@@ -305,6 +319,20 @@ async def _do_execute(run_id: int, task: Task) -> None:
                         attempt["outcome"] = "error"
                         error_msg = str(exc)
 
+                    # The stream ended without a result, rate-limit, or error event
+                    # (e.g. the agent exited after only emitting reasoning/thoughts).
+                    # Record it as an explicit error instead of silently leaving the
+                    # attempt "pending" and falling through to the next candidate —
+                    # that silent fall-through is what made one run quietly execute
+                    # the agent again on the next candidate / retry.
+                    if final_result is None and not rate_limited and not error_msg:
+                        error_msg = "agent stream ended without producing any output"
+                        attempt["outcome"] = "error"
+                        logger.warning(
+                            "[orchestrator] run %d provider %s produced no terminal result",
+                            run_id, provider_name,
+                        )
+
                     run.attempts = list(attempts)
                     await db.commit()
 
@@ -480,8 +508,9 @@ async def reap_orphaned_runs() -> int:
     """Reconcile runs stranded by a backend restart; return how many were reaped.
 
     Runs execute as in-memory fire-and-forget asyncio tasks (no durable queue), so a
-    crash/restart leaves any `running` or `queued` run with no executor — it would sit
-    non-terminal forever. On startup we mark these `failed` with a clear reason so the
+    crash/restart leaves any `queued`, `planning`, or `running` run with no executor — it
+    would sit non-terminal forever (a `planning` run in particular keeps showing the live
+    pulse when reopened). On startup we mark these `failed` with a clear reason so the
     state is honest and the user can requeue (P5: tasks are the real-work unit). Note:
     `deferred` runs are intentionally left alone — the scheduler's deferred-sweep owns
     those. Durable queueing/auto-requeue is a later managed-scale graduation (D-0021).
@@ -490,7 +519,7 @@ async def reap_orphaned_runs() -> int:
     reaped = 0
     async with AsyncSessionLocal() as db:
         result = await db.execute(
-            select(Run).where(Run.status.in_(("running", "queued")))
+            select(Run).where(Run.status.in_(("running", "queued", "planning")))
         )
         for run in result.scalars().all():
             run.status = "failed"
@@ -507,6 +536,9 @@ async def reap_orphaned_runs() -> int:
 # ── enqueue ────────────────────────────────────────────────────────────────────
 
 _ACTIVE_RUN_STATUSES = ("queued", "planning", "running", "deferred")
+# Statuses we must not overwrite when reconciling a crashed run (terminal + deferred,
+# which is owned by the deferred sweep).
+_TERMINAL_RUN_STATUSES = ("succeeded", "failed", "cancelled", "deferred")
 
 
 async def enqueue_run(
@@ -552,7 +584,17 @@ async def enqueue_run(
 
     bg_task = asyncio.create_task(execute_run(run_id))
     _cancel_handles[run_id] = bg_task
-    bg_task.add_done_callback(lambda t: _cancel_handles.pop(run_id, None))
+
+    def _on_done(t: asyncio.Task) -> None:
+        _cancel_handles.pop(run_id, None)
+        # Surface a swallowed crash (execute_run already reconciles the row, but the
+        # task's exception would otherwise vanish with no log).
+        if not t.cancelled():
+            exc = t.exception()
+            if exc is not None:
+                logger.error("[orchestrator] run %d background task failed: %r", run_id, exc)
+
+    bg_task.add_done_callback(_on_done)
 
     async with AsyncSessionLocal() as db:
         run = await db.get(Run, run_id)

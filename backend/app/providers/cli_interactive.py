@@ -400,17 +400,23 @@ class CLIInteractiveExecutor(Executor):
                 os.write(master_fd, s.encode("utf-8"))
 
             async def _drain_until_idle(
-                *, capture: bool, first_timeout: float = idle_timeout
+                *, capture: bool, first_timeout: float = idle_timeout,
+                quiet_timeout: float | None = None,
             ) -> None:
                 """Read PTY output until it goes idle, feeding every byte into the
                 emulated screen. When capture, snapshot the final rendered screen
                 (the TUI's response) once idle; otherwise just advance the screen
                 state (startup banner / echoed input we don't keep).
 
-                If `capture_until` is set, a content-match short-circuits idle
-                detection: once the rendered screen matches, let it settle briefly,
-                then snapshot and stop — for panels that redraw forever (grok)."""
+                `quiet_timeout` is the silence-gap that counts as idle *after* the
+                first byte (defaults to idle_timeout). Throwaway settle drains pass
+                a short value so they don't burn the full 20s idle window waiting on
+                an already-settled prompt. If `capture_until` is set, a content-match
+                short-circuits idle detection: once the rendered screen matches, let
+                it settle briefly, then snapshot and stop — for panels that redraw
+                forever (grok)."""
                 nonlocal accumulated
+                gap = quiet_timeout if quiet_timeout is not None else idle_timeout
                 timeout = first_timeout
                 while True:
                     try:
@@ -419,7 +425,7 @@ class CLIInteractiveExecutor(Executor):
                         break  # idle → turn done
                     if not chunk:
                         break  # EOF
-                    timeout = idle_timeout
+                    timeout = gap
                     vt_stream.feed(chunk)
                     if capture and capture_until is not None and capture_until.search(
                         render_screen(screen)
@@ -454,12 +460,21 @@ class CLIInteractiveExecutor(Executor):
 
             # Bound the whole interaction by the hard run timeout.
             async def _interact() -> None:
-                # Let the TUI paint + settle; discard the banner.
-                await _drain_until_idle(capture=False, first_timeout=spec.startup_grace)
+                # Let the TUI paint + settle, then discard the banner. These are
+                # throwaway settle drains: once the paint stops for `startup_grace`
+                # we move on — we must NOT wait the full idle window (an always-idle
+                # prompt would burn ~20s per drain, the bulk of grok's capture time).
+                await _drain_until_idle(
+                    capture=False, first_timeout=spec.startup_grace,
+                    quiet_timeout=spec.startup_grace,
+                )
                 # Clear any startup modal/dialog so input lands in the prompt.
                 for k in spec.startup_keys:
                     _write(k)
-                    await _drain_until_idle(capture=False)
+                    await _drain_until_idle(
+                        capture=False, first_timeout=spec.startup_grace,
+                        quiet_timeout=spec.startup_grace,
+                    )
                 if prompt.strip():
                     await _send(prompt)
                     await _drain_until_idle(capture=True)

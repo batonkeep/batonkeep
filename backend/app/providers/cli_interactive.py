@@ -73,6 +73,11 @@ _settings = get_settings()
 _META_COMMANDS = frozenset({"/usage", "/model", "/status", "/cost"})
 
 
+def _command_head(cmd: str) -> str:
+    """First token of a control command — "/usage show" (grok) → "/usage"."""
+    return cmd.strip().split()[0] if cmd.strip() else ""
+
+
 def _is_autonomous_driving(prompt: str, control_commands: list[str]) -> bool:
     """A run is 'autonomous driving' (D-0016 prohibited outside personal mode)
     if it submits a real task prompt or any control command that isn't a
@@ -81,10 +86,20 @@ def _is_autonomous_driving(prompt: str, control_commands: list[str]) -> bool:
         return True
     for cmd in control_commands:
         # Match on the head token so "/usage show" (grok) counts as meta.
-        head = cmd.strip().split()[0] if cmd.strip() else ""
-        if head not in _META_COMMANDS:
+        if _command_head(cmd) not in _META_COMMANDS:
             return True
     return False
+
+
+def _is_meta_capture(prompt: str, control_commands: list[str]) -> bool:
+    """A sanctioned read-only meta capture: at least one control command, no task
+    prompt, and every command is a single-shot meta query (/usage·/status·/cost·
+    /model, head-matched so grok's "/usage show" counts). These are safe in every
+    mode and DON'T require the terminal-seam master switch (D-0023) — the switch
+    gates the wider autonomous TUI surface, enforced separately by the
+    personal-mode gate. Per-provider commands all reduce to a meta head:
+    claude/agy "/usage", codex "/status", grok "/usage show"."""
+    return bool(control_commands) and not _is_autonomous_driving(prompt, control_commands)
 
 
 # Seconds of silence on the PTY that we treat as "the turn finished". TUIs render
@@ -250,23 +265,36 @@ class CLIInteractiveExecutor(Executor):
             )
             return
 
-        policy = get_policy()
-        if not policy.enabled:
-            yield ExecEvent(
-                kind=EventKind.error,
-                message=f"[{self.name}] terminal seam disabled (terminal_seam_enabled=false)",
-            )
-            return
-
         extra = extra or {}
         control_commands: list[str] = list(extra.get("control_commands") or [])
         idle_timeout = float(extra.get("idle_timeout") or _DEFAULT_IDLE_TIMEOUT)
         hard_timeout = _settings.run_timeout_seconds
         spec = get_tui_spec(self._def.name)  # per-provider TUI adapter
 
+        policy = get_policy()
+        # Read-only meta captures (the /usage·/status·/cost·/model single-shot path,
+        # e.g. the subscription-usage poll) are sanctioned in every mode and do NOT
+        # require the terminal-seam master switch — they ride the built-in
+        # _META_COMMANDS allowlist instead (D-0023). Everything else needs the seam
+        # enabled and rides the operator allowlist. The wider autonomous surface is
+        # still gated by the personal-mode check below.
+        meta_capture = _is_meta_capture(prompt, control_commands)
+
+        if not policy.enabled and not meta_capture:
+            yield ExecEvent(
+                kind=EventKind.error,
+                message=f"[{self.name}] terminal seam disabled (terminal_seam_enabled=false)",
+            )
+            return
+
         # Policy gate: every control command must pass BEFORE we spawn anything.
         for cmd in control_commands:
-            ok, reason = policy.check_command(cmd)
+            if meta_capture:
+                # Independent of the master switch — restrict to the read-only meta set.
+                ok = _command_head(cmd) in _META_COMMANDS
+                reason = "not a read-only meta command" if not ok else ""
+            else:
+                ok, reason = policy.check_command(cmd)
             if not ok:
                 logger.warning(
                     "[%s] terminal seam refused control command %r: %s", self.name, cmd, reason

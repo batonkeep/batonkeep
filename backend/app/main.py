@@ -39,6 +39,7 @@ from app.schemas import (
     CloudflareDeployIn,
     CloudflareDeployOut,
     CloudflareStatusOut,
+    CockpitOut,
     ConsoleConfig,
     CredentialCreate,
     CredentialOut,
@@ -1214,6 +1215,26 @@ async def get_stats(
         cost_today_usd=round(cost_today_usd, 6),
         active_runs=active_runs,
     )
+
+
+# ── /api/cockpit (operational telemetry — D-0022 Task A, audience A) ──────────────
+
+@app.get("/api/cockpit", response_model=CockpitOut, tags=["meta"])
+async def get_cockpit(
+    window_days: int = 7,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """
+    The operator cockpit (D-0022): the user's consolidated view of **their own**
+    work — spend, run outcomes, latency, failovers, errors-by-class, and build/
+    session activity over a trailing window. Local-first and sovereign by
+    construction; this data never leaves the deployment and asks no consent
+    (that is audience B, gated on managed). Reuses the shipped cost/quota/domain
+    telemetry — one model, not a parallel pipe.
+    """
+    from app.telemetry import operational_cockpit
+    return CockpitOut(**await operational_cockpit(db, owner_id, window_days=window_days))
 
 
 # ── /api/credentials (BYO-key) ───────────────────────────────────────────────────

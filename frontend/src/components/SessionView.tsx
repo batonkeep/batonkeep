@@ -194,6 +194,7 @@ export default function SessionView({
   const [uploading, setUploading] = useState(false);
   const [uploaded, setUploaded] = useState<string[]>([]); // paths dropped this session, for chips
   const [templates, setTemplates] = useState<SessionTemplate[]>([]); // task-type starters
+  const [activeTemplate, setActiveTemplate] = useState<string | null>(null); // template used to create the current session
   // Mobile only: the 3-pane grid can't fit a phone, so a selected session is a
   // master→detail view with a Chat/Preview tab switch. Desktop ignores this.
   const [mobilePane, setMobilePane] = useState<"chat" | "preview">("chat");
@@ -214,11 +215,20 @@ export default function SessionView({
   const streamRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
+  // Carries the template id from handleCreate across the selectedId-reset useEffect.
+  // undefined = no pending create (normal session switch → reset to null).
+  const pendingTemplateRef = useRef<string | null | undefined>(undefined);
   const [importing, setImporting] = useState(false);
   const [importModalOpen, setImportModalOpen] = useState(false);
   const [gitUrl, setGitUrl] = useState("");
   const [gitBranch, setGitBranch] = useState("");
   const [importError, setImportError] = useState<string | null>(null);
+  const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.innerWidth < 1024);
+  useEffect(() => {
+    const check = () => setIsMobile(window.innerWidth < 1024);
+    window.addEventListener("resize", check);
+    return () => window.removeEventListener("resize", check);
+  }, []);
 
   // Distinct provider instance ids for the switcher (grouped by what's healthy).
   const providerIds = useMemo(
@@ -283,6 +293,10 @@ export default function SessionView({
     setMobilePane("chat");
     setMode("chat");
     setOpenFile(null);
+    // Consume the pending template set by handleCreate, or reset to null on a
+    // normal session switch where no create was in flight.
+    setActiveTemplate(pendingTemplateRef.current !== undefined ? pendingTemplateRef.current : null);
+    pendingTemplateRef.current = undefined;
     setCfUrl(null);
     setCfError(null);
     if (!selectedId) return;
@@ -322,6 +336,8 @@ export default function SessionView({
 
   const handleCreate = async (template?: string) => {
     setCreating(true);
+    // Write the template intent before onSelect triggers the selectedId useEffect.
+    pendingTemplateRef.current = template ?? null;
     try {
       const s = await api.createSession({
         ...(template ? { template } : { title: "Untitled session" }),
@@ -329,6 +345,9 @@ export default function SessionView({
       });
       onSessionsChanged();
       onSelect(s.id);
+    } catch {
+      // If creation fails, clear the pending ref so we don't poison the next switch.
+      pendingTemplateRef.current = undefined;
     } finally {
       setCreating(false);
     }
@@ -1051,7 +1070,9 @@ export default function SessionView({
 
               {turns.length === 0 && !pendingMessage && (
                 <div className="text-sm text-muted">
-                  Describe what you want to build — e.g. “spin up a landing page”.
+                  {activeTemplate
+                    ? (templates.find((t) => t.id === activeTemplate)?.description ?? "Describe what you want to do.")
+                    : "Describe what you want to build — e.g. “spin up a landing page”."}
                 </div>
               )}
               {turns.map((t) => (
@@ -1236,7 +1257,7 @@ export default function SessionView({
                 </div>
               )}
               {mode === "chat" && (
-                <div className="flex items-start gap-2">
+                <div className="relative">
                   <textarea
                     value={message}
                     onChange={(e) => setMessage(e.target.value)}
@@ -1252,19 +1273,17 @@ export default function SessionView({
                       handleUpload(e.dataTransfer.files);
                     }}
                     rows={2}
-                    placeholder="Describe the next change…  (drop files here · ⌘/Ctrl+Enter to send)"
-                    className="flex-1 resize-none rounded-md border border-edge bg-base px-3 py-2 text-sm text-ink placeholder:text-muted focus-visible:border-brand/60 focus-visible:outline-none"
+                    placeholder={isMobile ? "Describe the next change…" : "Describe the next change…  (drop files here · ⌘/Ctrl+Enter to send)"}
+                    className="w-full resize-none rounded-md border border-edge bg-base py-2 pl-3 pr-12 text-sm text-ink placeholder:text-muted focus-visible:border-brand/60 focus-visible:outline-none"
                   />
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    className="shrink-0"
-                    icon={<Send size={14} />}
+                  <button
                     onClick={handleSend}
                     disabled={!message.trim() || sending}
+                    title="Send (⌘/Ctrl+Enter)"
+                    className="absolute bottom-1.5 right-1.5 flex h-8 w-8 items-center justify-center rounded text-muted transition-colors hover:text-brand disabled:opacity-30 disabled:cursor-not-allowed"
                   >
-                    Send
-                  </Button>
+                    {sending ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+                  </button>
                 </div>
               )}
             </div>

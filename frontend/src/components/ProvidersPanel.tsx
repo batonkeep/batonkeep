@@ -6,10 +6,20 @@ import { lazy, Suspense, useState } from "react";
 import { Check, KeyRound, Pencil, RefreshCw, RotateCcw, Terminal } from "lucide-react";
 import type { ProviderHealth } from "../types";
 import { api } from "../api";
-import { countdown } from "../format";
+import { countdown, fmtRelative } from "../format";
 import { Badge, Button, Card, Input, StatusDot } from "../ui";
 
 const AuthConsole = lazy(() => import("./AuthConsole"));
+
+// A labelled section inside a provider card — the auth / state / usage zones.
+function Zone({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="mt-3 border-t border-edge pt-2">
+      <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-muted/70">{label}</div>
+      {children}
+    </div>
+  );
+}
 
 interface Props {
   providers: ProviderHealth[];
@@ -42,9 +52,21 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
   const [capturing, setCapturing] = useState<string | null>(null);
   const captureUsage = async (instanceId: string) => {
     setCapturing(instanceId);
-    try { await api.captureSubscriptionUsage(instanceId, consoleToken); onRefresh(); }
-    catch { /* surfaced via disabled state */ }
-    finally { setCapturing(null); }
+    // The capture now runs server-side in the background (the full-TTY /usage drive
+    // is slow — a synchronous wait tripped a gateway 504, esp. for grok). Trigger it,
+    // then poll until the freshness stamp advances (the 5s providers refresh updates
+    // the bar in the meantime). Bounded so a stuck capture eventually releases the UI.
+    const before = providers.find((p) => p.name === instanceId)?.usage_seen_at ?? null;
+    try {
+      await api.captureSubscriptionUsage(instanceId, consoleToken);
+      for (let i = 0; i < 24; i++) {
+        await new Promise((r) => setTimeout(r, 2500));
+        const list = await api.listProviders().catch(() => null);
+        const seen = list?.find((p) => p.name === instanceId)?.usage_seen_at ?? null;
+        if (seen && seen !== before) break;
+      }
+    } catch { /* trigger failed (e.g. not authorized) */ }
+    finally { onRefresh(); setCapturing(null); }
   };
 
   // With app-auth the session is the gate; otherwise the legacy token is required.
@@ -103,9 +125,12 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
             {group.instances.map((p) => {
               const isExtra = p.name !== p.template;
               const cooling = !!p.cooldown_until && new Date(p.cooldown_until).getTime() > now;
-              const unhealthy = !p.healthy;
               const usedPct = p.est_used_pct != null ? Math.round(p.est_used_pct * 100) : null;
-              const barColor = usedPct == null ? "bg-edge" : usedPct > 85 ? "bg-bad" : usedPct > 60 ? "bg-defer" : "bg-brand";
+              // The bar fills with *remaining headroom* so a healthy plan reads full,
+              // and drains/reddens as the quota is consumed.
+              const headroomPct = usedPct == null ? null : 100 - usedPct;
+              const barColor = headroomPct == null ? "bg-edge"
+                : headroomPct < 15 ? "bg-bad" : headroomPct < 40 ? "bg-defer" : "bg-brand";
               const healthTone = cooling ? "defer" : p.healthy ? "ok" : "bad";
 
               return (
@@ -150,40 +175,50 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
                     </Badge>
                   </div>
 
-                  {(cooling || unhealthy) && (
-                    <div className="mt-2 flex items-center justify-between">
-                      <span className={`font-mono text-xs ${cooling ? "text-defer" : "text-bad"}`}>
-                        {cooling ? `resets in ${countdown(p.cooldown_until, now)}` : "not connected — re-auth needed"}
+                  {/* Cooldown detail + reset — only when there's something actionable.
+                      The at-a-glance state lives in the header badge (not repeated here). */}
+                  {cooling && (
+                    <div className="mt-3 flex items-center justify-between border-t border-edge pt-2">
+                      <span className="font-mono text-xs text-defer">
+                        resets in {countdown(p.cooldown_until, now)}
                       </span>
-                      {cooling && (
-                        <Button variant="outline" size="sm" icon={<RotateCcw size={11} />}
-                          onClick={() => handleReset(p.name)}
-                          className="border-defer/40 text-defer hover:border-defer">
-                          reset
-                        </Button>
-                      )}
+                      <Button variant="outline" size="sm" icon={<RotateCcw size={11} />}
+                        onClick={() => handleReset(p.name)}
+                        className="border-defer/40 text-defer hover:border-defer">
+                        reset
+                      </Button>
                     </div>
                   )}
 
-                  <div className="mt-3">
+                  {/* USAGE zone — headroom estimate + freshness + manual refresh */}
+                  <Zone label="usage">
                     <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wider text-muted">
                       <span>headroom (est.)</span>
-                      <span>{usedPct == null ? "unknown" : `${100 - usedPct}% left`}</span>
+                      <span>{headroomPct == null ? "unknown" : `${headroomPct}% left`}</span>
                     </div>
                     <div className="h-1.5 w-full overflow-hidden rounded-full bg-base">
-                      <div className={`h-full ${barColor} transition-all`} style={{ width: `${usedPct == null ? 0 : usedPct}%` }} />
+                      <div className={`h-full ${barColor} transition-all`} style={{ width: `${headroomPct == null ? 0 : headroomPct}%` }} />
                     </div>
-                    {canConsole && p.kind === "cli" && (
-                      <button onClick={() => captureUsage(p.name)} disabled={capturing === p.name}
-                        title="Drive /usage once via the full-TTY single-shot seam (read-only)"
-                        className="mt-1.5 font-mono text-[10px] text-brand hover:text-ink disabled:text-muted">
-                        {capturing === p.name ? "capturing /usage…" : "capture /usage quota"}
-                      </button>
+                    {p.kind === "cli" && (
+                      <div className="mt-1.5 flex items-center justify-between">
+                        <span className="font-mono text-[10px] text-muted">
+                          {p.usage_seen_at ? `as of ${fmtRelative(p.usage_seen_at)}` : "not yet captured"}
+                        </span>
+                        {canConsole && (
+                          <button onClick={() => captureUsage(p.name)} disabled={capturing === p.name}
+                            title="Drive /usage once via the full-TTY single-shot seam (read-only). Auto-refreshed in the background; this forces it now."
+                            className="flex items-center gap-1 font-mono text-[10px] text-brand hover:text-ink disabled:text-muted">
+                            <RefreshCw size={10} className={capturing === p.name ? "animate-spin" : ""} />
+                            {capturing === p.name ? "capturing…" : "refresh"}
+                          </button>
+                        )}
+                      </div>
                     )}
-                  </div>
+                  </Zone>
 
+                  {/* AUTH zone — re-auth path (plan-CLI only) */}
                   {p.mode === "plan" && (
-                    <div className="mt-3 border-t border-edge pt-2">
+                    <Zone label="auth">
                       {canConsole ? (
                         <button onClick={() => setAuthTarget(p.name)}
                           className="flex items-center gap-1.5 font-mono text-[11px] text-brand hover:text-ink">
@@ -194,7 +229,7 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
                           <KeyRound size={12} /> re-auth via `make auth p={p.name}`
                         </span>
                       )}
-                    </div>
+                    </Zone>
                   )}
                 </Card>
               );

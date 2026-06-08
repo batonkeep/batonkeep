@@ -121,6 +121,7 @@ export interface ProviderHealth {
   cooldown_until: string | null;
   last_reset_seen: string | null;
   est_used_pct: number | null;
+  usage_seen_at: string | null; // when /usage quota was last captured (D-0023 b)
   mode: string; // plan | api | open | mock
 }
 

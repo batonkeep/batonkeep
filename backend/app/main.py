@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
 from fastapi import (
+    BackgroundTasks,
     Depends,
     FastAPI,
     File,
@@ -1461,6 +1462,7 @@ async def list_providers():
             cooldown_until=health.cooldown_until,
             last_reset_seen=health.last_reset_seen,
             est_used_pct=health.est_used_pct,
+            usage_seen_at=health.subscription_seen_at,
             mode=pdef.mode,
         ))
     return result
@@ -1589,15 +1591,19 @@ async def set_provider_model(
     return {"status": "ok", "instance": instance_id, "model": body.model or None}
 
 
-@app.post("/api/usage/subscription/{instance_id}", tags=["console"])
+@app.post("/api/usage/subscription/{instance_id}", status_code=202, tags=["console"])
 async def capture_subscription_usage_endpoint(
     instance_id: str,
+    background: BackgroundTasks,
     _: None = Depends(_require_console),
 ):
-    """Capture a plan-CLI's /usage panel via the terminal seam and surface the
-    subscription quota on the cost surface (D-0015 #4, closes P-0009 #2).
+    """Kick off a plan-CLI /usage capture via the terminal seam (D-0015 #4, P-0009 #2).
 
-    Requires the instance's exec seam = 'terminal' and '/usage' on the allow-policy.
+    Driving the full-TTY /usage panel is slow (grok's redraw-heavy panel especially),
+    so the capture runs in the **background** and this returns 202 immediately — a
+    synchronous wait would otherwise trip an upstream gateway timeout (504). The
+    result lands on `ProviderHealth.usage_seen_at`/`est_used_pct`; the providers
+    list (polled by the UI) reflects it once the capture completes.
     """
     from app.providers.registry import get_instance, get_provider_def
     from app.subscription_usage import capture_subscription_usage
@@ -1610,8 +1616,8 @@ async def capture_subscription_usage_endpoint(
             status_code=400,
             detail="Subscription usage applies to plan-CLI instances only.",
         )
-    usage = await capture_subscription_usage(instance_id)
-    return usage.to_dict()
+    background.add_task(capture_subscription_usage, instance_id)
+    return {"status": "scheduled", "instance": instance_id}
 
 
 @app.websocket("/ws/console")

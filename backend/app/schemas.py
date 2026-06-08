@@ -339,6 +339,7 @@ class ProviderHealth(BaseModel):
     cooldown_until: datetime | None
     last_reset_seen: datetime | None
     est_used_pct: float | None
+    usage_seen_at: datetime | None = None  # when /usage quota was last captured (D-0023 b)
     mode: str  # plan | api | open | mock
 
 

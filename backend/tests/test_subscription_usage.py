@@ -107,6 +107,41 @@ async def test_capture_feeds_quota_tracker(monkeypatch):
     assert quota_tracker.get_health("claude").est_used_pct == 0.55
 
 
+class _RecordingExecutor:
+    """Fake executor that records the `extra` it was driven with."""
+    def __init__(self, events):
+        self._events = events
+        self.extra = None
+
+    async def run_stream(self, prompt, *, workdir=None, tools_enabled=True, extra=None, **kw):
+        self.extra = extra or {}
+        for ev in self._events:
+            yield ev
+
+
+@pytest.mark.asyncio
+async def test_grok_capture_passes_capture_until(monkeypatch):
+    # grok's panel redraws forever; the seam needs a content-match to stop, so the
+    # capture must hand it a `capture_until` pattern. The rendered panel still parses.
+    rec = _RecordingExecutor([ExecEvent(kind=EventKind.token, text="Credits used: 42%")])
+    monkeypatch.setattr("app.subscription_usage.get_interactive_executor", lambda _id: rec)
+    u = await capture_subscription_usage("grok")
+    assert rec.extra.get("capture_until")  # grok gets the content-match pattern
+    assert u.ok is True
+    assert u.used_pct == 0.42
+
+
+@pytest.mark.asyncio
+async def test_claude_capture_has_no_capture_until(monkeypatch):
+    # claude/codex/agy go idle cleanly — no content-match needed (avoids grabbing a
+    # partial frame before the binding limit renders).
+    rec = _RecordingExecutor([ExecEvent(kind=EventKind.token, text="Current week 55% used")])
+    monkeypatch.setattr("app.subscription_usage.get_interactive_executor", lambda _id: rec)
+    u = await capture_subscription_usage("claude")
+    assert "capture_until" not in rec.extra
+    assert u.ok is True
+
+
 @pytest.mark.asyncio
 async def test_capture_unknown_instance(monkeypatch):
     monkeypatch.setattr("app.subscription_usage.get_interactive_executor", lambda _id: None)
@@ -122,3 +157,79 @@ async def test_capture_surfaces_seam_error(monkeypatch):
     u = await capture_subscription_usage("claude")
     assert u.ok is False
     assert "disabled" in (u.error or "")
+
+
+# ── Background poll (D-0023 b) ──────────────────────────────────────────────
+
+class _Inst:
+    def __init__(self, id_, template):
+        self.id = id_
+        self.template = template
+
+
+class _Pdef:
+    def __init__(self, kind):
+        self.kind = kind
+
+
+def _poll_env(monkeypatch, *, instances, kinds, connected):
+    """Wire the poll's registry deps. `kinds`/`connected` are keyed by instance id."""
+    from app import subscription_usage as su
+
+    monkeypatch.setattr(su, "list_instances", lambda: instances)
+    monkeypatch.setattr(su, "get_provider_def", lambda t: _Pdef(kinds[t]))
+
+    async def _connected(inst):
+        return connected[inst.id]
+
+    monkeypatch.setattr(su, "is_instance_connected", _connected)
+    return su
+
+
+@pytest.mark.asyncio
+async def test_poll_refreshes_connected_plan_cli(monkeypatch):
+    su = _poll_env(
+        monkeypatch,
+        instances=[_Inst("claude", "claude")],
+        kinds={"claude": "cli"},
+        connected={"claude": True},
+    )
+    quota_tracker.get_health("claude").subscription_seen_at = None  # stale
+    calls = []
+
+    async def fake_capture(instance_id, **kw):
+        calls.append(instance_id)
+        return SubscriptionUsage(instance_id=instance_id, ok=True, used_pct=0.4)
+
+    monkeypatch.setattr(su, "capture_subscription_usage", fake_capture)
+    n = await su.poll_all_subscription_usage(stale_after_seconds=3600)
+    assert n == 1
+    assert calls == ["claude"]
+
+
+@pytest.mark.asyncio
+async def test_poll_skips_fresh_offline_and_non_cli(monkeypatch):
+    from datetime import UTC, datetime
+
+    su = _poll_env(
+        monkeypatch,
+        instances=[
+            _Inst("claude", "claude"),   # fresh → skip
+            _Inst("grok", "grok"),       # offline → skip
+            _Inst("gpt", "openai"),      # api kind → skip
+        ],
+        kinds={"claude": "cli", "grok": "cli", "openai": "api"},
+        connected={"claude": True, "grok": False, "gpt": True},
+    )
+    quota_tracker.get_health("claude").subscription_seen_at = datetime.now(UTC)  # fresh
+    quota_tracker.get_health("grok").subscription_seen_at = None
+    calls = []
+
+    async def fake_capture(instance_id, **kw):
+        calls.append(instance_id)
+        return SubscriptionUsage(instance_id=instance_id, ok=True, used_pct=0.1)
+
+    monkeypatch.setattr(su, "capture_subscription_usage", fake_capture)
+    n = await su.poll_all_subscription_usage(stale_after_seconds=3600)
+    assert n == 0
+    assert calls == []  # all three filtered before capture

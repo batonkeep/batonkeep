@@ -73,6 +73,11 @@ _settings = get_settings()
 _META_COMMANDS = frozenset({"/usage", "/model", "/status", "/cost"})
 
 
+def _command_head(cmd: str) -> str:
+    """First token of a control command — "/usage show" (grok) → "/usage"."""
+    return cmd.strip().split()[0] if cmd.strip() else ""
+
+
 def _is_autonomous_driving(prompt: str, control_commands: list[str]) -> bool:
     """A run is 'autonomous driving' (D-0016 prohibited outside personal mode)
     if it submits a real task prompt or any control command that isn't a
@@ -81,10 +86,20 @@ def _is_autonomous_driving(prompt: str, control_commands: list[str]) -> bool:
         return True
     for cmd in control_commands:
         # Match on the head token so "/usage show" (grok) counts as meta.
-        head = cmd.strip().split()[0] if cmd.strip() else ""
-        if head not in _META_COMMANDS:
+        if _command_head(cmd) not in _META_COMMANDS:
             return True
     return False
+
+
+def _is_meta_capture(prompt: str, control_commands: list[str]) -> bool:
+    """A sanctioned read-only meta capture: at least one control command, no task
+    prompt, and every command is a single-shot meta query (/usage·/status·/cost·
+    /model, head-matched so grok's "/usage show" counts). These are safe in every
+    mode and DON'T require the terminal-seam master switch (D-0023) — the switch
+    gates the wider autonomous TUI surface, enforced separately by the
+    personal-mode gate. Per-provider commands all reduce to a meta head:
+    claude/agy "/usage", codex "/status", grok "/usage show"."""
+    return bool(control_commands) and not _is_autonomous_driving(prompt, control_commands)
 
 
 # Seconds of silence on the PTY that we treat as "the turn finished". TUIs render
@@ -92,6 +107,9 @@ def _is_autonomous_driving(prompt: str, control_commands: list[str]) -> bool:
 _DEFAULT_IDLE_TIMEOUT = 8.0
 # How long to let the TUI paint its first frame before we start typing.
 _STARTUP_GRACE = 1.5
+# After a content-match (capture_until) we let the panel finish painting this long
+# before snapshotting — covers a redraw-heavy panel that won't otherwise idle.
+_MATCH_SETTLE = 1.5
 # PTY window size we advertise so the TUI lays out without truncation.
 _PTY_ROWS, _PTY_COLS = 50, 200
 
@@ -250,23 +268,43 @@ class CLIInteractiveExecutor(Executor):
             )
             return
 
+        extra = extra or {}
+        control_commands: list[str] = list(extra.get("control_commands") or [])
+        idle_timeout = float(extra.get("idle_timeout") or _DEFAULT_IDLE_TIMEOUT)
+        hard_timeout = _settings.run_timeout_seconds
+        spec = get_tui_spec(self._def.name)  # per-provider TUI adapter
+        # Some TUIs (grok's async credit panel) redraw forever and never go idle,
+        # so idle detection alone hits the hard timeout. When the caller knows what
+        # the answer looks like it passes `capture_until` — a regex; once it matches
+        # the rendered screen we let the panel settle briefly and stop, instead of
+        # waiting for an idle gap that never comes (D-0023; grok /usage capture).
+        capture_until_raw = extra.get("capture_until")
+        capture_until = re.compile(capture_until_raw) if capture_until_raw else None
+
         policy = get_policy()
-        if not policy.enabled:
+        # Read-only meta captures (the /usage·/status·/cost·/model single-shot path,
+        # e.g. the subscription-usage poll) are sanctioned in every mode and do NOT
+        # require the terminal-seam master switch — they ride the built-in
+        # _META_COMMANDS allowlist instead (D-0023). Everything else needs the seam
+        # enabled and rides the operator allowlist. The wider autonomous surface is
+        # still gated by the personal-mode check below.
+        meta_capture = _is_meta_capture(prompt, control_commands)
+
+        if not policy.enabled and not meta_capture:
             yield ExecEvent(
                 kind=EventKind.error,
                 message=f"[{self.name}] terminal seam disabled (terminal_seam_enabled=false)",
             )
             return
 
-        extra = extra or {}
-        control_commands: list[str] = list(extra.get("control_commands") or [])
-        idle_timeout = float(extra.get("idle_timeout") or _DEFAULT_IDLE_TIMEOUT)
-        hard_timeout = _settings.run_timeout_seconds
-        spec = get_tui_spec(self._def.name)  # per-provider TUI adapter
-
         # Policy gate: every control command must pass BEFORE we spawn anything.
         for cmd in control_commands:
-            ok, reason = policy.check_command(cmd)
+            if meta_capture:
+                # Independent of the master switch — restrict to the read-only meta set.
+                ok = _command_head(cmd) in _META_COMMANDS
+                reason = "not a read-only meta command" if not ok else ""
+            else:
+                ok, reason = policy.check_command(cmd)
             if not ok:
                 logger.warning(
                     "[%s] terminal seam refused control command %r: %s", self.name, cmd, reason
@@ -362,13 +400,23 @@ class CLIInteractiveExecutor(Executor):
                 os.write(master_fd, s.encode("utf-8"))
 
             async def _drain_until_idle(
-                *, capture: bool, first_timeout: float = idle_timeout
+                *, capture: bool, first_timeout: float = idle_timeout,
+                quiet_timeout: float | None = None,
             ) -> None:
                 """Read PTY output until it goes idle, feeding every byte into the
                 emulated screen. When capture, snapshot the final rendered screen
                 (the TUI's response) once idle; otherwise just advance the screen
-                state (startup banner / echoed input we don't keep)."""
+                state (startup banner / echoed input we don't keep).
+
+                `quiet_timeout` is the silence-gap that counts as idle *after* the
+                first byte (defaults to idle_timeout). Throwaway settle drains pass
+                a short value so they don't burn the full 20s idle window waiting on
+                an already-settled prompt. If `capture_until` is set, a content-match
+                short-circuits idle detection: once the rendered screen matches, let
+                it settle briefly, then snapshot and stop — for panels that redraw
+                forever (grok)."""
                 nonlocal accumulated
+                gap = quiet_timeout if quiet_timeout is not None else idle_timeout
                 timeout = first_timeout
                 while True:
                     try:
@@ -377,8 +425,25 @@ class CLIInteractiveExecutor(Executor):
                         break  # idle → turn done
                     if not chunk:
                         break  # EOF
-                    timeout = idle_timeout
+                    timeout = gap
                     vt_stream.feed(chunk)
+                    if capture and capture_until is not None and capture_until.search(
+                        render_screen(screen)
+                    ):
+                        # The answer is on screen. A redraw-heavy panel (grok) never
+                        # idles, so don't wait for a gap — keep draining for a bounded
+                        # window so the *final* paint (real credits replacing any
+                        # transient loading frame) lands, then stop.
+                        deadline = loop.time() + _MATCH_SETTLE
+                        while (remaining := deadline - loop.time()) > 0:
+                            try:
+                                more = await asyncio.wait_for(reader.read(4096), timeout=remaining)
+                            except TimeoutError:
+                                break
+                            if not more:
+                                break
+                            vt_stream.feed(more)
+                        break
                 if capture:
                     snapshot = render_screen(screen)
                     if snapshot:
@@ -395,12 +460,21 @@ class CLIInteractiveExecutor(Executor):
 
             # Bound the whole interaction by the hard run timeout.
             async def _interact() -> None:
-                # Let the TUI paint + settle; discard the banner.
-                await _drain_until_idle(capture=False, first_timeout=spec.startup_grace)
+                # Let the TUI paint + settle, then discard the banner. These are
+                # throwaway settle drains: once the paint stops for `startup_grace`
+                # we move on — we must NOT wait the full idle window (an always-idle
+                # prompt would burn ~20s per drain, the bulk of grok's capture time).
+                await _drain_until_idle(
+                    capture=False, first_timeout=spec.startup_grace,
+                    quiet_timeout=spec.startup_grace,
+                )
                 # Clear any startup modal/dialog so input lands in the prompt.
                 for k in spec.startup_keys:
                     _write(k)
-                    await _drain_until_idle(capture=False)
+                    await _drain_until_idle(
+                        capture=False, first_timeout=spec.startup_grace,
+                        quiet_timeout=spec.startup_grace,
+                    )
                 if prompt.strip():
                     await _send(prompt)
                     await _drain_until_idle(capture=True)

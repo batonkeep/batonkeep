@@ -24,7 +24,13 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from app.providers.base import EventKind
-from app.providers.registry import get_instance, get_interactive_executor, get_provider_def
+from app.providers.registry import (
+    get_instance,
+    get_interactive_executor,
+    get_provider_def,
+    is_instance_connected,
+    list_instances,
+)
 from app.quota import quota_tracker
 
 logger = logging.getLogger(__name__)
@@ -41,6 +47,14 @@ _USAGE_COMMAND = {
     "grok": "/usage show",     # "Credits used: NN%" (live 2026-06-06)
 }
 _DEFAULT_USAGE_COMMAND = "/usage"
+
+# grok's credit panel fetches asynchronously and redraws continuously, so it never
+# goes idle — idle-based capture hits the hard timeout (the 504 the manual refresh
+# returned). Tell the seam to snapshot as soon as a usage figure is on screen
+# instead: a percentage ("Credits used: 42%") or a credit count ("1,234 / 10,000").
+# claude/codex/agy go idle cleanly and don't need this.
+_GROK_CAPTURE_UNTIL = r"\d{1,3}\s*%|\d[\d,]*\s*(?:/|of|out of)\s*\d"
+_CAPTURE_UNTIL = {"grok": _GROK_CAPTURE_UNTIL}
 
 # A percentage anywhere in the panel: "45% used", "Used 45%", "45 %".
 _PCT_RE = re.compile(r"(\d{1,3})\s*%")
@@ -143,6 +157,13 @@ def parse_usage_panel(text: str, instance_id: str = "") -> SubscriptionUsage:
     return out
 
 
+# Instances with a capture currently running. The full-TTY /usage drive is slow
+# (seconds, and grok's redraw-heavy panel is the slowest), so a second concurrent
+# capture for the same instance — e.g. the background poll firing while a manual
+# refresh is mid-flight — would spawn a second TUI for no benefit. Dedupe on it.
+_inflight: set[str] = set()
+
+
 async def capture_subscription_usage(
     instance_id: str, *, timeout_hint: float = 20.0
 ) -> SubscriptionUsage:
@@ -151,7 +172,21 @@ async def capture_subscription_usage(
     Returns a SubscriptionUsage; on a usable reading, pushes used_pct into the
     quota tracker so ProviderHealth/​/api/usage reflect the subscription quota.
     Errors (seam off, /usage not allowed, executor missing) come back as ok=False.
+    Concurrent captures for the same instance are deduped (the later caller gets
+    ok=False, "capture already in progress").
     """
+    if instance_id in _inflight:
+        return SubscriptionUsage(instance_id=instance_id, error="capture already in progress")
+    _inflight.add(instance_id)
+    try:
+        return await _capture_subscription_usage(instance_id, timeout_hint=timeout_hint)
+    finally:
+        _inflight.discard(instance_id)
+
+
+async def _capture_subscription_usage(
+    instance_id: str, *, timeout_hint: float = 20.0
+) -> SubscriptionUsage:
     # Full-TTY single-shot driver directly (automated-internal) — NOT get_executor,
     # so /usage capture never depends on a user-facing seam toggle (removed) and
     # task turns stay headless.
@@ -166,6 +201,9 @@ async def capture_subscription_usage(
     pdef = get_provider_def(inst.template) if inst else None
     provider = pdef.name if pdef else instance_id
     command = _USAGE_COMMAND.get(provider, _DEFAULT_USAGE_COMMAND)
+    extra: dict[str, object] = {"control_commands": [command], "idle_timeout": timeout_hint}
+    if provider in _CAPTURE_UNTIL:
+        extra["capture_until"] = _CAPTURE_UNTIL[provider]
 
     scraped: list[str] = []
     err: str | None = None
@@ -174,7 +212,7 @@ async def capture_subscription_usage(
             "",  # no task prompt — we only want the usage panel
             workdir="/tmp",
             tools_enabled=False,
-            extra={"control_commands": [command], "idle_timeout": timeout_hint},
+            extra=extra,
         ):
             if ev.kind == EventKind.token and ev.text:
                 scraped.append(ev.text)
@@ -196,3 +234,42 @@ async def capture_subscription_usage(
             "[subscription_usage] %s at %.0f%% used", instance_id, (usage.used_pct or 0) * 100
         )
     return usage
+
+
+async def poll_all_subscription_usage(*, stale_after_seconds: float) -> int:
+    """Background refresh of subscription quota for every connected plan-CLI
+    instance (D-0023 sub-decision b). Drives the slow full-TTY `/usage` seam, so
+    it runs **sequentially** (never spawns many CLIs at once) and **skips
+    instances already fresh** within `stale_after_seconds` (so a restart or a
+    recent manual refresh isn't redundantly re-captured). Best-effort: a failure
+    on one instance is logged and never blocks the others. Returns the count
+    refreshed. Confidential-session fencing does not apply — `/usage` reads the
+    operator's own plan quota, not session content.
+    """
+    refreshed = 0
+    now = datetime.now(UTC)
+    for inst in list_instances():
+        pdef = get_provider_def(inst.template)
+        if pdef is None or pdef.kind != "cli":
+            continue  # only plan-CLIs have a /usage panel
+        # Skip if the last reading is still fresh enough.
+        health = quota_tracker.get_health(inst.id)
+        seen = health.subscription_seen_at
+        if seen is not None and (now - seen).total_seconds() < stale_after_seconds:
+            continue
+        # Skip offline instances — capturing would otherwise spawn a login flow.
+        try:
+            if not await is_instance_connected(inst):
+                continue
+        except Exception:  # pragma: no cover - defensive
+            continue
+        usage = await capture_subscription_usage(inst.id)
+        if usage.ok:
+            refreshed += 1
+        else:
+            logger.debug(
+                "[subscription_usage] poll skipped %s: %s", inst.id, usage.error
+            )
+    if refreshed:
+        logger.info("[subscription_usage] background poll refreshed %d instance(s)", refreshed)
+    return refreshed

@@ -114,14 +114,49 @@ class TestTUISpec:
 
 class TestPolicyGate:
     @pytest.mark.asyncio
-    async def test_disabled_seam_refuses_before_spawn(self, monkeypatch):
+    async def test_disabled_seam_refuses_autonomous_before_spawn(self, monkeypatch):
+        # A task prompt is autonomous driving — the master switch still gates it.
         monkeypatch.setattr(
             "app.providers.cli_interactive.get_policy",
             lambda: TerminalPolicy(enabled=False, allowed_commands=frozenset({"/usage"})),
         )
-        evs = await _collect(_executor(), extra={"control_commands": ["/usage"]})
+        evs = await _collect(_executor(), prompt="do the thing", extra={"control_commands": ["/usage"]})
         assert evs[-1].kind == EventKind.error
         assert "disabled" in evs[-1].message
+
+    @pytest.mark.asyncio
+    async def test_disabled_seam_refuses_non_meta_command(self, monkeypatch):
+        # Empty prompt but a non-meta control command is still autonomous → gated.
+        monkeypatch.setattr(
+            "app.providers.cli_interactive.get_policy",
+            lambda: TerminalPolicy(enabled=False, allowed_commands=frozenset({"/clear"})),
+        )
+        evs = await _collect(_executor(), prompt="", extra={"control_commands": ["/clear"]})
+        assert evs[-1].kind == EventKind.error
+        assert "disabled" in evs[-1].message
+
+    @pytest.mark.asyncio
+    async def test_disabled_seam_allows_meta_capture(self, monkeypatch):
+        # D-0023 / A: a read-only meta capture (empty prompt + meta command only)
+        # bypasses the master switch — even with the seam off and an empty operator
+        # allowlist. It rides the built-in _META_COMMANDS set and proceeds to spawn.
+        monkeypatch.setattr(
+            "app.providers.cli_interactive.get_policy",
+            lambda: TerminalPolicy(enabled=False, allowed_commands=frozenset()),
+        )
+
+        async def _boom(*a, **k):  # don't actually launch a TUI in the test
+            raise FileNotFoundError("no binary")
+
+        monkeypatch.setattr(
+            "app.providers.cli_interactive.asyncio.create_subprocess_exec", _boom
+        )
+        # grok's "/usage show" exercises head-matching on a multi-token command.
+        evs = await _collect(_executor("grok"), prompt="", extra={"control_commands": ["/usage show"]})
+        assert any("PTY seam launching" in (e.message or "") for e in evs)  # passed the gate
+        assert not any(
+            e.kind == EventKind.error and "disabled" in (e.message or "") for e in evs
+        )
 
     @pytest.mark.asyncio
     async def test_denied_control_command_refused_before_spawn(self, monkeypatch):
@@ -185,6 +220,31 @@ class TestIsAutonomousDriving:
         from app.providers.cli_interactive import _is_autonomous_driving
         assert _is_autonomous_driving("", ["/exec ls"]) is True
         assert _is_autonomous_driving("", ["/usage", "/exec ls"]) is True
+
+
+class TestIsMetaCapture:
+    """The read-only meta-capture predicate (D-0023 / A): empty prompt + at least
+    one command, all of which are single-shot meta queries. These bypass the
+    terminal-seam master switch. Per-provider commands all reduce to a meta head."""
+
+    def test_meta_only_empty_prompt_is_capture(self):
+        from app.providers.cli_interactive import _is_meta_capture
+        assert _is_meta_capture("", ["/usage"]) is True          # claude / agy
+        assert _is_meta_capture("", ["/status"]) is True         # codex
+        assert _is_meta_capture("", ["/usage show"]) is True     # grok (head-matched)
+
+    def test_no_commands_is_not_capture(self):
+        from app.providers.cli_interactive import _is_meta_capture
+        assert _is_meta_capture("", []) is False
+
+    def test_prompt_present_is_not_capture(self):
+        from app.providers.cli_interactive import _is_meta_capture
+        assert _is_meta_capture("do the thing", ["/usage"]) is False
+
+    def test_non_meta_command_is_not_capture(self):
+        from app.providers.cli_interactive import _is_meta_capture
+        assert _is_meta_capture("", ["/clear"]) is False
+        assert _is_meta_capture("", ["/usage", "/exec ls"]) is False
 
 
 class TestModeGate:

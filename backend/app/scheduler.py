@@ -13,6 +13,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
+from app.config import get_settings
 from app.db import AsyncSessionLocal
 from app.models import Run, Task
 
@@ -47,6 +48,18 @@ async def start_scheduler() -> None:
         replace_existing=True,
         misfire_grace_time=30,
     )
+
+    # Background subscription-usage poll (D-0023 b): keep plan-CLI /usage quota
+    # fresh on a long cadence. Disabled when the interval is 0.
+    poll_seconds = get_settings().subscription_usage_poll_seconds
+    if poll_seconds and poll_seconds > 0:
+        sched.add_job(
+            _poll_subscription_usage,
+            trigger=IntervalTrigger(seconds=poll_seconds),
+            id="__subscription_usage_poll__",
+            replace_existing=True,
+            misfire_grace_time=min(300, poll_seconds),
+        )
 
     await _sync_all_tasks(sched)
 
@@ -155,6 +168,17 @@ def _sync_task(sched: AsyncIOScheduler, task: Task) -> None:
 
 
 # ── Deferred run sweep ────────────────────────────────────────────────────────
+
+async def _poll_subscription_usage() -> None:
+    """Refresh plan-CLI /usage quota in the background (D-0023 b)."""
+    from app.subscription_usage import poll_all_subscription_usage
+
+    interval = get_settings().subscription_usage_poll_seconds
+    try:
+        await poll_all_subscription_usage(stale_after_seconds=interval)
+    except Exception:  # pragma: no cover - defensive; never let a poll kill the loop
+        logger.exception("[scheduler] subscription-usage poll failed")
+
 
 async def _sweep_deferred_runs() -> None:
     """Re-enqueue any deferred runs whose deferred_until has passed."""

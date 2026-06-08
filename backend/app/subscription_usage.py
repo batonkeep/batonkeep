@@ -149,6 +149,13 @@ def parse_usage_panel(text: str, instance_id: str = "") -> SubscriptionUsage:
     return out
 
 
+# Instances with a capture currently running. The full-TTY /usage drive is slow
+# (seconds, and grok's redraw-heavy panel is the slowest), so a second concurrent
+# capture for the same instance — e.g. the background poll firing while a manual
+# refresh is mid-flight — would spawn a second TUI for no benefit. Dedupe on it.
+_inflight: set[str] = set()
+
+
 async def capture_subscription_usage(
     instance_id: str, *, timeout_hint: float = 20.0
 ) -> SubscriptionUsage:
@@ -157,7 +164,21 @@ async def capture_subscription_usage(
     Returns a SubscriptionUsage; on a usable reading, pushes used_pct into the
     quota tracker so ProviderHealth/​/api/usage reflect the subscription quota.
     Errors (seam off, /usage not allowed, executor missing) come back as ok=False.
+    Concurrent captures for the same instance are deduped (the later caller gets
+    ok=False, "capture already in progress").
     """
+    if instance_id in _inflight:
+        return SubscriptionUsage(instance_id=instance_id, error="capture already in progress")
+    _inflight.add(instance_id)
+    try:
+        return await _capture_subscription_usage(instance_id, timeout_hint=timeout_hint)
+    finally:
+        _inflight.discard(instance_id)
+
+
+async def _capture_subscription_usage(
+    instance_id: str, *, timeout_hint: float = 20.0
+) -> SubscriptionUsage:
     # Full-TTY single-shot driver directly (automated-internal) — NOT get_executor,
     # so /usage capture never depends on a user-facing seam toggle (removed) and
     # task turns stay headless.

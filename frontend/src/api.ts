@@ -223,8 +223,9 @@ export const api = {
       `/providers/${encodeURIComponent(instanceId)}/model`,
       { method: "POST", headers: { "X-Console-Token": token }, body: JSON.stringify({ model }) }
     ),
+  // Kicks off a background capture (202); the result lands on the providers list.
   captureSubscriptionUsage: (instanceId: string, token: string) =>
-    req<{ instance_id: string; used_pct: number | null; reset_hint: string | null; ok: boolean; error: string | null }>(
+    req<{ status: string; instance: string }>(
       `/usage/subscription/${encodeURIComponent(instanceId)}`,
       { method: "POST", headers: { "X-Console-Token": token } }
     ),

@@ -52,9 +52,21 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
   const [capturing, setCapturing] = useState<string | null>(null);
   const captureUsage = async (instanceId: string) => {
     setCapturing(instanceId);
-    try { await api.captureSubscriptionUsage(instanceId, consoleToken); onRefresh(); }
-    catch { /* surfaced via disabled state */ }
-    finally { setCapturing(null); }
+    // The capture now runs server-side in the background (the full-TTY /usage drive
+    // is slow — a synchronous wait tripped a gateway 504, esp. for grok). Trigger it,
+    // then poll until the freshness stamp advances (the 5s providers refresh updates
+    // the bar in the meantime). Bounded so a stuck capture eventually releases the UI.
+    const before = providers.find((p) => p.name === instanceId)?.usage_seen_at ?? null;
+    try {
+      await api.captureSubscriptionUsage(instanceId, consoleToken);
+      for (let i = 0; i < 24; i++) {
+        await new Promise((r) => setTimeout(r, 2500));
+        const list = await api.listProviders().catch(() => null);
+        const seen = list?.find((p) => p.name === instanceId)?.usage_seen_at ?? null;
+        if (seen && seen !== before) break;
+      }
+    } catch { /* trigger failed (e.g. not authorized) */ }
+    finally { onRefresh(); setCapturing(null); }
   };
 
   // With app-auth the session is the gate; otherwise the legacy token is required.
@@ -113,9 +125,12 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
             {group.instances.map((p) => {
               const isExtra = p.name !== p.template;
               const cooling = !!p.cooldown_until && new Date(p.cooldown_until).getTime() > now;
-              const unhealthy = !p.healthy;
               const usedPct = p.est_used_pct != null ? Math.round(p.est_used_pct * 100) : null;
-              const barColor = usedPct == null ? "bg-edge" : usedPct > 85 ? "bg-bad" : usedPct > 60 ? "bg-defer" : "bg-brand";
+              // The bar fills with *remaining headroom* so a healthy plan reads full,
+              // and drains/reddens as the quota is consumed.
+              const headroomPct = usedPct == null ? null : 100 - usedPct;
+              const barColor = headroomPct == null ? "bg-edge"
+                : headroomPct < 15 ? "bg-bad" : headroomPct < 40 ? "bg-defer" : "bg-brand";
               const healthTone = cooling ? "defer" : p.healthy ? "ok" : "bad";
 
               return (
@@ -160,32 +175,29 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
                     </Badge>
                   </div>
 
-                  {/* STATE zone — health detail + cooldown reset */}
-                  <Zone label="state">
-                    <div className="flex items-center justify-between">
-                      <span className={`font-mono text-xs ${cooling ? "text-defer" : unhealthy ? "text-bad" : "text-ok"}`}>
-                        {cooling
-                          ? `cooling — resets in ${countdown(p.cooldown_until, now)}`
-                          : unhealthy ? "offline — not connected" : "healthy — ready"}
+                  {/* Cooldown detail + reset — only when there's something actionable.
+                      The at-a-glance state lives in the header badge (not repeated here). */}
+                  {cooling && (
+                    <div className="mt-3 flex items-center justify-between border-t border-edge pt-2">
+                      <span className="font-mono text-xs text-defer">
+                        resets in {countdown(p.cooldown_until, now)}
                       </span>
-                      {cooling && (
-                        <Button variant="outline" size="sm" icon={<RotateCcw size={11} />}
-                          onClick={() => handleReset(p.name)}
-                          className="border-defer/40 text-defer hover:border-defer">
-                          reset
-                        </Button>
-                      )}
+                      <Button variant="outline" size="sm" icon={<RotateCcw size={11} />}
+                        onClick={() => handleReset(p.name)}
+                        className="border-defer/40 text-defer hover:border-defer">
+                        reset
+                      </Button>
                     </div>
-                  </Zone>
+                  )}
 
                   {/* USAGE zone — headroom estimate + freshness + manual refresh */}
                   <Zone label="usage">
                     <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wider text-muted">
                       <span>headroom (est.)</span>
-                      <span>{usedPct == null ? "unknown" : `${100 - usedPct}% left`}</span>
+                      <span>{headroomPct == null ? "unknown" : `${headroomPct}% left`}</span>
                     </div>
                     <div className="h-1.5 w-full overflow-hidden rounded-full bg-base">
-                      <div className={`h-full ${barColor} transition-all`} style={{ width: `${usedPct == null ? 0 : usedPct}%` }} />
+                      <div className={`h-full ${barColor} transition-all`} style={{ width: `${headroomPct == null ? 0 : headroomPct}%` }} />
                     </div>
                     {p.kind === "cli" && (
                       <div className="mt-1.5 flex items-center justify-between">

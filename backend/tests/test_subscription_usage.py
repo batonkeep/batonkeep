@@ -107,6 +107,41 @@ async def test_capture_feeds_quota_tracker(monkeypatch):
     assert quota_tracker.get_health("claude").est_used_pct == 0.55
 
 
+class _RecordingExecutor:
+    """Fake executor that records the `extra` it was driven with."""
+    def __init__(self, events):
+        self._events = events
+        self.extra = None
+
+    async def run_stream(self, prompt, *, workdir=None, tools_enabled=True, extra=None, **kw):
+        self.extra = extra or {}
+        for ev in self._events:
+            yield ev
+
+
+@pytest.mark.asyncio
+async def test_grok_capture_passes_capture_until(monkeypatch):
+    # grok's panel redraws forever; the seam needs a content-match to stop, so the
+    # capture must hand it a `capture_until` pattern. The rendered panel still parses.
+    rec = _RecordingExecutor([ExecEvent(kind=EventKind.token, text="Credits used: 42%")])
+    monkeypatch.setattr("app.subscription_usage.get_interactive_executor", lambda _id: rec)
+    u = await capture_subscription_usage("grok")
+    assert rec.extra.get("capture_until")  # grok gets the content-match pattern
+    assert u.ok is True
+    assert u.used_pct == 0.42
+
+
+@pytest.mark.asyncio
+async def test_claude_capture_has_no_capture_until(monkeypatch):
+    # claude/codex/agy go idle cleanly — no content-match needed (avoids grabbing a
+    # partial frame before the binding limit renders).
+    rec = _RecordingExecutor([ExecEvent(kind=EventKind.token, text="Current week 55% used")])
+    monkeypatch.setattr("app.subscription_usage.get_interactive_executor", lambda _id: rec)
+    u = await capture_subscription_usage("claude")
+    assert "capture_until" not in rec.extra
+    assert u.ok is True
+
+
 @pytest.mark.asyncio
 async def test_capture_unknown_instance(monkeypatch):
     monkeypatch.setattr("app.subscription_usage.get_interactive_executor", lambda _id: None)

@@ -48,6 +48,14 @@ _USAGE_COMMAND = {
 }
 _DEFAULT_USAGE_COMMAND = "/usage"
 
+# grok's credit panel fetches asynchronously and redraws continuously, so it never
+# goes idle — idle-based capture hits the hard timeout (the 504 the manual refresh
+# returned). Tell the seam to snapshot as soon as a usage figure is on screen
+# instead: a percentage ("Credits used: 42%") or a credit count ("1,234 / 10,000").
+# claude/codex/agy go idle cleanly and don't need this.
+_GROK_CAPTURE_UNTIL = r"\d{1,3}\s*%|\d[\d,]*\s*(?:/|of|out of)\s*\d"
+_CAPTURE_UNTIL = {"grok": _GROK_CAPTURE_UNTIL}
+
 # A percentage anywhere in the panel: "45% used", "Used 45%", "45 %".
 _PCT_RE = re.compile(r"(\d{1,3})\s*%")
 # grok's live panel reads "Credits used: NN%" — already covered by _PCT_RE +
@@ -193,6 +201,9 @@ async def _capture_subscription_usage(
     pdef = get_provider_def(inst.template) if inst else None
     provider = pdef.name if pdef else instance_id
     command = _USAGE_COMMAND.get(provider, _DEFAULT_USAGE_COMMAND)
+    extra: dict[str, object] = {"control_commands": [command], "idle_timeout": timeout_hint}
+    if provider in _CAPTURE_UNTIL:
+        extra["capture_until"] = _CAPTURE_UNTIL[provider]
 
     scraped: list[str] = []
     err: str | None = None
@@ -201,7 +212,7 @@ async def _capture_subscription_usage(
             "",  # no task prompt — we only want the usage panel
             workdir="/tmp",
             tools_enabled=False,
-            extra={"control_commands": [command], "idle_timeout": timeout_hint},
+            extra=extra,
         ):
             if ev.kind == EventKind.token and ev.text:
                 scraped.append(ev.text)

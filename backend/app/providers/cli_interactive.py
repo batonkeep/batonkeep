@@ -107,6 +107,9 @@ def _is_meta_capture(prompt: str, control_commands: list[str]) -> bool:
 _DEFAULT_IDLE_TIMEOUT = 8.0
 # How long to let the TUI paint its first frame before we start typing.
 _STARTUP_GRACE = 1.5
+# After a content-match (capture_until) we let the panel finish painting this long
+# before snapshotting — covers a redraw-heavy panel that won't otherwise idle.
+_MATCH_SETTLE = 1.5
 # PTY window size we advertise so the TUI lays out without truncation.
 _PTY_ROWS, _PTY_COLS = 50, 200
 
@@ -270,6 +273,13 @@ class CLIInteractiveExecutor(Executor):
         idle_timeout = float(extra.get("idle_timeout") or _DEFAULT_IDLE_TIMEOUT)
         hard_timeout = _settings.run_timeout_seconds
         spec = get_tui_spec(self._def.name)  # per-provider TUI adapter
+        # Some TUIs (grok's async credit panel) redraw forever and never go idle,
+        # so idle detection alone hits the hard timeout. When the caller knows what
+        # the answer looks like it passes `capture_until` — a regex; once it matches
+        # the rendered screen we let the panel settle briefly and stop, instead of
+        # waiting for an idle gap that never comes (D-0023; grok /usage capture).
+        capture_until_raw = extra.get("capture_until")
+        capture_until = re.compile(capture_until_raw) if capture_until_raw else None
 
         policy = get_policy()
         # Read-only meta captures (the /usage·/status·/cost·/model single-shot path,
@@ -395,7 +405,11 @@ class CLIInteractiveExecutor(Executor):
                 """Read PTY output until it goes idle, feeding every byte into the
                 emulated screen. When capture, snapshot the final rendered screen
                 (the TUI's response) once idle; otherwise just advance the screen
-                state (startup banner / echoed input we don't keep)."""
+                state (startup banner / echoed input we don't keep).
+
+                If `capture_until` is set, a content-match short-circuits idle
+                detection: once the rendered screen matches, let it settle briefly,
+                then snapshot and stop — for panels that redraw forever (grok)."""
                 nonlocal accumulated
                 timeout = first_timeout
                 while True:
@@ -407,6 +421,13 @@ class CLIInteractiveExecutor(Executor):
                         break  # EOF
                     timeout = idle_timeout
                     vt_stream.feed(chunk)
+                    if capture and capture_until is not None and capture_until.search(
+                        render_screen(screen)
+                    ):
+                        # The answer is on screen; don't wait for an idle gap that
+                        # may never come. Let it finish painting, then stop.
+                        await asyncio.sleep(_MATCH_SETTLE)
+                        break
                 if capture:
                     snapshot = render_screen(screen)
                     if snapshot:

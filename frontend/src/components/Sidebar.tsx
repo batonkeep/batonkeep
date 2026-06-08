@@ -1,11 +1,11 @@
 // Sidebar.tsx — primary nav. Left rail on desktop, bottom tab bar on mobile.
-import { Hammer, ListChecks, Server } from "lucide-react";
+import { Gauge, Hammer, ListChecks, Server } from "lucide-react";
 import Logo from "../ui/Logo";
 import type { WsStatus } from "../useLiveFeed";
 
 // "Live" (runs) is folded into the Tasks pane as a sub-tab, keeping the bottom
 // nav to three items on mobile.
-export type View = "tasks" | "build" | "providers";
+export type View = "tasks" | "build" | "providers" | "cockpit";
 
 interface Props {
   view: View;
@@ -21,6 +21,7 @@ const ITEMS: { id: View; label: string; icon: typeof ListChecks }[] = [
   { id: "tasks", label: "Tasks", icon: ListChecks },
   { id: "build", label: "Build", icon: Hammer },
   { id: "providers", label: "Providers", icon: Server },
+  { id: "cockpit", label: "Cockpit", icon: Gauge },
 ];
 
 export default function Sidebar({ view, onChange, wsStatus, activeRuns, immersive = false }: Props) {

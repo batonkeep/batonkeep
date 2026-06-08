@@ -12,6 +12,7 @@ import RunViewer from "./components/RunViewer";
 import SessionView from "./components/SessionView";
 import ProvidersPanel from "./components/ProvidersPanel";
 import SecretsPanel from "./components/SecretsPanel";
+import CockpitPanel from "./components/CockpitPanel";
 import Onboarding from "./components/Onboarding";
 import Styleguide from "./components/Styleguide";
 import { Button, Logo, Tabs } from "./ui";
@@ -253,8 +254,9 @@ function AppShell() {
           </div>
         </div>
 
-        {/* Run/task aggregates — irrelevant to the Build surface, so hide there. */}
-        {view !== "build" && (
+        {/* Run/task aggregates — irrelevant to Build, and the Cockpit is their
+            consolidated superset, so hide the strip on both. */}
+        {view !== "build" && view !== "cockpit" && (
           <div className="mb-6">
             <StatsBar stats={stats} usage={usage} sparkData={sparkData} />
           </div>
@@ -346,6 +348,8 @@ function AppShell() {
             <SecretsPanel />
           </div>
         )}
+
+        {view === "cockpit" && <CockpitPanel />}
       </main>
 
       {/* Run viewer — right drawer on desktop, full-screen on mobile */}

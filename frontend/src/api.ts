@@ -2,6 +2,7 @@
 // vite in dev, nginx in prod), so the SPA is single-origin and needs no config.
 
 import type {
+  Cockpit,
   ConsoleConfig,
   CloudflareConfig,
   CloudflareDeploy,
@@ -221,6 +222,8 @@ export const api = {
   // ── Stats / meta ─────────────────────────────────────────────────────────
   getStats: () => req<Stats>("/stats"),
   getUsage: () => req<UsageSummary>("/usage"),
+  // Operational cockpit (D-0022 Task A) — local-only consolidated telemetry.
+  getCockpit: (windowDays = 7) => req<Cockpit>(`/cockpit?window_days=${windowDays}`),
   getMode: () => req<Mode>("/me/mode"),
 
   // ── Credentials (BYO-key) ─────────────────────────────────────────────────

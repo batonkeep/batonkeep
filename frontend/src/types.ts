@@ -164,6 +164,46 @@ export interface UsageSummary {
   over_budget: boolean;
 }
 
+// Operational cockpit (D-0022 Task A, audience A). Mirrors CockpitOut in
+// backend/app/schemas.py. Local-first and sovereign — nothing here is shared.
+export interface Cockpit {
+  window_days: number;
+  since: string;
+  generated_at: string;
+  spend: UsageSummary;
+  runs: {
+    total: number;
+    by_status: Record<string, number>;
+    by_provider: Record<string, number>;
+    by_trigger: Record<string, number>;
+    success_rate: number;
+    error_rate: number;
+    deferred_now: number;
+    active_runs: number;
+  };
+  latency: {
+    avg_ms: number | null;
+    p50_ms: number | null;
+    p95_ms: number | null;
+    sample: number;
+  };
+  reliability: {
+    failover_rate: number;
+    failover_reasons: Record<string, number>;
+    retried_runs: number;
+    budget_degraded_runs: number;
+  };
+  errors_by_class: Record<string, number>;
+  activity: {
+    sessions_total: number;
+    sessions_active: number;
+    sessions_archived: number;
+    sessions_confidential: number;
+    turns_total: number;
+    turns_by_status: Record<string, number>;
+  };
+}
+
 // One row of the named secrets-management surface (P-0009 #3). Mirrors
 // SecretStatusOut in backend/app/schemas.py. Never carries any plaintext.
 export interface SecretStatus {

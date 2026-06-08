@@ -424,9 +424,19 @@ class CLIInteractiveExecutor(Executor):
                     if capture and capture_until is not None and capture_until.search(
                         render_screen(screen)
                     ):
-                        # The answer is on screen; don't wait for an idle gap that
-                        # may never come. Let it finish painting, then stop.
-                        await asyncio.sleep(_MATCH_SETTLE)
+                        # The answer is on screen. A redraw-heavy panel (grok) never
+                        # idles, so don't wait for a gap — keep draining for a bounded
+                        # window so the *final* paint (real credits replacing any
+                        # transient loading frame) lands, then stop.
+                        deadline = loop.time() + _MATCH_SETTLE
+                        while (remaining := deadline - loop.time()) > 0:
+                            try:
+                                more = await asyncio.wait_for(reader.read(4096), timeout=remaining)
+                            except TimeoutError:
+                                break
+                            if not more:
+                                break
+                            vt_stream.feed(more)
                         break
                 if capture:
                     snapshot = render_screen(screen)

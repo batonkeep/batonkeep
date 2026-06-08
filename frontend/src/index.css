@@ -154,4 +154,12 @@ pre {
 /* Range input (drag-to-reorder uses buttons; this styles any sliders). */
 @media (max-width: 768px) {
   .desktop-only { display: none; }
+
+  /* Prevent iOS Safari from zooming in when focusing inputs.
+     The browser zooms whenever font-size < 16px; pinning to 16px stops it. */
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
 }

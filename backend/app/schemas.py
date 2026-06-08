@@ -402,6 +402,59 @@ class UsageSummaryOut(BaseModel):
     over_budget: bool
 
 
+# ── Operational cockpit (D-0022 Task A — audience A, local-only) ──────────────
+
+class CockpitLatencyOut(BaseModel):
+    avg_ms: float | None = None
+    p50_ms: float | None = None
+    p95_ms: float | None = None
+    sample: int = 0
+
+
+class CockpitRunsOut(BaseModel):
+    total: int
+    by_status: dict[str, int]
+    by_provider: dict[str, int]
+    by_trigger: dict[str, int]
+    success_rate: float
+    error_rate: float
+    deferred_now: int
+    active_runs: int
+
+
+class CockpitReliabilityOut(BaseModel):
+    failover_rate: float
+    failover_reasons: dict[str, int]
+    retried_runs: int
+    budget_degraded_runs: int
+
+
+class CockpitActivityOut(BaseModel):
+    sessions_total: int
+    sessions_active: int
+    sessions_archived: int
+    sessions_confidential: int
+    turns_total: int
+    turns_by_status: dict[str, int]
+
+
+class CockpitOut(BaseModel):
+    """
+    The consolidated operator cockpit (D-0022 audience A): the user's view of their
+    own work. Local-only and sovereign by construction — nothing here is shared.
+    """
+
+    window_days: int
+    since: datetime
+    generated_at: datetime
+    spend: UsageSummaryOut
+    runs: CockpitRunsOut
+    latency: CockpitLatencyOut
+    reliability: CockpitReliabilityOut
+    errors_by_class: dict[str, int]
+    activity: CockpitActivityOut
+
+
 class SecretStatusOut(BaseModel):
     """One row of the named secrets-management surface (P-0009 #3)."""
 

@@ -50,6 +50,11 @@ ${hint || "<describe your task in a sentence or two>"}
 Output ONLY the final instruction prompt, ready to paste — no preamble or commentary.`;
 }
 
+const ALL_TIMEZONES: string[] = (() => {
+  try { return ["UTC", ...(Intl as any).supportedValuesOf("timeZone") as string[]]; }
+  catch { return ["UTC","America/Los_Angeles","America/New_York","Europe/London","Europe/Berlin","Asia/Kolkata","Asia/Singapore","Asia/Tokyo","Australia/Sydney"]; }
+})();
+
 export default function TaskForm({ task, providers, onSave, onClose }: Props) {
   const [name, setName] = useState(task?.name ?? "");
   const [description, setDescription] = useState(task?.description ?? "");
@@ -189,12 +194,16 @@ export default function TaskForm({ task, providers, onSave, onClose }: Props) {
             <div className="md:col-span-2">
               <Field label="Timezone · cron is interpreted here (DST-aware)"
                 hint={`Detected: ${browserTz}. Times you enter above fire in this zone, not UTC.`}>
-                <Input list="tz-list" value={timezone} onChange={(e) => setTimezone(e.target.value)} placeholder={browserTz} />
-                <datalist id="tz-list">
-                  {["UTC","America/Los_Angeles","America/New_York","Europe/London","Europe/Berlin",
-                    "Asia/Kolkata","Asia/Singapore","Asia/Tokyo","Australia/Sydney", browserTz]
-                    .map((tz) => <option key={tz} value={tz} />)}
-                </datalist>
+                <Select value={timezone} onChange={(e) => setTimezone(e.target.value)}>
+                  {browserTz !== "UTC" && (
+                    <optgroup label="Detected">
+                      <option value={browserTz}>{browserTz}</option>
+                    </optgroup>
+                  )}
+                  <optgroup label="All timezones">
+                    {ALL_TIMEZONES.map((tz) => <option key={tz} value={tz}>{tz}</option>)}
+                  </optgroup>
+                </Select>
               </Field>
             </div>
           )}

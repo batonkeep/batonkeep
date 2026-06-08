@@ -1,6 +1,6 @@
 // App.tsx — top-level shell: data orchestration, view routing, modals.
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Moon, Plus, Settings2, Sun } from "lucide-react";
+import { LogOut, Moon, Plus, Settings2, Sun } from "lucide-react";
 import { api } from "./api";
 import { useLiveFeed } from "./useLiveFeed";
 import type { Credential, Mode, ProviderHealth, Run, Session, Stats, Task, TaskInput, UsageSummary } from "./types";
@@ -14,6 +14,7 @@ import ProvidersPanel from "./components/ProvidersPanel";
 import SecretsPanel from "./components/SecretsPanel";
 import CockpitPanel from "./components/CockpitPanel";
 import Onboarding from "./components/Onboarding";
+import LoginPage from "./components/LoginPage";
 import Styleguide from "./components/Styleguide";
 import { Button, Logo, Tabs } from "./ui";
 import { STATUS_META, fmtTime } from "./format";
@@ -40,10 +41,32 @@ export default function App() {
   }, []);
   if (hash === "#styleguide") return <Styleguide />;
 
-  return <AppShell />;
+  return <AuthGate />;
 }
 
-function AppShell() {
+// App-level auth gate (D-0023). Resolves the backend's auth status once: if
+// app-auth is on and we have no valid session, show the login page; otherwise
+// render the app. `appAuthEnabled` flows down so the providers console folds the
+// legacy token into the session (no separate token entry when auth is on).
+function AuthGate() {
+  const [status, setStatus] = useState<{ enabled: boolean; authed: boolean } | null>(null);
+
+  const refresh = useCallback(() => {
+    api
+      .getAuthStatus()
+      .then((s) => setStatus({ enabled: s.auth_enabled, authed: s.authenticated }))
+      // On a network/whatever failure, fail open to the app (it will surface its
+      // own load errors) rather than trapping the user on a blank gate.
+      .catch(() => setStatus({ enabled: false, authed: true }));
+  }, []);
+  useEffect(refresh, [refresh]);
+
+  if (status === null) return null; // brief pre-resolve; avoids a login flash
+  if (status.enabled && !status.authed) return <LoginPage onAuthed={refresh} />;
+  return <AppShell appAuthEnabled={status.enabled} onLogout={refresh} />;
+}
+
+function AppShell({ appAuthEnabled, onLogout }: { appAuthEnabled: boolean; onLogout: () => void }) {
   const { status: wsStatus, liveRuns } = useLiveFeed();
   const [view, setView] = useState<View>("tasks");
   const [tasksTab, setTasksTab] = useState<"tasks" | "live">("tasks");
@@ -243,6 +266,17 @@ function AppShell() {
             >
               <span className="hidden sm:inline">Providers</span>
             </Button>
+            {appAuthEnabled && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => { api.logout().finally(onLogout); }}
+                title="Sign out"
+                aria-label="Sign out"
+                className="px-2.5"
+                icon={<LogOut size={14} />}
+              />
+            )}
             <Button
               variant="primary"
               size="sm"
@@ -344,6 +378,7 @@ function AppShell() {
               consoleAvailable={consoleAvailable}
               consoleToken={consoleToken}
               onSetConsoleToken={setConsoleToken}
+              appAuthEnabled={appAuthEnabled}
             />
             <SecretsPanel />
           </div>

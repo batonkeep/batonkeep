@@ -18,13 +18,16 @@ interface Props {
   consoleAvailable: boolean;
   consoleToken: string;
   onSetConsoleToken: (t: string) => void;
+  // When app-auth is on, the legacy console token is folded into the session
+  // (D-0023): an authenticated operator is trusted, so no token entry is shown.
+  appAuthEnabled: boolean;
 }
 
 const TIER_LABEL: Record<string, string> = {
   plan: "plan-CLI", api: "API", open: "open-weight", mock: "mock", frontier: "frontier", agent: "agent",
 };
 
-export default function ProvidersPanel({ providers, now, onRefresh, consoleAvailable, consoleToken, onSetConsoleToken }: Props) {
+export default function ProvidersPanel({ providers, now, onRefresh, consoleAvailable, consoleToken, onSetConsoleToken, appAuthEnabled }: Props) {
   const [editingModel, setEditingModel] = useState<string | null>(null);
   const [modelDraft, setModelDraft] = useState("");
   const [authTarget, setAuthTarget] = useState<string | null>(null);
@@ -44,7 +47,8 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
     finally { setCapturing(null); }
   };
 
-  const canConsole = consoleAvailable && consoleToken.trim().length > 0;
+  // With app-auth the session is the gate; otherwise the legacy token is required.
+  const canConsole = consoleAvailable && (appAuthEnabled || consoleToken.trim().length > 0);
 
   const groups: { template: string; instances: ProviderHealth[] }[] = [];
   for (const p of providers) {
@@ -65,17 +69,24 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
         </Button>
       </div>
 
-      {/* Console unlock */}
+      {/* Console unlock. With app-auth the session unlocks it (no token entry);
+          otherwise the legacy WEB_CONSOLE_TOKEN gates model-set / re-auth. */}
       {consoleAvailable && (
         <Card className="flex items-center gap-2 px-3 py-2">
           <Terminal size={14} className={canConsole ? "text-live" : "text-muted"} />
-          <Input
-            type="password"
-            value={consoleToken}
-            onChange={(e) => onSetConsoleToken(e.target.value)}
-            placeholder="console token (WEB_CONSOLE_TOKEN) to set models / re-auth"
-            className="flex-1 py-1 font-mono text-xs"
-          />
+          {appAuthEnabled ? (
+            <span className="flex-1 text-xs text-muted">
+              Console actions (set model · re-auth) are unlocked for your signed-in session.
+            </span>
+          ) : (
+            <Input
+              type="password"
+              value={consoleToken}
+              onChange={(e) => onSetConsoleToken(e.target.value)}
+              placeholder="console token (WEB_CONSOLE_TOKEN) to set models / re-auth"
+              className="flex-1 py-1 font-mono text-xs"
+            />
+          )}
           <Badge tone={canConsole ? "ok" : "neutral"}>{canConsole ? "unlocked" : "locked"}</Badge>
         </Card>
       )}

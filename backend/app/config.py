@@ -109,19 +109,45 @@ class Settings(BaseSettings):
     # ── Security ──────────────────────────────────────────────────────────────
     app_secret: str = ""
 
+    # ── App-level auth (D-0023, resolves P-0026) ──────────────────────────────
+    # Single-operator login gate for personal/oss. When APP_PASSWORD is set the
+    # whole API requires a signed session cookie (see auth.py) — this protects
+    # the *data*, not just the console. Empty ⇒ no gate (backward-compatible dev
+    # default). Multi-user accounts are a managed concern (P-0013/P-0015).
+    app_password: str = ""
+    app_session_ttl_seconds: int = 60 * 60 * 24 * 14  # 14 days
+
+    @property
+    def app_auth_enabled(self) -> bool:
+        return bool(self.app_password)
+
     # ── In-UI console (scoped actions: set models, run auth) ──────────────────
     # Off by default — it execs auth flows inside the container, so it's only
-    # safe behind a token and never in managed mode (§ legal guardrail).
+    # safe behind auth and never in managed mode (§ legal guardrail).
     enable_web_console: bool = False
-    web_console_token: str = ""  # required to use the console when enabled
+    web_console_token: str = ""  # legacy gate; folded into app-auth when that's on
 
     @property
     def web_console_available(self) -> bool:
+        # The console exists when explicitly enabled and not in managed mode.
+        # Its *access* gate is `console_requires_token` below — app-auth folds in
+        # the legacy token (D-0023). The managed exec-fence is unconditional.
         return (
             self.enable_web_console
-            and bool(self.web_console_token)
             and self.deployment_mode != DeploymentMode.managed
+            and (self.app_auth_enabled or bool(self.web_console_token))
         )
+
+    @property
+    def console_requires_token(self) -> bool:
+        """True when the legacy X-Console-Token is still the gate.
+
+        With app-auth on, an authenticated operator is already trusted, so the
+        console rides the session instead (the token is folded in). With app-auth
+        off, fall back to the legacy token so existing deployments and the dev
+        path keep working.
+        """
+        return not self.app_auth_enabled and bool(self.web_console_token)
 
     # ── Database ──────────────────────────────────────────────────────────────
     database_url: str = "sqlite+aiosqlite:////data/batonkeep.db"

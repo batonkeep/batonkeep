@@ -2,6 +2,7 @@
 // vite in dev, nginx in prod), so the SPA is single-origin and needs no config.
 
 import type {
+  AuthStatus,
   Cockpit,
   ConsoleConfig,
   CloudflareConfig,
@@ -51,6 +52,9 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     : { "Content-Type": "application/json" };
   const res = await fetch(`${BASE}${path}`, {
     ...init,
+    // Send the app-auth session cookie (D-0023). Same-origin in prod; explicit
+    // so cross-origin dev (vite proxy bypass) still carries it.
+    credentials: "include",
     // Spread init FIRST, then set merged headers LAST — otherwise init's own
     // headers ({"X-Console-Token": ...}) clobber the whole headers object and
     // drop Content-Type: application/json, so a JSON string body is sent as
@@ -208,6 +212,12 @@ export const api = {
 
   // ── Console (scoped actions: set model, run auth) ──────────────────────────
   getConsoleConfig: () => req<ConsoleConfig>("/console/config"),
+
+  // App-level auth (D-0023). Status is public; login/logout set/clear the cookie.
+  getAuthStatus: () => req<AuthStatus>("/auth/status"),
+  login: (password: string) =>
+    req<AuthStatus>("/auth/login", { method: "POST", body: JSON.stringify({ password }) }),
+  logout: () => req<AuthStatus>("/auth/logout", { method: "POST" }),
   setProviderModel: (instanceId: string, model: string | null, token: string) =>
     req<{ status: string; instance: string; model: string | null }>(
       `/providers/${encodeURIComponent(instanceId)}/model`,

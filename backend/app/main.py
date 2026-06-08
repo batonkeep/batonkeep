@@ -19,21 +19,24 @@ from fastapi import (
     File,
     Header,
     HTTPException,
+    Request,
     UploadFile,
     WebSocket,
     WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.datastructures import Headers, MutableHeaders
 
+from app.auth import SESSION_COOKIE, issue_session, password_matches, verify_session
 from app.config import get_settings
 from app.db import get_db, init_db
 from app.logging_config import configure_logging, owner_id_var, request_id_var
 from app.models import Artifact, Credential, Owner, Run, RunEvent, Session, SessionTurn, Task
 from app.schemas import (
+    AuthStatus,
     CaptureRequest,
     CloudflareConfigIn,
     CloudflareDeployIn,
@@ -46,6 +49,7 @@ from app.schemas import (
     FileEntryOut,
     GitImportIn,
     ImportOut,
+    LoginRequest,
     ModeOut,
     ProviderHealth,
     ProviderLimitsUpdate,
@@ -176,6 +180,74 @@ class PrivateNetworkAccessMiddleware:
 
         await self.app(scope, receive, send_wrapper)
 
+
+# Paths reachable without an app-auth session: the login/status endpoints
+# themselves, and the already-token-authenticated public surfaces (published
+# share bundles + the per-session live-preview, each carrying its own path token).
+_AUTH_PUBLIC_PREFIXES = ("/api/auth/", "/api/share/")
+
+
+def _http_path_is_public(path: str) -> bool:
+    if path.startswith(_AUTH_PUBLIC_PREFIXES):
+        return True
+    # /api/sessions/{id}/preview/{token}[/...] — own token, loaded in an iframe.
+    return path.startswith("/api/sessions/") and "/preview/" in path
+
+
+def _scope_session_ok(scope) -> bool:
+    """Validate the app-auth session cookie straight off the raw ASGI scope."""
+    from http.cookies import SimpleCookie
+
+    cookie_header = Headers(scope=scope).get("cookie", "")
+    if not cookie_header:
+        return False
+    jar = SimpleCookie()
+    try:
+        jar.load(cookie_header)
+    except Exception:
+        return False
+    morsel = jar.get(SESSION_COOKIE)
+    return verify_session(morsel.value if morsel else None)
+
+
+class AppAuthMiddleware:
+    """Single-operator app-auth gate (D-0023). When APP_PASSWORD is set, every
+    HTTP request and websocket needs a valid session cookie, except the login
+    endpoints and the token-authenticated public surfaces. Registered *inside*
+    CORS so its 401 still carries CORS headers (browsers can read it cross-origin
+    in dev). No-op when app-auth is disabled."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] not in ("http", "websocket") or not get_settings().app_auth_enabled:
+            return await self.app(scope, receive, send)
+
+        if scope["type"] == "http":
+            if scope.get("method") == "OPTIONS" or _http_path_is_public(scope.get("path", "")):
+                return await self.app(scope, receive, send)
+            if _scope_session_ok(scope):
+                return await self.app(scope, receive, send)
+            body = b'{"detail":"Authentication required"}'
+            await send({
+                "type": "http.response.start",
+                "status": 401,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(body)).encode()),
+                ],
+            })
+            await send({"type": "http.response.body", "body": body})
+            return
+
+        # websocket: reject before the handshake completes if unauthenticated.
+        if _scope_session_ok(scope):
+            return await self.app(scope, receive, send)
+        await send({"type": "websocket.close", "code": 1008})
+
+
+app.add_middleware(AppAuthMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
@@ -1415,13 +1487,77 @@ async def reset_provider_cooldown(provider_name: str):
     return {"status": "ok", "provider": provider_name}
 
 
+# ── App-level auth (D-0023, resolves P-0026) ───────────────────────────────────
+
+def _set_session_cookie(resp: Response) -> None:
+    # httpOnly so JS can't read it; SameSite=Lax for top-level navigation. Not
+    # Secure-only — OSS self-hosters often serve over http on a LAN/loopback.
+    resp.set_cookie(
+        SESSION_COOKIE,
+        issue_session(),
+        max_age=settings.app_session_ttl_seconds,
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
+
+
+@app.get("/api/auth/status", response_model=AuthStatus, tags=["auth"])
+async def auth_status(request: Request):
+    """Whether app-auth is on and whether this request carries a valid session.
+    Public — the login gate needs it before a session exists."""
+    enabled = settings.app_auth_enabled
+    authed = (not enabled) or verify_session(request.cookies.get(SESSION_COOKIE))
+    return AuthStatus(auth_enabled=enabled, authenticated=authed)
+
+
+@app.post("/api/auth/login", response_model=AuthStatus, tags=["auth"])
+async def auth_login(body: LoginRequest):
+    """Exchange the operator password for a signed session cookie."""
+    if not settings.app_auth_enabled:
+        return AuthStatus(auth_enabled=False, authenticated=True)
+    if not password_matches(body.password):
+        raise HTTPException(status_code=401, detail="Invalid password")
+    resp = JSONResponse(AuthStatus(auth_enabled=True, authenticated=True).model_dump())
+    _set_session_cookie(resp)
+    return resp
+
+
+@app.post("/api/auth/logout", response_model=AuthStatus, tags=["auth"])
+async def auth_logout():
+    """Clear the session cookie."""
+    resp = JSONResponse(
+        AuthStatus(auth_enabled=settings.app_auth_enabled, authenticated=False).model_dump()
+    )
+    resp.delete_cookie(SESSION_COOKIE, path="/")
+    return resp
+
+
 # ── In-UI console (scoped actions: set model, run auth) ────────────────────────
 
-def _require_console(x_console_token: str | None = Header(default=None)) -> None:
-    """Gate console actions behind the env flag + token (never in managed mode)."""
+def _console_token_ok(token: str | None) -> bool:
+    """Legacy X-Console-Token check — only consulted when app-auth is off."""
+    return bool(token) and token == settings.web_console_token
+
+
+def _ws_console_authorized(websocket: WebSocket, init: dict) -> bool:
+    """Console/web-TTY websocket gate: session cookie when app-auth is on, else
+    the legacy init token. Callers must have already checked web_console_available."""
+    if settings.app_auth_enabled:
+        return verify_session(websocket.cookies.get(SESSION_COOKIE))
+    return _console_token_ok(init.get("token"))
+
+
+def _require_console(request: Request, x_console_token: str | None = Header(default=None)) -> None:
+    """Gate console actions: env flag + non-managed, then app-auth session (when
+    enabled) else the legacy token. The managed exec-fence is in web_console_available."""
     if not settings.web_console_available:
         raise HTTPException(status_code=404, detail="Console is not enabled")
-    if not x_console_token or x_console_token != settings.web_console_token:
+    if settings.app_auth_enabled:
+        if not verify_session(request.cookies.get(SESSION_COOKIE)):
+            raise HTTPException(status_code=401, detail="Authentication required")
+        return
+    if not _console_token_ok(x_console_token):
         raise HTTPException(status_code=403, detail="Invalid console token")
 
 
@@ -1500,7 +1636,7 @@ async def console_websocket(websocket: WebSocket):
         await websocket.close()
         return
 
-    if init.get("token") != settings.web_console_token:
+    if not _ws_console_authorized(websocket, init):
         await websocket.send_json({"type": "error", "message": "invalid token"})
         await websocket.close()
         return
@@ -1580,7 +1716,7 @@ async def web_tty_websocket(websocket: WebSocket):
         await websocket.close()
         return
 
-    if init.get("token") != settings.web_console_token:
+    if not _ws_console_authorized(websocket, init):
         await websocket.send_json({"type": "error", "message": "invalid token"})
         await websocket.close()
         return

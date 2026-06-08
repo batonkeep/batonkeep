@@ -133,6 +133,11 @@ export interface ConsoleConfig {
   available: boolean;
 }
 
+export interface AuthStatus {
+  auth_enabled: boolean;
+  authenticated: boolean;
+}
+
 export interface Stats {
   runs_today: number;
   success_rate: number;

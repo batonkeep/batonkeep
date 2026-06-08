@@ -358,6 +358,17 @@ class ConsoleConfig(BaseModel):
     available: bool
 
 
+class LoginRequest(BaseModel):
+    """App-level login (D-0023). Single-operator password check."""
+    password: str
+
+
+class AuthStatus(BaseModel):
+    """Whether app-auth is enabled and whether the caller is authenticated."""
+    auth_enabled: bool
+    authenticated: bool
+
+
 # ── Stats ─────────────────────────────────────────────────────────────────────
 
 class StatsOut(BaseModel):

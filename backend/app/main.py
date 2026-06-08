@@ -281,6 +281,16 @@ async def create_task(
     db.add(task)
     await db.commit()
     await db.refresh(task)
+
+    # Register the schedule immediately (parity with update_task). Without this a
+    # newly-created scheduled task only starts firing after it's later edited or
+    # toggled — and on the next restart it relied on the startup sync.
+    try:
+        from app.scheduler import scheduler_instance
+        await scheduler_instance.sync_task(task)
+    except (ImportError, AttributeError):
+        pass
+
     return _task_to_out(task)
 
 

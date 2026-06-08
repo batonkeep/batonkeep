@@ -135,20 +135,22 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
                       </div>
                     </div>
                     <Badge tone={healthTone}>
-                      {cooling ? "cooling" : p.healthy ? "healthy" : "cooling"}
+                      {cooling ? "cooling" : p.healthy ? "healthy" : "offline"}
                     </Badge>
                   </div>
 
                   {(cooling || unhealthy) && (
                     <div className="mt-2 flex items-center justify-between">
-                      <span className="font-mono text-xs text-defer">
-                        {cooling ? `resets in ${countdown(p.cooldown_until, now)}` : "in cooldown"}
+                      <span className={`font-mono text-xs ${cooling ? "text-defer" : "text-bad"}`}>
+                        {cooling ? `resets in ${countdown(p.cooldown_until, now)}` : "not connected — re-auth needed"}
                       </span>
-                      <Button variant="outline" size="sm" icon={<RotateCcw size={11} />}
-                        onClick={() => handleReset(p.name)}
-                        className="border-defer/40 text-defer hover:border-defer">
-                        reset
-                      </Button>
+                      {cooling && (
+                        <Button variant="outline" size="sm" icon={<RotateCcw size={11} />}
+                          onClick={() => handleReset(p.name)}
+                          className="border-defer/40 text-defer hover:border-defer">
+                          reset
+                        </Button>
+                      )}
                     </div>
                   )}
 

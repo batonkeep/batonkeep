@@ -88,8 +88,10 @@ export default function RunViewer({ run, taskName, now, onRequeue, onCancel, onC
 
   const elapsedMs = useMemo(() => {
     if (!run.started_at) return null;
-    const end = run.finished_at ? new Date(run.finished_at).getTime() : now;
-    return end - new Date(run.started_at).getTime();
+    // Backend timestamps are naive UTC — parse via asUTC, not new Date() (which
+    // assumes local time and inflates elapsed by the tz offset, e.g. ~600min at UTC+10).
+    const end = run.finished_at ? asUTC(run.finished_at).getTime() : now;
+    return end - asUTC(run.started_at).getTime();
   }, [run.started_at, run.finished_at, now]);
 
   const reportHtml = useMemo(() => {

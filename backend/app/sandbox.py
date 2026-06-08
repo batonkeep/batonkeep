@@ -14,6 +14,7 @@ returns the command unchanged so the same code path runs un-sandboxed locally.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import subprocess
@@ -40,6 +41,29 @@ def wrap(cmd: list[str]) -> list[str]:
         logger.debug("[sandbox] spawner unavailable — running %s un-sandboxed", cmd[:1])
         return cmd
     return [_settings.sandbox_spawn_path, "--", *cmd]
+
+
+async def path_exists(path: str) -> bool:
+    """Whether `path` exists *from the sandbox user's vantage point*.
+
+    Plan-CLI auth dirs live under the sandbox user's HOME (/home/agent), which the
+    control-plane `batond` user cannot traverse — so a direct ``os.path.exists`` from
+    the backend wrongly reports them missing (every provider shows "offline" even
+    though the CLIs are logged in). Route the check through the same setuid spawner
+    the CLIs use so it runs as `sandbox`. Falls back to a direct check when the
+    spawner is unavailable (dev / tests / non-container)."""
+    if not available():
+        return os.path.exists(path)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            _settings.sandbox_spawn_path, "--", "test", "-e", path,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        return await proc.wait() == 0
+    except Exception as exc:  # noqa: BLE001 — best-effort probe must not raise
+        logger.warning("[sandbox] path_exists(%s) failed: %s", path, exc)
+        return False
 
 
 def reap(pgid: int) -> None:

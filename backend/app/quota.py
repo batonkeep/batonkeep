@@ -80,7 +80,6 @@ class QuotaTracker:
         Called when a provider returns a rate-limit signal.
         Sets cooldown_until = reset_at (or now + default if not parsed).
         """
-        import traceback
         with self._lock:
             h = self._health[provider]
             h.healthy = False
@@ -91,9 +90,7 @@ class QuotaTracker:
                     seconds=_DEFAULT_COOLDOWN_SECONDS
                 )
             logger.warning(
-                "[quota] %s marked in cooldown until %s\nCaller:\n%s",
-                provider, h.cooldown_until,
-                "".join(traceback.format_stack(limit=8)),
+                "[quota] %s marked in cooldown until %s", provider, h.cooldown_until
             )
 
     def mark_healthy(self, provider: str) -> None:

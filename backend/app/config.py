@@ -127,6 +127,13 @@ class Settings(BaseSettings):
     enable_web_console: bool = False
     web_console_token: str = ""  # legacy gate; folded into app-auth when that's on
 
+    # ── Subscription-usage background poll (D-0023, resolves P-0026 b) ─────────
+    # Periodically refresh plan-CLI /usage quota so the providers card shows a
+    # maintained figure (with an "as of" stamp) instead of a manual-only capture.
+    # The full-TTY /usage seam is slow + spends a provider turn, so the cadence is
+    # deliberately long; 0 disables the poll (manual refresh still works).
+    subscription_usage_poll_seconds: int = 3600  # 1h; 0 = off
+
     @property
     def web_console_available(self) -> bool:
         # The console exists when explicitly enabled and not in managed mode.

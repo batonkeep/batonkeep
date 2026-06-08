@@ -6,10 +6,20 @@ import { lazy, Suspense, useState } from "react";
 import { Check, KeyRound, Pencil, RefreshCw, RotateCcw, Terminal } from "lucide-react";
 import type { ProviderHealth } from "../types";
 import { api } from "../api";
-import { countdown } from "../format";
+import { countdown, fmtRelative } from "../format";
 import { Badge, Button, Card, Input, StatusDot } from "../ui";
 
 const AuthConsole = lazy(() => import("./AuthConsole"));
+
+// A labelled section inside a provider card — the auth / state / usage zones.
+function Zone({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="mt-3 border-t border-edge pt-2">
+      <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-muted/70">{label}</div>
+      {children}
+    </div>
+  );
+}
 
 interface Props {
   providers: ProviderHealth[];
@@ -150,10 +160,13 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
                     </Badge>
                   </div>
 
-                  {(cooling || unhealthy) && (
-                    <div className="mt-2 flex items-center justify-between">
-                      <span className={`font-mono text-xs ${cooling ? "text-defer" : "text-bad"}`}>
-                        {cooling ? `resets in ${countdown(p.cooldown_until, now)}` : "not connected — re-auth needed"}
+                  {/* STATE zone — health detail + cooldown reset */}
+                  <Zone label="state">
+                    <div className="flex items-center justify-between">
+                      <span className={`font-mono text-xs ${cooling ? "text-defer" : unhealthy ? "text-bad" : "text-ok"}`}>
+                        {cooling
+                          ? `cooling — resets in ${countdown(p.cooldown_until, now)}`
+                          : unhealthy ? "offline — not connected" : "healthy — ready"}
                       </span>
                       {cooling && (
                         <Button variant="outline" size="sm" icon={<RotateCcw size={11} />}
@@ -163,9 +176,10 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
                         </Button>
                       )}
                     </div>
-                  )}
+                  </Zone>
 
-                  <div className="mt-3">
+                  {/* USAGE zone — headroom estimate + freshness + manual refresh */}
+                  <Zone label="usage">
                     <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wider text-muted">
                       <span>headroom (est.)</span>
                       <span>{usedPct == null ? "unknown" : `${100 - usedPct}% left`}</span>
@@ -173,17 +187,26 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
                     <div className="h-1.5 w-full overflow-hidden rounded-full bg-base">
                       <div className={`h-full ${barColor} transition-all`} style={{ width: `${usedPct == null ? 0 : usedPct}%` }} />
                     </div>
-                    {canConsole && p.kind === "cli" && (
-                      <button onClick={() => captureUsage(p.name)} disabled={capturing === p.name}
-                        title="Drive /usage once via the full-TTY single-shot seam (read-only)"
-                        className="mt-1.5 font-mono text-[10px] text-brand hover:text-ink disabled:text-muted">
-                        {capturing === p.name ? "capturing /usage…" : "capture /usage quota"}
-                      </button>
+                    {p.kind === "cli" && (
+                      <div className="mt-1.5 flex items-center justify-between">
+                        <span className="font-mono text-[10px] text-muted">
+                          {p.usage_seen_at ? `as of ${fmtRelative(p.usage_seen_at)}` : "not yet captured"}
+                        </span>
+                        {canConsole && (
+                          <button onClick={() => captureUsage(p.name)} disabled={capturing === p.name}
+                            title="Drive /usage once via the full-TTY single-shot seam (read-only). Auto-refreshed in the background; this forces it now."
+                            className="flex items-center gap-1 font-mono text-[10px] text-brand hover:text-ink disabled:text-muted">
+                            <RefreshCw size={10} className={capturing === p.name ? "animate-spin" : ""} />
+                            {capturing === p.name ? "capturing…" : "refresh"}
+                          </button>
+                        )}
+                      </div>
                     )}
-                  </div>
+                  </Zone>
 
+                  {/* AUTH zone — re-auth path (plan-CLI only) */}
                   {p.mode === "plan" && (
-                    <div className="mt-3 border-t border-edge pt-2">
+                    <Zone label="auth">
                       {canConsole ? (
                         <button onClick={() => setAuthTarget(p.name)}
                           className="flex items-center gap-1.5 font-mono text-[11px] text-brand hover:text-ink">
@@ -194,7 +217,7 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
                           <KeyRound size={12} /> re-auth via `make auth p={p.name}`
                         </span>
                       )}
-                    </div>
+                    </Zone>
                   )}
                 </Card>
               );

@@ -1461,6 +1461,7 @@ async def list_providers():
             cooldown_until=health.cooldown_until,
             last_reset_seen=health.last_reset_seen,
             est_used_pct=health.est_used_pct,
+            usage_seen_at=health.subscription_seen_at,
             mode=pdef.mode,
         ))
     return result

@@ -24,7 +24,13 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from app.providers.base import EventKind
-from app.providers.registry import get_instance, get_interactive_executor, get_provider_def
+from app.providers.registry import (
+    get_instance,
+    get_interactive_executor,
+    get_provider_def,
+    is_instance_connected,
+    list_instances,
+)
 from app.quota import quota_tracker
 
 logger = logging.getLogger(__name__)
@@ -196,3 +202,42 @@ async def capture_subscription_usage(
             "[subscription_usage] %s at %.0f%% used", instance_id, (usage.used_pct or 0) * 100
         )
     return usage
+
+
+async def poll_all_subscription_usage(*, stale_after_seconds: float) -> int:
+    """Background refresh of subscription quota for every connected plan-CLI
+    instance (D-0023 sub-decision b). Drives the slow full-TTY `/usage` seam, so
+    it runs **sequentially** (never spawns many CLIs at once) and **skips
+    instances already fresh** within `stale_after_seconds` (so a restart or a
+    recent manual refresh isn't redundantly re-captured). Best-effort: a failure
+    on one instance is logged and never blocks the others. Returns the count
+    refreshed. Confidential-session fencing does not apply — `/usage` reads the
+    operator's own plan quota, not session content.
+    """
+    refreshed = 0
+    now = datetime.now(UTC)
+    for inst in list_instances():
+        pdef = get_provider_def(inst.template)
+        if pdef is None or pdef.kind != "cli":
+            continue  # only plan-CLIs have a /usage panel
+        # Skip if the last reading is still fresh enough.
+        health = quota_tracker.get_health(inst.id)
+        seen = health.subscription_seen_at
+        if seen is not None and (now - seen).total_seconds() < stale_after_seconds:
+            continue
+        # Skip offline instances — capturing would otherwise spawn a login flow.
+        try:
+            if not await is_instance_connected(inst):
+                continue
+        except Exception:  # pragma: no cover - defensive
+            continue
+        usage = await capture_subscription_usage(inst.id)
+        if usage.ok:
+            refreshed += 1
+        else:
+            logger.debug(
+                "[subscription_usage] poll skipped %s: %s", inst.id, usage.error
+            )
+    if refreshed:
+        logger.info("[subscription_usage] background poll refreshed %d instance(s)", refreshed)
+    return refreshed

@@ -1,11 +1,13 @@
-// Sidebar.tsx — primary nav. Left rail on desktop, bottom tab bar on mobile.
-import { Gauge, Hammer, ListChecks, Server } from "lucide-react";
+// Sidebar.tsx — primary nav. Left rail on desktop (with sub-labels), bottom
+// tab bar on mobile (4 items, same tap targets). D-0027: Providers → Settings,
+// Cockpit → Analytics; sub-labels on desktop; human labels; mobile unchanged.
+import { Gauge, Hammer, ListChecks, Settings2 } from "lucide-react";
 import Logo from "../ui/Logo";
 import type { WsStatus } from "../useLiveFeed";
 
 // "Live" (runs) is folded into the Tasks pane as a sub-tab, keeping the bottom
-// nav to three items on mobile.
-export type View = "tasks" | "build" | "providers" | "cockpit";
+// nav to four items on mobile. Providers folded into Settings (D-0027 / D-0023).
+export type View = "tasks" | "build" | "settings" | "cockpit";
 
 interface Props {
   view: View;
@@ -17,11 +19,16 @@ interface Props {
   immersive?: boolean;
 }
 
-const ITEMS: { id: View; label: string; icon: typeof ListChecks }[] = [
-  { id: "tasks", label: "Tasks", icon: ListChecks },
-  { id: "build", label: "Build", icon: Hammer },
-  { id: "providers", label: "Providers", icon: Server },
-  { id: "cockpit", label: "Cockpit", icon: Gauge },
+const ITEMS: {
+  id: View;
+  label: string;
+  sub: string; // desktop sub-label
+  icon: typeof ListChecks;
+}[] = [
+  { id: "tasks",    label: "Tasks",     sub: "schedule + run",     icon: ListChecks },
+  { id: "build",    label: "Build",     sub: "sessions + publish",  icon: Hammer },
+  { id: "cockpit",  label: "Analytics", sub: "ops telemetry",       icon: Gauge },
+  { id: "settings", label: "Settings",  sub: "AI plans + config",   icon: Settings2 },
 ];
 
 export default function Sidebar({ view, onChange, wsStatus, activeRuns, immersive = false }: Props) {
@@ -38,7 +45,7 @@ export default function Sidebar({ view, onChange, wsStatus, activeRuns, immersiv
         <Logo size={30} />
       </div>
 
-      {ITEMS.map(({ id, label, icon: Icon }) => {
+      {ITEMS.map(({ id, label, sub, icon: Icon }) => {
         const active = view === id;
         return (
           <button
@@ -52,7 +59,11 @@ export default function Sidebar({ view, onChange, wsStatus, activeRuns, immersiv
             `}
           >
             <Icon size={18} className={active ? "text-brand" : ""} />
-            <span className="font-mono">{label}</span>
+            {/* Mobile: just the main label. Desktop: label + sub-label stacked. */}
+            <span className="flex flex-col items-center md:items-start">
+              <span className="font-mono">{label}</span>
+              <span className="hidden md:inline text-[10px] text-muted font-sans">{sub}</span>
+            </span>
             {id === "tasks" && activeRuns > 0 && (
               <span className="absolute right-1/4 top-1 h-1.5 w-1.5 rounded-full bg-live animate-pulse-live md:static md:ml-auto md:h-auto md:w-auto md:rounded-none md:bg-transparent md:text-xs md:text-live">
                 <span className="hidden md:inline">{activeRuns}</span>
@@ -62,14 +73,22 @@ export default function Sidebar({ view, onChange, wsStatus, activeRuns, immersiv
         );
       })}
 
-      {/* Connection status — desktop only */}
-      <div className="hidden md:mt-auto md:flex md:items-center md:gap-2 md:px-3 md:py-2 md:text-xs">
+      {/* Connection signal — desktop only, more prominent (D-0027 fix 3) */}
+      <div className="hidden md:mt-auto md:flex md:items-center md:gap-2 md:px-3 md:py-2">
         <span
-          className={`h-2 w-2 rounded-full ${
-            wsStatus === "open" ? "bg-live" : wsStatus === "connecting" ? "bg-defer animate-pulse-live" : "bg-bad"
+          className={`h-2.5 w-2.5 shrink-0 rounded-full ${
+            wsStatus === "open"
+              ? "bg-live shadow-[0_0_6px_2px_rgba(34,197,94,0.4)]"
+              : wsStatus === "connecting"
+              ? "bg-defer animate-pulse-live"
+              : "bg-bad"
           }`}
         />
-        <span className="font-mono text-muted">{wsStatus === "open" ? "live feed" : wsStatus}</span>
+        <span className={`font-mono text-xs ${
+          wsStatus === "open" ? "text-live" : wsStatus === "connecting" ? "text-defer" : "text-bad"
+        }`}>
+          {wsStatus === "open" ? "connected" : wsStatus === "connecting" ? "connecting…" : "offline"}
+        </span>
       </div>
     </nav>
   );

@@ -7,6 +7,8 @@ import { Check, GripVertical, Plus, Wand2, X } from "lucide-react";
 import type { ProviderHealth, RoutingPolicy, RoutingStrategy, Task, TaskInput } from "../types";
 import { isValidCron } from "../format";
 import { Badge, Button, Card, Field, Input, Modal, Select } from "../ui";
+import CronPicker from "./CronPicker";
+
 
 interface Props {
   task: Task | null;
@@ -170,41 +172,55 @@ export default function TaskForm({ task, providers, onSave, onClose }: Props) {
         </Field>
 
         {/* Schedule */}
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-          <Field label="Schedule">
-            <Select value={scheduleKind} onChange={(e) => setScheduleKind(e.target.value as Task["schedule_kind"])}>
-              <option value="none">Manual only</option>
-              <option value="interval">Interval (seconds)</option>
-              <option value="cron">Cron</option>
-            </Select>
-          </Field>
-          {scheduleKind !== "none" && (
-            <div className="md:col-span-2">
-              <Field label={scheduleKind === "cron" ? "Crontab (min hour dom mon dow)" : "Interval seconds"}>
-                <Input
-                  value={scheduleExpr}
-                  onChange={(e) => setScheduleExpr(e.target.value)}
-                  placeholder={scheduleKind === "cron" ? "0 7 * * *" : "21600"}
-                  className={(!cronValid || !intervalValid) ? "border-bad" : ""}
-                />
-              </Field>
-            </div>
-          )}
+        <div className="space-y-3">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+            <Field label="Schedule">
+              <Select value={scheduleKind} onChange={(e) => setScheduleKind(e.target.value as Task["schedule_kind"])}>
+                <option value="none">Manual only</option>
+                <option value="interval">Interval (seconds)</option>
+                <option value="cron">Cron</option>
+              </Select>
+            </Field>
+            {scheduleKind === "interval" && (
+              <div className="md:col-span-2">
+                <Field label="Interval seconds">
+                  <Input
+                    value={scheduleExpr}
+                    onChange={(e) => setScheduleExpr(e.target.value)}
+                    placeholder="21600"
+                    className={!intervalValid ? "border-bad" : ""}
+                  />
+                </Field>
+              </div>
+            )}
+          </div>
+
+          {/* Cron picker — shown when kind = cron */}
           {scheduleKind === "cron" && (
-            <div className="md:col-span-2">
-              <Field label="Timezone · cron is interpreted here (DST-aware)"
-                hint={`Detected: ${browserTz}. Times you enter above fire in this zone, not UTC.`}>
-                <Select value={timezone} onChange={(e) => setTimezone(e.target.value)}>
-                  {browserTz !== "UTC" && (
-                    <optgroup label="Detected">
-                      <option value={browserTz}>{browserTz}</option>
+            <div className="rounded-lg border border-edge bg-panel/60 p-3">
+              <CronPicker
+                value={scheduleExpr}
+                onChange={(cron) => setScheduleExpr(cron)}
+                hasError={!cronValid}
+              />
+              {/* Timezone always shown for cron */}
+              <div className="mt-3">
+                <Field
+                  label="Timezone · cron fires in this zone (DST-aware)"
+                  hint={`Detected: ${browserTz}. Times above fire in this zone, not UTC.`}
+                >
+                  <Select value={timezone} onChange={(e) => setTimezone(e.target.value)}>
+                    {browserTz !== "UTC" && (
+                      <optgroup label="Detected">
+                        <option value={browserTz}>{browserTz}</option>
+                      </optgroup>
+                    )}
+                    <optgroup label="All timezones">
+                      {ALL_TIMEZONES.map((tz) => <option key={tz} value={tz}>{tz}</option>)}
                     </optgroup>
-                  )}
-                  <optgroup label="All timezones">
-                    {ALL_TIMEZONES.map((tz) => <option key={tz} value={tz}>{tz}</option>)}
-                  </optgroup>
-                </Select>
-              </Field>
+                  </Select>
+                </Field>
+              </div>
             </div>
           )}
         </div>

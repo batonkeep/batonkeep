@@ -89,6 +89,9 @@ class CustomProvider:
             env_key=self.env_key or None,
             mode="open",
             local=self.local,
+            # Pass auth_type so the executor can skip the credential check for
+            # unauthenticated local endpoints (Ollama, LM Studio on localhost).
+            auth_type=self.auth_type,
         )
 
 

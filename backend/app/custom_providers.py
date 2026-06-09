@@ -146,6 +146,12 @@ def load_custom_providers() -> list[CustomProvider]:
 
 _PROVIDERS: list[CustomProvider] = []
 
+# Names we most recently injected into the registry.
+# Used by _inject_into_registry to clean up exactly what it added —
+# without this, recomputing from _ALL_PROVIDERS after a previous injection
+# would include injected names in "static_names" and fail to remove them.
+_INJECTED_NAMES: set[str] = set()
+
 
 def _builtin_names() -> frozenset[str]:
     global _BUILTIN_NAMES
@@ -165,23 +171,26 @@ def init_custom_providers() -> None:
 
 
 def _inject_into_registry(providers: list[CustomProvider]) -> None:
-    """Merge the custom provider list into the live registry module globals."""
+    """Merge the custom provider list into the live registry module globals.
+
+    Uses _INJECTED_NAMES to track exactly what was added on the previous call,
+    so teardown is precise regardless of how many times this is invoked.
+    """
+    global _INJECTED_NAMES
     from app.providers import registry as reg
 
-    # Remove any previously-injected custom entries (those not in the original static list).
-    static_names: set[str] = {p.name for p in reg._ALL_PROVIDERS}
-    # _ALL_PROVIDERS is the source-of-truth static list; _REGISTRY is its index.
-    # We only remove custom (non-static) entries — never touch built-ins.
-    to_remove = [n for n in list(reg._REGISTRY.keys()) if n not in static_names]
-    for name in to_remove:
-        del reg._REGISTRY[name]
-        # Also remove from _ALL_PROVIDERS list if it was injected previously.
+    # Remove every name we added last time — clean slate before re-injecting.
+    for name in list(_INJECTED_NAMES):
+        reg._REGISTRY.pop(name, None)
         reg._ALL_PROVIDERS[:] = [p for p in reg._ALL_PROVIDERS if p.name != name]
+    _INJECTED_NAMES = set()
 
+    # Inject the new set.
     for cp in providers:
         pdef = cp.to_provider_def()
         reg._ALL_PROVIDERS.append(pdef)
         reg._REGISTRY[pdef.name] = pdef
+        _INJECTED_NAMES.add(pdef.name)
     reg.ALL_TEMPLATE_NAMES = frozenset(reg._REGISTRY.keys())
 
 

@@ -19,14 +19,17 @@ def _registry_snapshot():
     registry that P9 / routing tests rely on.
     """
     import app.providers.registry as reg
+    import app.custom_providers as cp_mod
 
     # Deep-copy the mutable module globals that custom_providers.py mutates.
     saved_all = list(reg._ALL_PROVIDERS)
     saved_reg = dict(reg._REGISTRY)
     saved_names = frozenset(reg.ALL_TEMPLATE_NAMES)
+    saved_injected = set(cp_mod._INJECTED_NAMES)
     yield
     # Restore to the pre-test state.
     reg._ALL_PROVIDERS[:] = saved_all
     reg._REGISTRY.clear()
     reg._REGISTRY.update(saved_reg)
     reg.ALL_TEMPLATE_NAMES = saved_names
+    cp_mod._INJECTED_NAMES = saved_injected

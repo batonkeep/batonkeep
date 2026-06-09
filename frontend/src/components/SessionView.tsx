@@ -311,21 +311,25 @@ export default function SessionView({
     loadPublish();
   }, [selectedId, loadTurns, loadPublish]);
 
-  // When a turn finishes, refresh the turn list + version history and bust the
-  // preview iframe so it reflects the latest workspace edits (Cache-Control:
-  // no-store on the backend).
+  // When the WS confirms the turn is live ('running'), load it into the turn
+  // list so it appears in DB-driven views. pendingMessage stays visible — it is
+  // the user message bubble + GeneratingIndicator and must not be cleared until
+  // the completed turn is in hand (clearing it here was the regression that made
+  // the message and animation disappear before the page was refreshed).
+  // When the turn finishes, refresh turns + history + preview and clear the
+  // optimistic placeholder now that the real completed card is available.
   useEffect(() => {
     if (!lastTurn) return;
     if (lastTurn.status === "running") {
-      // The background task is live — the optimistic pending message is now
-      // superseded by the real turn record; clear it to avoid double rendering.
-      setPendingMessage(null);
+      // Fetch the running turn record so the turn list reflects it.
+      loadTurns();
     } else {
       // Turn completed (succeeded or failed).
       loadTurns();
       loadVersions();
       onSessionsChanged(); // session.updated_at + provider may have changed
       setPreviewNonce((n) => n + 1);
+      setPendingMessage(null); // clear now that the real completed card is available
     }
   }, [lastTurn, loadTurns, loadVersions, onSessionsChanged]);
 
@@ -1141,16 +1145,23 @@ export default function SessionView({
                 </div>
               ))}
 
-              {/* Optimistic in-flight turn: the user's message shows immediately. */}
-              {pendingMessage && (
-                <div className="space-y-1">
-                  <div className="rounded-lg border border-edge bg-base px-3 py-2 text-sm text-ink">
-                    {pendingMessage}
-                  </div>
-                  <GeneratingIndicator
-                    latest={curatedEvents[curatedEvents.length - 1]?.message ?? undefined}
-                  />
+              {/* Optimistic in-flight turn: shows the user's message immediately
+                  while the 202 response is in-flight. Suppressed once the real
+                  turn record is in `turns` (loadTurns fetched it) to avoid a
+                  duplicate message bubble while the agent runs. The generating
+                  animation is tied to turnRunning independently so it persists. */}
+              {pendingMessage && turns[turns.length - 1]?.prompt !== pendingMessage && (
+                <div className="rounded-lg border border-edge bg-base px-3 py-2 text-sm text-ink">
+                  {pendingMessage}
                 </div>
+              )}
+              {/* Generating indicator: visible whenever a turn is running,
+                  regardless of whether pendingMessage is suppressed by the turn
+                  appearing in the DB list. */}
+              {turnRunning && (
+                <GeneratingIndicator
+                  latest={curatedEvents[curatedEvents.length - 1]?.message ?? undefined}
+                />
               )}
 
               {sendError && (

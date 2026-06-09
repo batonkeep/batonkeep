@@ -23,7 +23,7 @@ import json
 import logging
 import os
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 
 logger = logging.getLogger(__name__)
 
@@ -203,7 +203,10 @@ def list_all_custom_providers() -> list[CustomProvider]:
 def _validate_id(cp_id: str) -> str | None:
     """Return an error message if the id is invalid, else None."""
     if not _ID_RE.match(cp_id):
-        return "id must be lowercase alphanumeric with hyphens (1–63 chars), starting with a letter or digit"
+        return (
+            "id must be lowercase alphanumeric with hyphens (1–63 chars),"
+            " starting with a letter or digit"
+        )
     if cp_id in _builtin_names():
         return f"id '{cp_id}' conflicts with a built-in provider name"
     return None

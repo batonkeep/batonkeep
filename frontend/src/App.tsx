@@ -1,6 +1,6 @@
 // App.tsx — top-level shell: data orchestration, view routing, modals.
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { LogOut, Moon, Plus, Settings2, Sun } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { LogOut, Moon, Plus, Sun } from "lucide-react";
 import { api } from "./api";
 import { useLiveFeed } from "./useLiveFeed";
 import type { Credential, Mode, ProviderHealth, Run, Session, Stats, Task, TaskInput, UsageSummary } from "./types";
@@ -10,8 +10,7 @@ import TaskList from "./components/TaskList";
 import TaskForm from "./components/TaskForm";
 import RunViewer from "./components/RunViewer";
 import SessionView from "./components/SessionView";
-import ProvidersPanel from "./components/ProvidersPanel";
-import SecretsPanel from "./components/SecretsPanel";
+import SettingsPanel from "./components/SettingsPanel";
 import CockpitPanel from "./components/CockpitPanel";
 import Onboarding from "./components/Onboarding";
 import LoginPage from "./components/LoginPage";
@@ -90,6 +89,19 @@ function AppShell({ appAuthEnabled, onLogout }: { appAuthEnabled: boolean; onLog
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState<number | null>(null);
   const [busyTaskId, setBusyTaskId] = useState<number | null>(null);
+  // “+ New” popover (D-0027 item 5 / D-0024). Ref for outside-click close.
+  const [showNewMenu, setShowNewMenu] = useState(false);
+  const newMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!showNewMenu) return;
+    const handler = (e: MouseEvent) => {
+      if (newMenuRef.current && !newMenuRef.current.contains(e.target as Node)) {
+        setShowNewMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showNewMenu]);
 
   // Theme — light is the default; persisted best-effort so it survives reloads.
   const [theme, setTheme] = useState<"light" | "dark">(() => {
@@ -231,6 +243,14 @@ function AppShell({ appAuthEnabled, onLogout }: { appAuthEnabled: boolean; onLog
   const sparkData = useMemo(() => runsPerDay(mergedRuns), [mergedRuns]);
 
   // ── Render ───────────────────────────────────────────────────────────────--
+  // Human-readable page title map (D-0027 item 5).
+  const VIEW_TITLES: Record<View, string> = {
+    tasks: "Tasks",
+    build: "Build",
+    settings: "Settings",
+    cockpit: "Analytics",
+  };
+
   return (
     <div className="flex min-h-screen flex-col md:flex-row">
       <Sidebar view={view} onChange={setView} wsStatus={wsStatus} activeRuns={activeRuns} immersive={immersive} />
@@ -240,14 +260,18 @@ function AppShell({ appAuthEnabled, onLogout }: { appAuthEnabled: boolean; onLog
           immersive ? "pb-0" : "pb-24"
         }`}
       >
-        {/* Header — collapses to just the brand on an immersive mobile session. */}
+        {/* Header. Mobile: brand logo only (immersive mode collapses further).
+            Desktop: human page title (D-0027 item 5) + action buttons. */}
         <div className="mb-5 flex items-center justify-between gap-2">
           <div>
+            {/* Mobile: show logo */}
             <span className="md:hidden"><Logo size={30} /></span>
-            <p className="hidden font-mono text-xs uppercase tracking-widest text-muted md:block">
-              control plane · {view === "tasks" ? tasksTab : view}
-            </p>
+            {/* Desktop: human-readable page title */}
+            <h1 className="hidden font-mono text-base font-semibold text-ink md:block">
+              {VIEW_TITLES[view === "tasks" ? "tasks" : view]}
+            </h1>
           </div>
+
           <div className={`items-center gap-2 ${immersive ? "hidden md:flex" : "flex"}`}>
             <Button
               variant="outline"
@@ -258,14 +282,6 @@ function AppShell({ appAuthEnabled, onLogout }: { appAuthEnabled: boolean; onLog
               className="px-2.5"
               icon={theme === "dark" ? <Sun size={14} /> : <Moon size={14} />}
             />
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setShowOnboarding(true)}
-              icon={<Settings2 size={14} />}
-            >
-              <span className="hidden sm:inline">Providers</span>
-            </Button>
             {appAuthEnabled && (
               <Button
                 variant="ghost"
@@ -277,20 +293,55 @@ function AppShell({ appAuthEnabled, onLogout }: { appAuthEnabled: boolean; onLog
                 icon={<LogOut size={14} />}
               />
             )}
-            <Button
-              variant="primary"
-              size="sm"
-              onClick={() => { setEditingTask(null); setShowForm(true); }}
-              icon={<Plus size={14} />}
-            >
-              New task
-            </Button>
+            {/* + New popover (D-0027 item 5 / D-0024): New Task | New Build Session */}
+            <div className="relative" ref={newMenuRef}>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => setShowNewMenu((s) => !s)}
+                icon={<Plus size={14} />}
+              >
+                New
+              </Button>
+              {showNewMenu && (
+                <div className="absolute right-0 top-full z-50 mt-1.5 min-w-[180px] rounded-xl border border-edge bg-panel shadow-lg">
+                  <button
+                    className="flex w-full items-center gap-2.5 px-4 py-3 text-left text-sm hover:bg-brand/5"
+                    onClick={() => {
+                      setShowNewMenu(false);
+                      setEditingTask(null);
+                      setShowForm(true);
+                    }}
+                  >
+                    <span className="font-mono text-brand">+</span>
+                    <span>
+                      <span className="block font-semibold text-ink">New task</span>
+                      <span className="text-[11px] text-muted">Schedule + automate</span>
+                    </span>
+                  </button>
+                  <div className="mx-4 border-t border-edge" />
+                  <button
+                    className="flex w-full items-center gap-2.5 px-4 py-3 text-left text-sm hover:bg-brand/5"
+                    onClick={() => {
+                      setShowNewMenu(false);
+                      setView("build");
+                    }}
+                  >
+                    <span className="font-mono text-brand">▶</span>
+                    <span>
+                      <span className="block font-semibold text-ink">New build session</span>
+                      <span className="text-[11px] text-muted">Chat + publish</span>
+                    </span>
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
         {/* Run/task aggregates — irrelevant to Build, and the Cockpit is their
             consolidated superset, so hide the strip on both. */}
-        {view !== "build" && view !== "cockpit" && (
+        {view !== "build" && view !== "cockpit" && view !== "settings" && (
           <div className="mb-6">
             <StatsBar stats={stats} usage={usage} sparkData={sparkData} />
           </div>
@@ -321,14 +372,16 @@ function AppShell({ appAuthEnabled, onLogout }: { appAuthEnabled: boolean; onLog
                 onDelete={handleDelete}
                 onToggle={handleToggle}
                 onOpenRun={(id) => { setSelectedRunId(id); setTasksTab("live"); }}
+                onNewTask={() => { setEditingTask(null); setShowForm(true); }}
               />
             )}
 
             {tasksTab === "live" && (
               <div className="stagger space-y-2">
                 {mergedRuns.length === 0 && (
-                  <div className="rounded-lg border border-dashed border-edge p-8 text-center text-muted">
-                    No runs yet. Hit “Run now” on a task.
+                  <div className="rounded-xl border border-dashed border-edge p-8 text-center">
+                    <p className="mb-1 font-mono text-sm font-semibold text-ink">No runs yet</p>
+                    <p className="text-xs text-muted">Hit “Run now” on a task to see live output here.</p>
                   </div>
                 )}
                 {mergedRuns.slice(0, 40).map((r) => {
@@ -369,19 +422,18 @@ function AppShell({ appAuthEnabled, onLogout }: { appAuthEnabled: boolean; onLog
           />
         )}
 
-        {view === "providers" && (
-          <div className="space-y-4">
-            <ProvidersPanel
-              providers={providers}
-              now={now}
-              onRefresh={loadProviders}
-              consoleAvailable={consoleAvailable}
-              consoleToken={consoleToken}
-              onSetConsoleToken={setConsoleToken}
-              appAuthEnabled={appAuthEnabled}
-            />
-            <SecretsPanel />
-          </div>
+        {view === "settings" && (
+          <SettingsPanel
+            providers={providers}
+            credentials={credentials}
+            mode={mode}
+            now={now}
+            onRefresh={loadProviders}
+            consoleAvailable={consoleAvailable}
+            consoleToken={consoleToken}
+            onSetConsoleToken={setConsoleToken}
+            appAuthEnabled={appAuthEnabled}
+          />
         )}
 
         {view === "cockpit" && <CockpitPanel />}

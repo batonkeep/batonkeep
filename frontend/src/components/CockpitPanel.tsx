@@ -98,16 +98,13 @@ export default function CockpitPanel() {
 
   return (
     <div className="space-y-4">
-      {/* Header — window selector + sovereignty note. */}
+      {/* Header — window selector */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="flex items-center gap-2 font-mono text-lg font-semibold text-ink">
-            <Activity size={18} className="text-brand" /> Cockpit
+            <Activity size={18} className="text-brand" /> Analytics
           </h2>
-          <p className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted">
-            <ShieldCheck size={12} className="text-ok" />
-            Local-only. This telemetry never leaves your deployment.
-          </p>
+          <p className="mt-0.5 text-[11px] text-muted">Operational telemetry for your deployment</p>
         </div>
         <div className="flex items-center gap-2">
           <Select
@@ -127,6 +124,18 @@ export default function CockpitPanel() {
         </div>
       </div>
 
+      {/* Sovereignty badge — prominent callout (D-0027 item 6, D-0022 positioning asset) */}
+      <div className="flex items-start gap-3 rounded-lg border border-ok/30 bg-ok/5 px-4 py-3">
+        <ShieldCheck size={18} className="mt-0.5 shrink-0 text-ok" />
+        <div>
+          <p className="text-sm font-semibold text-ok">Local-only telemetry</p>
+          <p className="mt-0.5 text-[11px] text-muted">
+            This data never leaves your deployment. No prompts, file contents, or identifiers
+            are collected. Only structural metadata, stored on your own machine.
+          </p>
+        </div>
+      </div>
+
       {error && <Badge tone="bad">{error}</Badge>}
 
       {data && (
@@ -134,7 +143,9 @@ export default function CockpitPanel() {
           {/* Headline tiles. */}
           <div className="flex flex-wrap gap-2">
             <Stat label="Runs" value={String(runs!.total)}
-              sub={`${runs!.active_runs} active · ${runs!.deferred_now} deferred`} />
+              sub={runs!.total === 0
+                ? "Run your first task to see data here"
+                : `${runs!.active_runs} active · ${runs!.deferred_now} deferred`} />
             <Stat label="Success rate" value={fmtPct(runs!.success_rate)}
               tone={runs!.success_rate >= 0.8 ? "text-ok" : "text-ink"} />
             <Stat label="Error rate" value={fmtPct(runs!.error_rate)}

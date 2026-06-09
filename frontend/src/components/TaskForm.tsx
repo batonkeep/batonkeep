@@ -1,9 +1,12 @@
 // TaskForm.tsx — create/edit modal (§12): identity, schedule (+crontab validation),
 // output toggles, prompt_template, params key/value editor, and a routing editor with
 // a strategy select, drag-to-reorder candidate list, capability tags, failover, overflow.
+// D-0027 item 3: progressive disclosure — Basic mode (Name, Description, Schedule) +
+// collapsible Advanced section (Params, Output toggles, Routing). AI prompt builder
+// elevated to a primary teal CTA above the prompt field.
 // D-track: composed from ui/ primitives (Modal, Field, Input, Select, Button, Badge, Card).
 import { useMemo, useRef, useState } from "react";
-import { Check, GripVertical, Plus, Wand2, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, GripVertical, Plus, Wand2, X } from "lucide-react";
 import type { ProviderHealth, RoutingPolicy, RoutingStrategy, Task, TaskInput } from "../types";
 import { isValidCron } from "../format";
 import { Badge, Button, Card, Field, Input, Modal, Select } from "../ui";
@@ -81,6 +84,14 @@ export default function TaskForm({ task, providers, onSave, onClose }: Props) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copiedBuilder, setCopiedBuilder] = useState(false);
+  // Progressive disclosure: Advanced section collapsed by default for new tasks.
+  // When editing an existing task that has non-default advanced settings, start open.
+  const hasAdvanced = !!task && (
+    Object.keys(task.params ?? {}).length > 0 ||
+    task.want_json ||
+    (task.routing && JSON.stringify(task.routing) !== JSON.stringify(DEFAULT_ROUTING))
+  );
+  const [showAdvanced, setShowAdvanced] = useState(hasAdvanced);
 
   const copyPromptBuilder = async () => {
     const hint = [name, description].filter(Boolean).join(" — ");
@@ -225,18 +236,26 @@ export default function TaskForm({ task, providers, onSave, onClose }: Props) {
           )}
         </div>
 
-        {/* Prompt template */}
+        {/* Prompt template + AI prompt builder as primary CTA (D-0027 item 3) */}
         <div>
+          {/* Clipboard helper — copies a meta-prompt to paste into your own AI chat.
+              NOT in-platform AI; the label must make that clear (D-0027 fix 5). */}
+          <Button
+            variant="primary"
+            size="sm"
+            icon={copiedBuilder ? <Check size={13} /> : <Wand2 size={13} />}
+            onClick={copyPromptBuilder}
+            className="mb-3 w-full justify-center"
+            title="Copies a meta-prompt to your clipboard. Paste it into Claude, ChatGPT, or any AI chat to get a ready-made task prompt back."
+          >
+            {copiedBuilder
+              ? "Copied — paste into your AI chat"
+              : "Copy prompt template to clipboard"}
+          </Button>
           <div className="mb-1.5 flex items-center justify-between gap-2">
             <span className="font-mono text-[11px] uppercase tracking-wider text-muted">
               Prompt template · use {"{placeholder}"} for params
             </span>
-            <Button variant="ghost" size="sm"
-              icon={copiedBuilder ? <Check size={11} /> : <Wand2 size={11} />}
-              onClick={copyPromptBuilder}
-              title="Copy a prompt you can paste into any LLM chat to draft this task's instructions">
-              {copiedBuilder ? "Copied" : "AI prompt builder"}
-            </Button>
           </div>
           <textarea
             className="w-full rounded-md border border-edge bg-base/60 px-3 py-2 font-mono text-xs text-ink outline-none transition-colors focus-visible:border-brand/60 focus-visible:ring-2 focus-visible:ring-brand/30 min-h-[120px] resize-y"
@@ -249,143 +268,163 @@ export default function TaskForm({ task, providers, onSave, onClose }: Props) {
           </p>
         </div>
 
-        {/* Params */}
-        <div>
-          <span className="mb-1.5 block font-mono text-[11px] uppercase tracking-wider text-muted">Params</span>
-          <div className="space-y-2">
-            {params.map((row, i) => (
-              <div key={i} className="flex items-center gap-2">
-                <Input className="font-mono" placeholder="key" value={row.key}
-                  onChange={(e) => setParams(params.map((r, idx) => idx === i ? { ...r, key: e.target.value } : r))} />
-                <Input className="font-mono" placeholder="value" value={row.value}
-                  onChange={(e) => setParams(params.map((r, idx) => idx === i ? { ...r, value: e.target.value } : r))} />
-                <Button variant="ghost" size="sm" className="px-1.5 hover:text-bad"
-                  icon={<X size={16} />} onClick={() => setParams(params.filter((_, idx) => idx !== i))} />
-              </div>
-            ))}
-            <Button variant="ghost" size="sm" icon={<Plus size={13} />}
-              onClick={() => setParams([...params, { key: "", value: "" }])}
-              className="text-brand hover:opacity-80">
-              Add param
-            </Button>
-          </div>
-        </div>
-
-        {/* Output toggles */}
-        <div className="flex gap-4">
-          <label className="flex items-center gap-2 text-sm text-ink">
-            <input type="checkbox" checked={wantMarkdown} onChange={(e) => setWantMarkdown(e.target.checked)} className="brand-brand" />
-            Markdown report
-          </label>
-          <label className="flex items-center gap-2 text-sm text-ink">
-            <input type="checkbox" checked={wantJson} onChange={(e) => setWantJson(e.target.checked)} className="brand-brand" />
-            JSON output
-          </label>
-        </div>
-
-        {/* Routing editor */}
-        <Card className="p-3">
-          <div className="mb-3 flex items-center gap-2">
-            <span className="font-mono text-xs font-semibold text-brand">routing</span>
-            <span className="text-[11px] text-muted">cross-provider order + failover</span>
-          </div>
-
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-            <Field label="Strategy"
-              hint={STRATEGIES.find((s) => s.id === routing.strategy)?.hint}>
-              <Select value={routing.strategy}
-                onChange={(e) => setRouting({ ...routing, strategy: e.target.value as RoutingStrategy })}>
-                {STRATEGIES.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
-              </Select>
-            </Field>
-            <Field label="Overflow to (when all plans cooling)">
-              <Select value={routing.overflow_to ?? ""}
-                onChange={(e) => setRouting({ ...routing, overflow_to: e.target.value || null })}>
-                <option value="">none</option>
-                {providerNames.map((p) => <option key={p} value={p}>{p}</option>)}
-              </Select>
-            </Field>
-          </div>
-
-          {/* Candidate order */}
-          <div className="mt-3">
-            <span className="mb-1.5 block font-mono text-[11px] uppercase tracking-wider text-muted">
-              Candidates · drag to reorder (preference order)
+        {/* Advanced section — collapsible (D-0027 item 3 progressive disclosure) */}
+        <div className="rounded-lg border border-edge">
+          {/* Toggle header — full-width tap target for mobile */}
+          <button
+            type="button"
+            onClick={() => setShowAdvanced((s) => !s)}
+            className="flex w-full items-center justify-between px-4 py-3 text-left"
+          >
+            <span className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-wider text-muted">
+              {showAdvanced ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+              Advanced — params · output · routing
             </span>
-            <div className="space-y-1.5">
-              {routing.candidates.map((c, i) => (
-                <div
-                  key={`${c}-${i}`}
-                  draggable
-                  onDragStart={() => (dragIndex.current = i)}
-                  onDragOver={(e) => e.preventDefault()}
-                  onDrop={() => { if (dragIndex.current != null) moveCandidate(dragIndex.current, i); dragIndex.current = null; }}
-                  className="flex items-center gap-2 rounded-lg border border-edge bg-panel px-2 py-1.5"
-                >
-                  <GripVertical size={14} className="cursor-grab text-muted" />
-                  <span className="font-mono text-[10px] text-muted">{i + 1}</span>
-                  <span className="flex-1 font-mono text-sm text-ink">
-                    {labelFor(c)}
-                    {labelFor(c) !== c && <span className="ml-1.5 text-[10px] text-muted">{c}</span>}
+            <span className="text-[11px] text-brand">{showAdvanced ? "hide" : "show"}</span>
+          </button>
+
+          {showAdvanced && (
+            <div className="space-y-4 border-t border-edge px-4 pb-4 pt-3">
+              {/* Params */}
+              <div>
+                <span className="mb-1.5 block font-mono text-[11px] uppercase tracking-wider text-muted">Params</span>
+                <div className="space-y-2">
+                  {params.map((row, i) => (
+                    <div key={i} className="flex items-center gap-2">
+                      <Input className="font-mono" placeholder="key" value={row.key}
+                        onChange={(e) => setParams(params.map((r, idx) => idx === i ? { ...r, key: e.target.value } : r))} />
+                      <Input className="font-mono" placeholder="value" value={row.value}
+                        onChange={(e) => setParams(params.map((r, idx) => idx === i ? { ...r, value: e.target.value } : r))} />
+                      <Button variant="ghost" size="sm" className="px-1.5 hover:text-bad"
+                        icon={<X size={16} />} onClick={() => setParams(params.filter((_, idx) => idx !== i))} />
+                    </div>
+                  ))}
+                  <Button variant="ghost" size="sm" icon={<Plus size={13} />}
+                    onClick={() => setParams([...params, { key: "", value: "" }])}
+                    className="text-brand hover:opacity-80">
+                    Add param
+                  </Button>
+                </div>
+              </div>
+
+              {/* Output toggles */}
+              <div className="flex gap-4">
+                <label className="flex items-center gap-2 text-sm text-ink">
+                  <input type="checkbox" checked={wantMarkdown} onChange={(e) => setWantMarkdown(e.target.checked)} className="brand-brand" />
+                  Markdown report
+                </label>
+                <label className="flex items-center gap-2 text-sm text-ink">
+                  <input type="checkbox" checked={wantJson} onChange={(e) => setWantJson(e.target.checked)} className="brand-brand" />
+                  JSON output
+                </label>
+              </div>
+
+              {/* Routing editor */}
+              <Card className="p-3">
+                <div className="mb-3 flex items-center gap-2">
+                  <span className="font-mono text-xs font-semibold text-brand">routing</span>
+                  <span className="text-[11px] text-muted">cross-provider order + failover</span>
+                </div>
+
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <Field label="Strategy"
+                    hint={STRATEGIES.find((s) => s.id === routing.strategy)?.hint}>
+                    <Select value={routing.strategy}
+                      onChange={(e) => setRouting({ ...routing, strategy: e.target.value as RoutingStrategy })}>
+                      {STRATEGIES.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+                    </Select>
+                  </Field>
+                  <Field label="Overflow to (when all plans cooling)">
+                    <Select value={routing.overflow_to ?? ""}
+                      onChange={(e) => setRouting({ ...routing, overflow_to: e.target.value || null })}>
+                      <option value="">none</option>
+                      {providerNames.map((p) => <option key={p} value={p}>{p}</option>)}
+                    </Select>
+                  </Field>
+                </div>
+
+                {/* Candidate order */}
+                <div className="mt-3">
+                  <span className="mb-1.5 block font-mono text-[11px] uppercase tracking-wider text-muted">
+                    Candidates · drag to reorder (preference order)
                   </span>
-                  <div className="flex items-center gap-1">
-                    <button onClick={() => moveCandidate(i, i - 1)} disabled={i === 0} className="px-1 text-muted hover:text-ink disabled:opacity-30">↑</button>
-                    <button onClick={() => moveCandidate(i, i + 1)} disabled={i === routing.candidates.length - 1} className="px-1 text-muted hover:text-ink disabled:opacity-30">↓</button>
-                    <Button variant="ghost" size="sm" className="px-1 hover:text-bad" icon={<X size={14} />} onClick={() => removeCandidate(i)} />
+                  <div className="space-y-1.5">
+                    {routing.candidates.map((c, i) => (
+                      <div
+                        key={`${c}-${i}`}
+                        draggable
+                        onDragStart={() => (dragIndex.current = i)}
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={() => { if (dragIndex.current != null) moveCandidate(dragIndex.current, i); dragIndex.current = null; }}
+                        className="flex items-center gap-2 rounded-lg border border-edge bg-panel px-2 py-1.5"
+                      >
+                        <GripVertical size={14} className="cursor-grab text-muted" />
+                        <span className="font-mono text-[10px] text-muted">{i + 1}</span>
+                        <span className="flex-1 font-mono text-sm text-ink">
+                          {labelFor(c)}
+                          {labelFor(c) !== c && <span className="ml-1.5 text-[10px] text-muted">{c}</span>}
+                        </span>
+                        <div className="flex items-center gap-1">
+                          <button onClick={() => moveCandidate(i, i - 1)} disabled={i === 0} className="px-1 text-muted hover:text-ink disabled:opacity-30">↑</button>
+                          <button onClick={() => moveCandidate(i, i + 1)} disabled={i === routing.candidates.length - 1} className="px-1 text-muted hover:text-ink disabled:opacity-30">↓</button>
+                          <Button variant="ghost" size="sm" className="px-1 hover:text-bad" icon={<X size={14} />} onClick={() => removeCandidate(i)} />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  {addableProviders.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {addableProviders.map((p) => (
+                        <button key={p} onClick={() => addCandidate(p)}
+                          className="flex items-center gap-1 rounded border border-edge px-2 py-1 font-mono text-[11px] text-muted hover:border-brand/50 hover:text-ink">
+                          <Plus size={11} /> {labelFor(p)}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Capability tags */}
+                <div className="mt-3">
+                  <span className="mb-1.5 block font-mono text-[11px] uppercase tracking-wider text-muted">Capability tags</span>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {routing.capability_tags.map((t) => (
+                      <Badge key={t} tone="brand">
+                        {t}
+                        <button className="ml-1" onClick={() => setRouting({ ...routing, capability_tags: routing.capability_tags.filter((x) => x !== t) })}>
+                          <X size={11} />
+                        </button>
+                      </Badge>
+                    ))}
+                    <input
+                      className="w-28 rounded border border-edge bg-base px-2 py-1 font-mono text-[11px] text-ink outline-none focus:border-brand/60"
+                      placeholder="add tag…"
+                      value={tagInput}
+                      onChange={(e) => setTagInput(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addTag())}
+                    />
                   </div>
                 </div>
-              ))}
-            </div>
-            {addableProviders.length > 0 && (
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {addableProviders.map((p) => (
-                  <button key={p} onClick={() => addCandidate(p)}
-                    className="flex items-center gap-1 rounded border border-edge px-2 py-1 font-mono text-[11px] text-muted hover:border-brand/50 hover:text-ink">
-                    <Plus size={11} /> {labelFor(p)}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
 
-          {/* Capability tags */}
-          <div className="mt-3">
-            <span className="mb-1.5 block font-mono text-[11px] uppercase tracking-wider text-muted">Capability tags</span>
-            <div className="flex flex-wrap items-center gap-1.5">
-              {routing.capability_tags.map((t) => (
-                <Badge key={t} tone="brand">
-                  {t}
-                  <button className="ml-1" onClick={() => setRouting({ ...routing, capability_tags: routing.capability_tags.filter((x) => x !== t) })}>
-                    <X size={11} />
-                  </button>
-                </Badge>
-              ))}
-              <input
-                className="w-28 rounded border border-edge bg-base px-2 py-1 font-mono text-[11px] text-ink outline-none focus:border-brand/60"
-                placeholder="add tag…"
-                value={tagInput}
-                onChange={(e) => setTagInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addTag())}
-              />
+                {/* Failover + max attempts */}
+                <div className="mt-3 flex items-center gap-4">
+                  <label className="flex items-center gap-2 text-sm text-ink">
+                    <input type="checkbox" checked={routing.failover}
+                      onChange={(e) => setRouting({ ...routing, failover: e.target.checked })} className="brand-brand" />
+                    Failover
+                  </label>
+                  <label className="flex items-center gap-2 text-xs text-muted">
+                    max attempts
+                    <input type="number" min={1} max={10} value={routing.max_attempts}
+                      onChange={(e) => setRouting({ ...routing, max_attempts: Math.max(1, parseInt(e.target.value || "1", 10)) })}
+                      className="w-16 rounded border border-edge bg-base px-2 py-1 font-mono text-ink outline-none focus:border-brand/60"
+                    />
+                  </label>
+                </div>
+              </Card>
             </div>
-          </div>
-
-          {/* Failover + max attempts */}
-          <div className="mt-3 flex items-center gap-4">
-            <label className="flex items-center gap-2 text-sm text-ink">
-              <input type="checkbox" checked={routing.failover}
-                onChange={(e) => setRouting({ ...routing, failover: e.target.checked })} className="brand-brand" />
-              Failover
-            </label>
-            <label className="flex items-center gap-2 text-xs text-muted">
-              max attempts
-              <input type="number" min={1} max={10} value={routing.max_attempts}
-                onChange={(e) => setRouting({ ...routing, max_attempts: Math.max(1, parseInt(e.target.value || "1", 10)) })}
-                className="w-16 rounded border border-edge bg-base px-2 py-1 font-mono text-ink outline-none focus:border-brand/60"
-              />
-            </label>
-          </div>
-        </Card>
+          )}
+        </div>
 
         {error && (
           <div className="rounded-lg border border-bad/40 bg-bad/10 px-3 py-2 text-xs text-bad">{error}</div>

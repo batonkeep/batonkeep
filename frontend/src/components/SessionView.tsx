@@ -798,19 +798,23 @@ export default function SessionView({
       <Card className={chatPaneCls}>
         {!selectedId ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-5 p-6">
-            <p className="text-sm text-muted">Start a session</p>
+            {/* Hero headline (D-0027 item 2) */}
+            <div className="text-center">
+              <p className="font-mono text-base font-semibold text-ink">What do you want to build?</p>
+              <p className="mt-1 text-xs text-muted">Describe it — your AI plan writes the code, installs dependencies, and runs it.</p>
+            </div>
             <div className="grid w-full max-w-2xl grid-cols-2 gap-3 sm:grid-cols-3">
-              {/* Flagship build session (D-0007) + the retention task types (D-0011). */}
+              {/* Default session — hero card */}
               <button
                 onClick={() => handleCreate()}
                 disabled={creating}
-                className="flex flex-col gap-1 rounded-lg border border-edge bg-base p-4 text-left transition-colors hover:border-brand/60 disabled:opacity-50"
+                className="col-span-2 flex flex-col gap-2 rounded-xl border-2 border-brand/40 bg-gradient-to-br from-brand/5 to-transparent p-5 text-left transition-all hover:border-brand/70 hover:shadow-md sm:col-span-1 disabled:opacity-50"
               >
-                <span className="flex items-center gap-2 font-mono text-sm text-ink">
-                  <Globe size={14} /> Build a page
+                <span className="flex items-center gap-2 font-mono text-sm font-semibold text-brand">
+                  <Globe size={16} /> Build &amp; publish
                 </span>
                 <span className="text-xs text-muted">
-                  Describe a site or app in plain English and publish it.
+                  Describe a site or app — AI writes the code, installs dependencies, and publishes it live.
                 </span>
               </button>
               {templates.map((t) => (
@@ -818,7 +822,7 @@ export default function SessionView({
                   key={t.id}
                   onClick={() => handleCreate(t.id)}
                   disabled={creating}
-                  className="flex flex-col gap-1 rounded-lg border border-edge bg-base p-4 text-left transition-colors hover:border-brand/60 disabled:opacity-50"
+                  className="flex flex-col gap-1.5 rounded-xl border border-edge bg-base p-4 text-left transition-all hover:border-brand/50 hover:shadow-sm disabled:opacity-50"
                 >
                   <span className="flex items-center gap-2 font-mono text-sm text-ink">
                     {t.id === "summarize" ? <Activity size={14} /> : t.id === "research" ? <Search size={14} /> : <Pencil size={14} />} {t.label}
@@ -835,9 +839,7 @@ export default function SessionView({
                 className="accent-brand"
               />
               <Lock size={12} />
-              <span>
-                Confidential — pin to a local model; the prompt &amp; workspace never leave this box.
-              </span>
+              <span>Keep on this machine (local model only — prompt &amp; files never leave)</span>
             </label>
             <p className="text-xs text-muted">…or pick an existing session from the list.</p>
           </div>

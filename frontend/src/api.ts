@@ -9,6 +9,9 @@ import type {
   CloudflareDeploy,
   CloudflareStatus,
   Credential,
+  CustomProvider,
+  CustomProviderInput,
+  CustomProviderUpdate,
   FileEntry,
   ImportResult,
   Mode,
@@ -249,6 +252,18 @@ export const api = {
 
   // ── Secrets surface (P-0009 #3): key posture across all providers ─────────
   getSecretsStatus: () => req<SecretStatus[]>("/secrets"),
+
+  // ── Custom providers (D-0026) ─────────────────────────────
+  listCustomProviders: () => req<CustomProvider[]>("/custom-providers"),
+  createCustomProvider: (body: CustomProviderInput) =>
+    req<CustomProvider>("/custom-providers", { method: "POST", body: JSON.stringify(body) }),
+  updateCustomProvider: (id: string, body: CustomProviderUpdate) =>
+    req<CustomProvider>(`/custom-providers/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  deleteCustomProvider: (id: string) =>
+    req<void>(`/custom-providers/${encodeURIComponent(id)}`, { method: "DELETE" }),
 };
 
 export { ApiError };

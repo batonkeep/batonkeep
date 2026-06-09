@@ -47,6 +47,9 @@ from app.schemas import (
     ConsoleConfig,
     CredentialCreate,
     CredentialOut,
+    CustomProviderCreate,
+    CustomProviderOut,
+    CustomProviderUpdate,
     FileEntryOut,
     GitImportIn,
     ImportOut,
@@ -115,6 +118,14 @@ async def lifespan(app: FastAPI):
         await reap_orphaned_runs()
     except Exception:
         logger.exception("startup run-reaper failed")
+
+    # D-0026: load operator-defined custom providers (local/Ollama/open-API) and
+    # inject them into the registry so the executor factory can dispatch them.
+    try:
+        from app.custom_providers import init_custom_providers
+        init_custom_providers()
+    except Exception:
+        logger.exception("custom provider init failed")
 
     # P7: scheduler wired here
     try:
@@ -1424,6 +1435,69 @@ async def delete_cloudflare_config(
     deleted = await cf_pages.clear_config(db, owner_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Cloudflare is not configured")
+
+
+# ── /api/custom-providers (D-0026) ───────────────────────────────────────────
+# Operator-defined custom local/Ollama/open-API endpoints, mutable from the
+# Settings UI without a backend deploy. Kept in /data/custom-providers.json;
+# reloaded into the live registry after each CRUD write.
+
+@app.get("/api/custom-providers", response_model=list[CustomProviderOut], tags=["providers"])
+async def list_custom_providers():
+    """List all custom provider entries (including disabled ones)."""
+    from app.custom_providers import list_all_custom_providers
+    return [CustomProviderOut.model_validate(vars(cp)) for cp in list_all_custom_providers()]
+
+
+@app.post("/api/custom-providers", response_model=CustomProviderOut, status_code=201,
+          tags=["providers"])
+async def create_custom_provider_route(body: CustomProviderCreate):
+    """Add a new custom provider endpoint (Ollama, LM Studio, any OpenAI-compat)."""
+    from app.custom_providers import CustomProviderError, create_custom_provider
+    try:
+        cp = create_custom_provider(
+            cp_id=body.id,
+            label=body.label,
+            base_url=body.base_url,
+            default_model=body.default_model,
+            auth_type=body.auth_type,
+            env_key=body.env_key,
+            local=body.local,
+            extra_models=body.extra_models,
+        )
+    except CustomProviderError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return CustomProviderOut.model_validate(vars(cp))
+
+
+@app.put("/api/custom-providers/{cp_id}", response_model=CustomProviderOut, tags=["providers"])
+async def update_custom_provider_route(cp_id: str, body: CustomProviderUpdate):
+    """Update an existing custom provider's config."""
+    from app.custom_providers import CustomProviderError, update_custom_provider
+    try:
+        cp = update_custom_provider(
+            cp_id,
+            label=body.label,
+            base_url=body.base_url,
+            default_model=body.default_model,
+            auth_type=body.auth_type,
+            env_key=body.env_key,
+            local=body.local,
+            enabled=body.enabled,
+            extra_models=body.extra_models,
+        )
+    except CustomProviderError as exc:
+        raise HTTPException(status_code=404 if "not found" in str(exc).lower() else 422,
+                            detail=str(exc))
+    return CustomProviderOut.model_validate(vars(cp))
+
+
+@app.delete("/api/custom-providers/{cp_id}", status_code=204, tags=["providers"])
+async def delete_custom_provider_route(cp_id: str):
+    """Remove a custom provider endpoint."""
+    from app.custom_providers import delete_custom_provider
+    if not delete_custom_provider(cp_id):
+        raise HTTPException(status_code=404, detail="Custom provider not found")
 
 
 # ── /api/providers ────────────────────────────────────────────────────────────

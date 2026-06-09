@@ -2,12 +2,14 @@
 // cooling-down countdown, an approximate headroom bar (labelled an estimate),
 // tier/mode, and a re-auth shortcut.
 // D-track: composed from ui/ primitives (Button, Badge, Card, Input, StatusDot).
-import { lazy, Suspense, useState } from "react";
-import { Check, KeyRound, Pencil, RefreshCw, RotateCcw, Terminal } from "lucide-react";
-import type { ProviderHealth } from "../types";
+// D-0026: custom provider cards + Add/Edit/Delete at bottom of the list.
+import { lazy, Suspense, useEffect, useState } from "react";
+import { Check, KeyRound, Pencil, Plus, RefreshCw, RotateCcw, ShieldCheck, Terminal, Trash2 } from "lucide-react";
+import type { CustomProvider, ProviderHealth } from "../types";
 import { api } from "../api";
 import { countdown, fmtRelative } from "../format";
 import { Badge, Button, Card, Input, StatusDot } from "../ui";
+import CustomProviderForm from "./CustomProviderForm";
 
 const AuthConsole = lazy(() => import("./AuthConsole"));
 
@@ -41,6 +43,34 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
   const [editingModel, setEditingModel] = useState<string | null>(null);
   const [modelDraft, setModelDraft] = useState("");
   const [authTarget, setAuthTarget] = useState<string | null>(null);
+
+  // ── Custom providers (D-0026) ──────────────────────────────────────────────
+  const [customProviders, setCustomProviders] = useState<CustomProvider[]>([]);
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [editingCustom, setEditingCustom] = useState<CustomProvider | null>(null);
+  const [deletingCustom, setDeletingCustom] = useState<string | null>(null);
+
+  const loadCustomProviders = () =>
+    api.listCustomProviders().then(setCustomProviders).catch(() => {});
+
+  useEffect(() => { loadCustomProviders(); }, []);
+
+  const handleCustomSaved = () => {
+    setShowAddForm(false);
+    setEditingCustom(null);
+    loadCustomProviders();
+    onRefresh(); // re-fetch /providers health so new entry appears in the list
+  };
+
+  const handleDeleteCustom = async (id: string) => {
+    setDeletingCustom(id);
+    try {
+      await api.deleteCustomProvider(id);
+      await loadCustomProviders();
+      onRefresh();
+    } catch { /* ignore */ }
+    finally { setDeletingCustom(null); }
+  };
 
   const handleReset = async (name: string) => { await api.resetProviderCooldown(name); onRefresh(); };
 
@@ -237,6 +267,86 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
           </div>
         </div>
       ))}
+
+      {/* ── Custom providers (D-0026) ─────────────────────────────────── */}
+      {(customProviders.length > 0 || showAddForm || editingCustom) && (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-[11px] uppercase tracking-wider text-muted">Custom / local</span>
+            {customProviders.length > 0 && (
+              <Badge tone="neutral">{customProviders.length}</Badge>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            {customProviders.map((cp) => (
+              editingCustom?.id === cp.id ? (
+                <CustomProviderForm
+                  key={cp.id}
+                  existing={cp}
+                  onSaved={handleCustomSaved}
+                  onCancel={() => setEditingCustom(null)}
+                />
+              ) : (
+                <Card key={cp.id} className="p-3 flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      {cp.local && <ShieldCheck size={12} className="shrink-0 text-teal-400" />}
+                      <span className="font-mono text-sm font-semibold text-ink truncate">{cp.label}</span>
+                      {!cp.enabled && <Badge tone="neutral">disabled</Badge>}
+                    </div>
+                    <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                      <Badge tone="neutral">custom</Badge>
+                      {cp.local && <Badge tone="ok">local</Badge>}
+                      <Badge tone="neutral">{cp.default_model}</Badge>
+                      <span className="font-mono text-[10px] text-muted truncate max-w-[180px]">
+                        {cp.base_url}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <button
+                      onClick={() => { setEditingCustom(cp); setShowAddForm(false); }}
+                      className="rounded p-1.5 text-muted hover:text-brand transition-colors"
+                      title="Edit"
+                    >
+                      <Pencil size={13} />
+                    </button>
+                    <button
+                      onClick={() => handleDeleteCustom(cp.id)}
+                      disabled={deletingCustom === cp.id}
+                      className="rounded p-1.5 text-muted hover:text-bad transition-colors disabled:opacity-40"
+                      title="Delete"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                </Card>
+              )
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Add form (create mode) ─────────────────────────────────────── */}
+      {showAddForm && !editingCustom && (
+        <CustomProviderForm
+          onSaved={handleCustomSaved}
+          onCancel={() => setShowAddForm(false)}
+        />
+      )}
+
+      {/* ── Add custom provider button ─────────────────────────────────── */}
+      {!showAddForm && !editingCustom && (
+        <button
+          type="button"
+          onClick={() => setShowAddForm(true)}
+          className="flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-edge py-2.5 text-sm text-muted transition-colors hover:border-brand/50 hover:text-brand"
+        >
+          <Plus size={14} />
+          Add local / custom API
+        </button>
+      )}
 
       {authTarget && (
         <Suspense fallback={null}>

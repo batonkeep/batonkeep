@@ -178,7 +178,7 @@ export default function TaskForm({ task, providers, onSave, onClose }: Props) {
               <Select value={scheduleKind} onChange={(e) => setScheduleKind(e.target.value as Task["schedule_kind"])}>
                 <option value="none">Manual only</option>
                 <option value="interval">Interval (seconds)</option>
-                <option value="cron">Cron</option>
+                <option value="cron">On a schedule</option>
               </Select>
             </Field>
             {scheduleKind === "interval" && (

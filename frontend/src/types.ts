@@ -417,3 +417,42 @@ export type WsMessage =
   | WsRunEvent
   | WsSessionTurnUpdate
   | WsSessionEvent;
+
+// ── Custom providers (D-0026) ──────────────────────────────────────────────
+// Operator-defined local/Ollama/open-API endpoints. Mirrors CustomProviderOut.
+
+export type CustomProviderAuthType = "none" | "bearer" | "api_key_header";
+
+export interface CustomProvider {
+  id: string;
+  label: string;
+  base_url: string;
+  default_model: string;
+  auth_type: CustomProviderAuthType;
+  env_key: string | null;
+  local: boolean;
+  enabled: boolean;
+  extra_models: string;
+}
+
+export interface CustomProviderInput {
+  id: string;
+  label: string;
+  base_url: string;
+  default_model: string;
+  auth_type?: CustomProviderAuthType;
+  env_key?: string | null;
+  local?: boolean;
+  extra_models?: string;
+}
+
+export interface CustomProviderUpdate {
+  label?: string | null;
+  base_url?: string | null;
+  default_model?: string | null;
+  auth_type?: CustomProviderAuthType | null;
+  env_key?: string | null;
+  local?: boolean | null;
+  enabled?: boolean | null;
+  extra_models?: string | null;
+}

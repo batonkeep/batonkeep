@@ -40,6 +40,14 @@ class ProviderDef:
     # we control and the prompt never leaves the box (a local model). Confidential
     # work routes *only* to local providers and never falls back to a remote one.
     local: bool = False
+    # Authentication requirement for openai_compatible providers.
+    # "required" (default) — a key must be present in the credential store or env.
+    # "none"               — no auth (Ollama, LM Studio on localhost).
+    # "bearer"             — Authorization: Bearer header.
+    # "api_key_header"     — x-api-key header.
+    # All non-"none" values go through the same resolve_api_key path; the distinction
+    # is only needed to skip the check for unauthenticated local endpoints.
+    auth_type: str = "required"
 
 
 # ── Static registry ────────────────────────────────────────────────────────────

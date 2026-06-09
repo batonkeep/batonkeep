@@ -485,3 +485,44 @@ class ModeOut(BaseModel):
     mode: str  # plan | byo_key | hosted
     deployment_mode: str
     plan_cli_allowed: bool
+
+
+# ── Custom providers (D-0026) ─────────────────────────────────────────────────
+
+class CustomProviderCreate(BaseModel):
+    """Create a new custom local/open-API provider endpoint."""
+    id: str                       # slug — unique, lowercase alphanum + hyphens
+    label: str                    # display name (e.g. "My Ollama")
+    base_url: str                 # endpoint (e.g. "http://localhost:11434/v1")
+    default_model: str            # e.g. "gemma4:12b"
+    auth_type: str = "none"       # none | bearer | api_key_header
+    env_key: str | None = None    # optional env var to resolve the API key from
+    local: bool = False           # True → eligible for confidential (P-0009 #1) routing
+    extra_models: str = ""        # comma-separated extra model names for display
+
+
+class CustomProviderUpdate(BaseModel):
+    """Update fields of an existing custom provider. All fields optional."""
+    label: str | None = None
+    base_url: str | None = None
+    default_model: str | None = None
+    auth_type: str | None = None
+    env_key: str | None = None
+    local: bool | None = None
+    enabled: bool | None = None
+    extra_models: str | None = None
+
+
+class CustomProviderOut(BaseModel):
+    """Custom provider as returned by the API."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    label: str
+    base_url: str
+    default_model: str
+    auth_type: str
+    env_key: str | None = None
+    local: bool
+    enabled: bool
+    extra_models: str

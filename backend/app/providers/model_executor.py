@@ -120,7 +120,13 @@ class ModelExecutor(Executor):
 
         from app.credentials import resolve_api_key
 
-        api_key = await resolve_api_key(self._cred_provider, self._def.env_key)
+        api_key: str | None
+        if self._def.auth_type == "none":
+            # Unauthenticated local endpoint (Ollama, LM Studio, etc.).
+            # The OpenAI SDK requires a non-empty string but the server ignores it.
+            api_key = "no-key"
+        else:
+            api_key = await resolve_api_key(self._cred_provider, self._def.env_key)
         base_url = self._def.base_url or os.environ.get("OPENAI_BASE_URL") or None
         if not api_key:
             yield ExecEvent(

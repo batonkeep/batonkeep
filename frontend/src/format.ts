@@ -69,10 +69,10 @@ export function countdown(iso: string | null | undefined, now: number): string {
 }
 
 const CRON_PRESETS: Record<string, string> = {
-  "0 7 * * *": "Daily at 07:00",
-  "30 6 * * 1-5": "Weekdays at 06:30",
-  "0 * * * *": "Hourly",
-  "0 0 * * *": "Daily at midnight",
+  "0 * * * *":      "Every hour",
+  "0 0 * * *":      "Daily at midnight",
+  "0 7 * * *":      "Daily at 07:00",
+  "30 6 * * 1-5":   "Weekdays at 06:30",
 };
 
 export function humanizeSchedule(
@@ -96,6 +96,102 @@ export function humanizeSchedule(
   }
   return expr;
 }
+
+// ---------------------------------------------------------------------------
+// Cron picker helpers
+// ---------------------------------------------------------------------------
+
+export type CronPresetId =
+  | "hourly"
+  | "daily"
+  | "weekdays"
+  | "weekly"
+  | "monthly"
+  | "custom";
+
+export const CRON_PRESET_LABELS: Record<CronPresetId, string> = {
+  hourly:   "Every hour",
+  daily:    "Every day",
+  weekdays: "Every weekday (Mon–Fri)",
+  weekly:   "Every week",
+  monthly:  "Every month",
+  custom:   "Custom / Advanced",
+};
+
+const DAYS_OF_WEEK = [
+  { value: "0", label: "Sunday" },
+  { value: "1", label: "Monday" },
+  { value: "2", label: "Tuesday" },
+  { value: "3", label: "Wednesday" },
+  { value: "4", label: "Thursday" },
+  { value: "5", label: "Friday" },
+  { value: "6", label: "Saturday" },
+];
+export { DAYS_OF_WEEK };
+
+/** Build a cron string from preset + selected hour/min/day values. */
+export function buildCronFromPreset(
+  preset: CronPresetId,
+  hour: number,
+  minute: number,
+  dayOfWeek: number, // 0=Sun … 6=Sat
+  dayOfMonth: number // 1–28
+): string {
+  const h = String(hour);
+  const m = String(minute);
+  switch (preset) {
+    case "hourly":   return `${m} * * * *`;
+    case "daily":    return `${m} ${h} * * *`;
+    case "weekdays": return `${m} ${h} * * 1-5`;
+    case "weekly":   return `${m} ${h} * * ${dayOfWeek}`;
+    case "monthly":  return `${m} ${h} ${dayOfMonth} * *`;
+    default:         return "";
+  }
+}
+
+/** Parse a cron string back to a preset ID + field values (best-effort). */
+export function cronToPreset(expr: string): {
+  preset: CronPresetId;
+  hour: number;
+  minute: number;
+  dayOfWeek: number;
+  dayOfMonth: number;
+} {
+  const defaults = { preset: "custom" as CronPresetId, hour: 9, minute: 0, dayOfWeek: 1, dayOfMonth: 1 };
+  const parts = expr.trim().split(/\s+/);
+  if (parts.length !== 5) return defaults;
+  const [min, hr, dom, mon, dow] = parts;
+  const m = parseInt(min, 10);
+  const h = parseInt(hr, 10);
+
+  if (isNaN(m) || isNaN(h) || mon !== "*") return defaults;
+
+  // hourly: M * * * *
+  if (hr === "*" && dom === "*" && dow === "*")
+    return { ...defaults, preset: "hourly", minute: isNaN(m) ? 0 : m };
+
+  // daily: M H * * *
+  if (dom === "*" && dow === "*")
+    return { ...defaults, preset: "daily", hour: h, minute: m };
+
+  // weekdays: M H * * 1-5
+  if (dom === "*" && dow === "1-5")
+    return { ...defaults, preset: "weekdays", hour: h, minute: m };
+
+  // weekly: M H * * N  (single digit)
+  if (dom === "*" && /^[0-6]$/.test(dow))
+    return { ...defaults, preset: "weekly", hour: h, minute: m, dayOfWeek: parseInt(dow, 10) };
+
+  // monthly: M H D * *
+  if (dow === "*" && /^\d+$/.test(dom)) {
+    const d = parseInt(dom, 10);
+    return { ...defaults, preset: "monthly", hour: h, minute: m, dayOfMonth: isNaN(d) ? 1 : d };
+  }
+
+  return defaults;
+}
+
+
 
 /** Basic 5-field crontab validation (min hour dom mon dow). */
 export function isValidCron(expr: string): boolean {

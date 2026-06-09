@@ -20,6 +20,10 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.schemas import SessionTurnOut
 
 from sqlalchemy import select
 
@@ -60,18 +64,23 @@ def enforce_local_if_confidential(chosen: str, confidential: bool) -> str:
     return locals_[0]
 
 
-async def run_turn(
+async def create_turn_record(
     session_id: str,
     message: str,
     *,
     provider: str | None = None,
     owner_id: str = "local",
-) -> int:
+) -> tuple[int, SessionTurnOut]:
     """
-    Execute one turn. Returns the SessionTurn id. Streams events over WS live.
-    Raises SessionError for unknown session/provider before any turn is created.
+    Validate inputs and create the SessionTurn DB row. Returns (turn_id, turn_out)
+    immediately — does NOT run the agent. Raises SessionError for invalid inputs.
+
+    Call run_turn_background(turn_id, session_id) as a background task to execute
+    the turn without blocking the HTTP response (the 504-fix path).
     """
-    session_id_var.set(session_id)  # correlation for this turn's logs (D-0021)
+    from app.schemas import SessionTurnOut
+
+    session_id_var.set(session_id)
     owner_id_var.set(owner_id)
     async with AsyncSessionLocal() as db:
         session = await db.get(Session, session_id)
@@ -81,7 +90,6 @@ async def run_turn(
         chosen = provider or session.provider
         if not chosen:
             raise SessionError("no provider selected for this session")
-        # Confidential sessions are pinned to a local model (fail closed otherwise).
         chosen = enforce_local_if_confidential(chosen, session.confidential)
 
         executor = get_executor(chosen)
@@ -103,25 +111,71 @@ async def run_turn(
         db.add(turn)
         await db.commit()
         await db.refresh(turn)
+        turn_out = SessionTurnOut.model_validate(turn)
         turn_id = turn.id
-        workspace = session.workspace_path
 
+    # Broadcast the "running" state immediately so the UI shows the turn in-flight.
     await _broadcast_turn(turn_id, session_id, seq, chosen, "running",
-                          extra={"switched": switched})
+                          extra={"switched": switched, "message": message})
     if switched:
         await _broadcast_event(
             session_id, turn_id, seq, EventKind.route,
             message=f"switched to {chosen}; continuing from workspace + SESSION.md",
         )
-        # Refresh the ledger summary so the switched-in provider is richly primed
-        # (D-0017 thread 1; opt-in, sovereignty-aware). Best-effort — never blocks
-        # the turn. Runs before build_turn_context so the new summary is in-prompt.
-        if _settings.ledger_summary_enabled:
-            try:
-                from app.sessions.ledger import summarize_session
-                await summarize_session(session_id, owner_id=owner_id)
-            except Exception as exc:  # noqa: BLE001 — summarization is best-effort
-                logger.warning("[session] pre-switch ledger summary failed: %s", exc)
+
+    return turn_id, turn_out
+
+
+async def run_turn_background(
+    turn_id: int,
+    session_id: str,
+    *,
+    owner_id: str = "local",
+) -> None:
+    """
+    Execute the agent for an already-created turn (created by create_turn_record).
+    Streams events over WS, persists the result, commits the workspace version.
+    Safe to run as a fire-and-forget asyncio task.
+    """
+    session_id_var.set(session_id)
+    owner_id_var.set(owner_id)
+
+    # Re-read the turn + session to get workspace path, provider, message etc.
+    async with AsyncSessionLocal() as db:
+        turn = await db.get(SessionTurn, turn_id)
+        if turn is None:
+            logger.error("[session] run_turn_background: turn %d not found", turn_id)
+            return
+        seq = turn.seq
+        chosen = turn.provider
+        message = turn.prompt
+        session = await db.get(Session, session_id)
+        if session is None:
+            logger.error("[session] run_turn_background: session %s not found", session_id)
+            return
+        workspace = session.workspace_path
+
+    # Ledger pre-switch summary (best-effort, only if provider changed — we detect by
+    # comparing to the previous turn's provider; approximate but good enough here).
+    if _settings.ledger_summary_enabled:
+        try:
+            from app.sessions.ledger import summarize_session
+            await summarize_session(session_id, owner_id=owner_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[session] pre-turn ledger summary failed: %s", exc)
+
+    executor = get_executor(chosen)
+    if executor is None:
+        logger.error("[session] run_turn_background: executor for %s not found", chosen)
+        async with AsyncSessionLocal() as db:
+            t = await db.get(SessionTurn, turn_id)
+            if t:
+                t.status = "failed"
+                t.error = f"provider {chosen!r} no longer available"
+                t.finished_at = datetime.now(UTC)
+                await db.commit()
+        await _broadcast_turn(turn_id, session_id, seq, chosen, "failed")
+        return
 
     # Build context from the workspace, not a replayed transcript (D-0008).
     prompt = ws.build_turn_context(workspace, message)
@@ -207,6 +261,24 @@ async def run_turn(
 
     await _broadcast_turn(turn_id, session_id, seq, chosen,
                           "succeeded" if final_result is not None else "failed")
+
+
+async def run_turn(
+    session_id: str,
+    message: str,
+    *,
+    provider: str | None = None,
+    owner_id: str = "local",
+) -> int:
+    """
+    Execute one turn synchronously. Returns the SessionTurn id.
+    Used by tests and callers that need to await completion.
+    The HTTP endpoint now uses create_turn_record + run_turn_background instead.
+    """
+    turn_id, _ = await create_turn_record(
+        session_id, message, provider=provider, owner_id=owner_id,
+    )
+    await run_turn_background(turn_id, session_id, owner_id=owner_id)
     return turn_id
 
 

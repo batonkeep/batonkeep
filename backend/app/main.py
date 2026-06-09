@@ -695,7 +695,7 @@ async def list_session_turns(
 
 
 @app.post("/api/sessions/{session_id}/turns", response_model=SessionTurnOut,
-          status_code=201, tags=["sessions"])
+          status_code=202, tags=["sessions"])
 async def create_session_turn(
     session_id: str,
     body: TurnCreate,
@@ -703,9 +703,16 @@ async def create_session_turn(
     owner_id: str = Depends(_owner_id),
 ):
     """
-    Send a message to the session's agent. Optionally switch provider for this and
-    subsequent turns; the switched-in agent continues from the workspace + SESSION.md.
-    Streams events live over /ws; returns the completed turn record.
+    Send a message to the session's agent.
+
+    Returns 202 immediately after creating the turn record and dispatching the
+    agent as a background task. Events stream live over /ws; the caller should
+    use the WebSocket feed (session.turn.update / session.event) to track
+    completion rather than polling this endpoint.
+
+    This avoids gateway timeouts for long-running agent turns (previously the
+    endpoint awaited run_turn synchronously, so any turn > ~60 s would trip a
+    504 at the proxy even though the agent kept running in the background).
     """
     session = await db.get(Session, session_id)
     if session is None or session.owner_id != owner_id:
@@ -713,16 +720,20 @@ async def create_session_turn(
     if not body.message.strip():
         raise HTTPException(status_code=400, detail="message must not be empty")
 
-    from app.sessions.orchestrator import SessionError, run_turn
+    from app.sessions.orchestrator import SessionError, create_turn_record, run_turn_background
     try:
-        turn_id = await run_turn(
-            session_id, body.message, provider=body.provider, owner_id=owner_id
+        turn_id, turn_out = await create_turn_record(
+            session_id, body.message, provider=body.provider, owner_id=owner_id,
         )
     except SessionError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    turn = await db.get(SessionTurn, turn_id)
-    return SessionTurnOut.model_validate(turn)
+    # Fire and forget — the orchestrator streams events over WS and persists the
+    # turn result. We do NOT await this; the 202 response goes back immediately.
+    import asyncio
+    asyncio.ensure_future(run_turn_background(turn_id, session_id, owner_id=owner_id))
+
+    return turn_out
 
 
 @app.post("/api/sessions/{session_id}/capture",

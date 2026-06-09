@@ -315,12 +315,19 @@ export default function SessionView({
   // preview iframe so it reflects the latest workspace edits (Cache-Control:
   // no-store on the backend).
   useEffect(() => {
-    if (lastTurn && lastTurn.status !== "running") {
+    if (!lastTurn) return;
+    if (lastTurn.status === "running") {
+      // The background task is live — the optimistic pending message is now
+      // superseded by the real turn record; clear it to avoid double rendering.
+      setPendingMessage(null);
+    } else {
+      // Turn completed (succeeded or failed).
       loadTurns();
       loadVersions();
+      onSessionsChanged(); // session.updated_at + provider may have changed
       setPreviewNonce((n) => n + 1);
     }
-  }, [lastTurn, loadTurns, loadVersions]);
+  }, [lastTurn, loadTurns, loadVersions, onSessionsChanged]);
 
   // Auto-scroll the chat to the latest content — but not while History is open,
   // since the History card sits at the top of the stream and we want it in view.
@@ -381,25 +388,30 @@ export default function SessionView({
   const handleSend = async () => {
     const text = message.trim();
     if (!selectedId || !text || sending) return;
-    // Optimistic: show the user's message and clear the input immediately, rather
-    // than waiting for the (potentially long) turn to complete server-side.
+    // Optimistic: show the user's message and clear the input immediately.
     setMessage("");
     setSendError(null);
     setPendingMessage(text);
     setSending(true);
     try {
+      // POST returns 202 immediately once the turn record is created and the agent
+      // is dispatched as a background task. The turn's live progress streams over
+      // the WS; turnRunning stays true via lastTurn?.status === 'running' until the
+      // WS broadcasts 'succeeded'/'failed'. No gateway timeout possible.
       await api.createTurn(selectedId, {
         message: text,
         provider: providerSwitch || undefined,
       });
-      loadTurns();
       onSessionsChanged(); // session.provider may have switched
     } catch (err) {
-      // Surface the failure and restore the message so it isn't lost.
+      // Only genuine pre-dispatch errors (session not found, no provider selected)
+      // reach here. Restore the message so the user can retry.
       setSendError(err instanceof Error ? err.message : "Failed to send message");
       setMessage(text);
-    } finally {
       setPendingMessage(null);
+    } finally {
+      // Clear the HTTP-level 'sending' flag. The WS-driven turnRunning keeps the
+      // "generating…" indicator alive until the agent finishes.
       setSending(false);
     }
   };

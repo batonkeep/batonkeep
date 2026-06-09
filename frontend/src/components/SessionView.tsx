@@ -139,6 +139,9 @@ interface Props {
   providers: ProviderHealth[];
   consoleAvailable: boolean; // web console enabled (gates the web-TTY launcher)
   consoleToken: string; // token presented to /ws/tty
+  // When app-auth is on the session is the unlock gate; the legacy console token
+  // is not required (mirrors the same logic in ProvidersPanel / D-0023).
+  appAuthEnabled: boolean;
 }
 
 const TURN_TONE: Record<SessionTurn["status"], Tone> = {
@@ -165,6 +168,7 @@ export default function SessionView({
   providers,
   consoleAvailable,
   consoleToken,
+  appAuthEnabled,
 }: Props) {
   const [mode, setMode] = useState<"chat" | "terminal">("chat"); // center-pane lane
   const [detail, setDetail] = useState<Session | null>(null);
@@ -247,7 +251,9 @@ export default function SessionView({
   const activeInstance = providerSwitch || detail?.provider || providerIds[0] || "";
   const terminalCapable = providerKind[activeInstance] === "cli";
   // Terminal mode needs the web console unlocked (it spawns a CLI) + a CLI provider.
-  const terminalReady = consoleAvailable && consoleToken.trim().length > 0 && !!selectedId && terminalCapable;
+  // With app-auth the session is the unlock gate; no separate token is required.
+  const canConsole = consoleAvailable && (appAuthEnabled || consoleToken.trim().length > 0);
+  const terminalReady = canConsole && !!selectedId && terminalCapable;
 
   // Never strand the user in Terminal mode when it stops being available (provider
   // switched to API/mock, session closed, console locked).
@@ -939,7 +945,9 @@ export default function SessionView({
                     title={terminalReady
                       ? "Drive this provider's CLI live in the session workspace"
                       : terminalCapable
-                        ? "Unlock the web console (token in Providers) to use Terminal"
+                        ? (appAuthEnabled
+                            ? "Web console is not enabled on this deployment"
+                            : "Unlock the web console (token in Settings → AI Plans) to use Terminal")
                         : "Terminal needs a CLI provider (›_) — switch the agent below"}
                     className={`inline-flex items-center gap-1 rounded px-2 py-0.5 font-mono text-[11px] disabled:opacity-40 ${mode === "terminal" ? "bg-brand/15 text-brand" : "text-muted hover:text-ink"}`}
                   >

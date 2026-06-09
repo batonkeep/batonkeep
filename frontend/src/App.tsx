@@ -419,6 +419,7 @@ function AppShell({ appAuthEnabled, onLogout }: { appAuthEnabled: boolean; onLog
             providers={providers}
             consoleAvailable={consoleAvailable}
             consoleToken={consoleToken}
+            appAuthEnabled={appAuthEnabled}
           />
         )}
 

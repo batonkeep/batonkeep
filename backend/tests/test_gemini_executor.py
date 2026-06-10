@@ -42,9 +42,11 @@ class _FakeModels:
     def __init__(self, rounds):
         self._rounds = rounds
         self.contents_snapshots: list[list] = []
+        self.configs: list = []
 
     async def generate_content_stream(self, *, model, contents, config):
         self.contents_snapshots.append(list(contents))
+        self.configs.append(config)
         parts, usage = self._rounds[len(self.contents_snapshots) - 1]
 
         async def _gen():
@@ -167,6 +169,78 @@ async def test_thought_text_is_not_surfaced_as_answer(gemini_executor):
     tokens = "".join(e.text or "" for e in events if e.kind == EventKind.token)
     assert "visible answer" in tokens
     assert "internal reasoning" not in tokens
+
+
+async def test_last_round_withholds_tools_to_force_synthesis(gemini_executor):
+    """On the final permitted round the model must get NO tools + a synthesis nudge,
+    so the loop can't exhaust mid-research and return an interstitial line. This is
+    the fix for the '27 tool calls, a couple incomplete lines' Daily Brief bug."""
+    executor, monkeypatch = gemini_executor
+
+    keep_searching = types.Part(
+        function_call=types.FunctionCall(name="web_search", args={"query": "X"}),
+        thought_signature=b"S",
+    )
+    final = types.Part(text="# Brief\n\nComplete synthesized report.")
+    # Round 0 wants another tool; round 1 is the last (max_rounds=2) → forced answer.
+    fake_models = _FakeModels([([keep_searching], _usage()), ([final], _usage())])
+    monkeypatch.setattr(
+        "google.genai.Client", lambda *a, **k: _FakeClient(fake_models)
+    )
+
+    events = [
+        ev async for ev in executor.run_stream("brief", workdir="/tmp", max_rounds=2)
+    ]
+
+    assert len(fake_models.configs) == 2
+    # Round 0: tools offered, calls allowed. Round 1 (last): tools still declared
+    # (history holds function calls) but calls forbidden via tool_config mode=NONE,
+    # plus the synthesis nudge.
+    assert fake_models.configs[0].tools is not None
+    assert fake_models.configs[0].tool_config is None
+    assert fake_models.configs[1].tools is not None
+    assert (
+        fake_models.configs[1].tool_config.function_calling_config.mode
+        == types.FunctionCallingConfigMode.NONE
+    )
+    assert "stop researching" in fake_models.configs[1].system_instruction.lower()
+    # The synthesis instruction is also delivered as a user turn — the system nudge
+    # alone proved unreliable mid-conversation (empty reply) in live claude-api runs.
+    last_turn = fake_models.contents_snapshots[1][-1]
+    assert last_turn.role == "user"
+    assert any(p.text and "Stop researching" in p.text for p in last_turn.parts)
+
+    result_ev = next(e for e in events if e.kind == EventKind.result)
+    assert "Complete synthesized report" in result_ev.data["result"].text
+
+
+async def test_degenerate_empty_turn_retries_as_synthesis(gemini_executor):
+    """A turn that returns no tool call AND no text (a degenerate empty turn) must be
+    retried as a forced synthesis, not accepted as an empty result. This is the bug
+    the in-container claude-api integration test surfaced: the loop broke on an empty
+    end-turn and returned nothing."""
+    executor, monkeypatch = gemini_executor
+
+    empty = types.Part(text="just thinking", thought=True)  # no surfaced text, no call
+    answer = types.Part(text="# Brief\n\nThe synthesized answer.")
+    # Round 0 is empty (not the last round) → must retry forced; round 1 answers.
+    fake_models = _FakeModels([([empty], _usage()), ([answer], _usage())])
+    monkeypatch.setattr(
+        "google.genai.Client", lambda *a, **k: _FakeClient(fake_models)
+    )
+
+    events = [
+        ev async for ev in executor.run_stream("brief", workdir="/tmp", max_rounds=3)
+    ]
+
+    # Round 1 was forced (tool_config mode=NONE) even though it is not the last round.
+    assert len(fake_models.configs) == 2
+    assert (
+        fake_models.configs[1].tool_config.function_calling_config.mode
+        == types.FunctionCallingConfigMode.NONE
+    )
+    result_ev = next(e for e in events if e.kind == EventKind.result)
+    assert "synthesized answer" in result_ev.data["result"].text
 
 
 async def test_missing_credentials_errors_cleanly(monkeypatch):

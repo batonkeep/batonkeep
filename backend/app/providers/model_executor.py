@@ -39,8 +39,30 @@ _SYSTEM_PROMPT = (
     "You are an autonomous research agent. "
     "Use available tools (web_search/web_fetch for research; flights for fare queries) "
     "to gather and verify information. "
+    "Research efficiently: a focused handful of searches is enough — once you have "
+    "sufficient material, stop calling tools and write the report. Do not exhaustively "
+    "search the same topic. "
     "Produce one polished **Markdown** report: `#` title, 2–3 sentence executive summary, "
     "then organised sections with inline source links."
+)
+
+# When the agent loop reaches its last permitted round (or trips the budget) the model
+# is given one final, tool-free turn so it MUST synthesise a complete answer from what it
+# has gathered. This nudge is appended to the system prompt on that turn.
+_SYNTHESIS_NUDGE = (
+    " You have gathered enough — stop researching now and write the complete final "
+    "report from the material you already have."
+)
+
+# The system-prompt nudge alone is not reliable mid-conversation: validated live on
+# claude-api, a forced tool-free turn whose history ends in tool_results frequently
+# returns an EMPTY message (stop=end_turn, no blocks) when only the system text asks
+# for synthesis — the same history answers fully when the instruction arrives as a
+# user turn. So on the forced round we also append this as a user message (only when
+# tool history exists; a bare first-round prompt needs no redirect).
+_SYNTHESIS_USER_MSG = (
+    "Stop researching. Using only what you have gathered above, write the complete "
+    "final Markdown report now."
 )
 
 
@@ -156,21 +178,38 @@ class ModelExecutor(Executor):
         yield ExecEvent(kind=EventKind.log, message=f"[{self.name}] starting (openai-compat)")
         yield ExecEvent(kind=EventKind.phase, phase="running")
 
+        pending_synthesis = False
         for round_num in range(max_rounds):
-            if total_usage.cost_usd > budget_usd:
+            over_budget = total_usage.cost_usd > budget_usd
+            # Force a tool-free synthesis turn on the last round, when over budget, or
+            # after a degenerate empty turn — so the loop always returns a complete
+            # answer rather than exhausting mid-research or accepting an empty turn.
+            force_answer = over_budget or round_num == max_rounds - 1 or pending_synthesis
+            if over_budget:
                 yield ExecEvent(
-                    kind=EventKind.log, message=f"[{self.name}] budget exceeded ${budget_usd:.4f}"
+                    kind=EventKind.log,
+                    message=f"[{self.name}] budget ${budget_usd:.4f} reached — synthesizing",
                 )
-                break
+            round_system = _SYSTEM_PROMPT + (_SYNTHESIS_NUDGE if force_answer else "")
+            messages[0] = {"role": "system", "content": round_system}
+            # Deliver the synthesis instruction as a user turn too — the system nudge
+            # alone is unreliable mid-conversation (see _SYNTHESIS_USER_MSG).
+            if force_answer and len(messages) > 2:
+                messages.append({"role": "user", "content": _SYNTHESIS_USER_MSG})
+            # Keep the tools array present (history holds tool calls); forbid calls on
+            # the synthesis turn via tool_choice "none" rather than dropping `tools`.
+            create_kwargs: dict[str, Any] = dict(
+                model=self._model or "gpt-4o-mini",
+                messages=messages,
+                stream=True,
+                stream_options={"include_usage": True},
+            )
+            if tools:
+                create_kwargs["tools"] = [{"type": "function", "function": t} for t in tools]
+                create_kwargs["tool_choice"] = "none" if force_answer else "auto"
 
             try:
-                stream = await client.chat.completions.create(
-                    model=self._model or "gpt-4o-mini",
-                    messages=messages,
-                    tools=[{"type": "function", "function": t} for t in tools] if tools else None,
-                    stream=True,
-                    stream_options={"include_usage": True},
-                )
+                stream = await client.chat.completions.create(**create_kwargs)
             except Exception as exc:
                 err_msg = str(exc)
                 if any(kw in err_msg.lower() for kw in ("rate", "limit", "quota", "429")):
@@ -199,7 +238,6 @@ class ModelExecutor(Executor):
                 delta = chunk.choices[0].delta
                 if delta.content:
                     assistant_text += delta.content
-                    full_text += delta.content
                     yield ExecEvent(kind=EventKind.token, text=delta.content)
                 if delta.tool_calls:
                     for tc in delta.tool_calls:
@@ -214,10 +252,20 @@ class ModelExecutor(Executor):
 
             usage_delta.cost_usd = self._compute_cost(usage_delta)
             total_usage = total_usage + usage_delta
+            # Keep the latest turn's text as the result (the synthesis turn's answer),
+            # not a concatenation of every round's interstitial preamble.
+            if assistant_text:
+                full_text = assistant_text
 
-            if not tool_calls_acc:
-                # No tool calls — final answer
+            if force_answer:
                 break
+            if not tool_calls_acc:
+                # Terminal turn. Keep its text if any; if empty, retry once as a
+                # forced synthesis instead of returning nothing.
+                if full_text:
+                    break
+                pending_synthesis = True
+                continue
 
             # Run tools
             messages.append({"role": "assistant", "content": assistant_text,
@@ -275,28 +323,42 @@ class ModelExecutor(Executor):
         yield ExecEvent(kind=EventKind.log, message=f"[{self.name}] starting (anthropic)")
         yield ExecEvent(kind=EventKind.phase, phase="running")
 
+        pending_synthesis = False
         for round_num in range(max_rounds):
-            if total_usage.cost_usd > budget_usd:
-                break
+            over_budget = total_usage.cost_usd > budget_usd
+            # Force a tool-free synthesis turn when: we've hit the last permitted round,
+            # we're over budget, or a previous turn ended without producing any text
+            # (a degenerate empty turn). Otherwise the loop can exhaust on a tool_use
+            # turn — or accept an empty turn — and return nothing / an interstitial line.
+            force_answer = over_budget or round_num == max_rounds - 1 or pending_synthesis
+            if over_budget:
+                yield ExecEvent(
+                    kind=EventKind.log,
+                    message=f"[{self.name}] budget ${budget_usd:.4f} reached — synthesizing",
+                )
+
+            # Forcing the synthesis turn: OMIT the tools array entirely (not tools=None,
+            # which the API rejects once history holds tool_use blocks) AND deliver the
+            # synthesis instruction as a user turn — the system-suffix nudge alone
+            # often gets an empty reply mid-conversation (see _SYNTHESIS_USER_MSG).
+            if force_answer and len(messages) > 1:
+                messages.append({"role": "user", "content": _SYNTHESIS_USER_MSG})
+            stream_kwargs: dict[str, Any] = dict(
+                model=self._model or "claude-opus-4-5",
+                max_tokens=8192,
+                system=_SYSTEM_PROMPT + (_SYNTHESIS_NUDGE if force_answer else ""),
+                messages=messages,
+            )
+            if anth_tools and not force_answer:
+                stream_kwargs["tools"] = anth_tools
 
             try:
-                async with client.messages.stream(
-                    model=self._model or "claude-opus-4-5",
-                    max_tokens=4096,
-                    system=_SYSTEM_PROMPT,
-                    messages=messages,
-                    tools=anth_tools or None,
-                ) as stream:
-                    tool_uses = []
+                async with client.messages.stream(**stream_kwargs) as stream:
                     async for event in stream:
                         if hasattr(event, "type"):
                             if event.type == "content_block_delta":
                                 if hasattr(event.delta, "text"):
-                                    chunk = event.delta.text
-                                    full_text += chunk
-                                    yield ExecEvent(kind=EventKind.token, text=chunk)
-                            elif event.type == "message_stop":
-                                pass
+                                    yield ExecEvent(kind=EventKind.token, text=event.delta.text)
 
                     final_msg = await stream.get_final_message()
                     in_tok = final_msg.usage.input_tokens
@@ -305,15 +367,23 @@ class ModelExecutor(Executor):
                                   cost_usd=self._compute_cost(Usage(in_tok, out_tok)))
                     total_usage = total_usage + delta
 
-                    # Extract tool uses
-                    for block in final_msg.content:
-                        if block.type == "tool_use":
-                            tool_uses.append(block)
-                        elif block.type == "text":
-                            full_text = block.text  # use complete text from final message
+                    tool_uses = [b for b in final_msg.content if b.type == "tool_use"]
+                    # Authoritative text for this turn (may be multiple text blocks);
+                    # the latest turn's text is the result we keep.
+                    text_blocks = [b.text for b in final_msg.content if b.type == "text"]
+                    if text_blocks:
+                        full_text = "".join(text_blocks)
 
-                    if final_msg.stop_reason != "tool_use" or not tool_uses:
+                    if force_answer:
                         break
+                    if final_msg.stop_reason != "tool_use" or not tool_uses:
+                        # Terminal turn. If it produced text, that's the answer. If it
+                        # was empty, retry once as a forced synthesis instead of
+                        # returning nothing.
+                        if full_text:
+                            break
+                        pending_synthesis = True
+                        continue
 
                     # Run tool calls
                     messages.append({"role": "assistant", "content": final_msg.content})
@@ -387,10 +457,6 @@ class ModelExecutor(Executor):
                     for t in TOOL_SCHEMAS
                 ])
             ]
-        config = types.GenerateContentConfig(
-            system_instruction=_SYSTEM_PROMPT,
-            tools=tools,
-        )
         contents: list[types.Content] = [
             types.Content(role="user", parts=[types.Part(text=prompt)])
         ]
@@ -400,14 +466,42 @@ class ModelExecutor(Executor):
         yield ExecEvent(kind=EventKind.log, message=f"[{self.name}] starting (gemini)")
         yield ExecEvent(kind=EventKind.phase, phase="running")
 
+        pending_synthesis = False
         for round_num in range(max_rounds):
-            if total_usage.cost_usd > budget_usd:
+            over_budget = total_usage.cost_usd > budget_usd
+            # Force a tool-free synthesis turn on the last round, when over budget, or
+            # after a degenerate empty turn — so the loop always returns a complete
+            # answer rather than exhausting mid-research or accepting an empty turn.
+            force_answer = over_budget or round_num == max_rounds - 1 or pending_synthesis
+            if over_budget:
                 yield ExecEvent(
-                    kind=EventKind.log, message=f"[{self.name}] budget exceeded ${budget_usd:.4f}"
+                    kind=EventKind.log,
+                    message=f"[{self.name}] budget ${budget_usd:.4f} reached — synthesizing",
                 )
-                break
+            # Deliver the synthesis instruction as a user turn too — the system nudge
+            # alone is unreliable mid-conversation (see _SYNTHESIS_USER_MSG).
+            if force_answer and len(contents) > 1:
+                contents.append(
+                    types.Content(role="user", parts=[types.Part(text=_SYNTHESIS_USER_MSG)])
+                )
+            # Keep the tools declared (history holds function calls); on the synthesis
+            # turn forbid new calls via FunctionCallingConfig mode=NONE rather than
+            # dropping `tools`.
+            tool_config = None
+            if force_answer and tools:
+                tool_config = types.ToolConfig(
+                    function_calling_config=types.FunctionCallingConfig(
+                        mode=types.FunctionCallingConfigMode.NONE
+                    )
+                )
+            config = types.GenerateContentConfig(
+                system_instruction=_SYSTEM_PROMPT + (_SYNTHESIS_NUDGE if force_answer else ""),
+                tools=tools,
+                tool_config=tool_config,
+            )
 
             model_parts: list[types.Part] = []
+            round_text = ""
             last_usage = None
             try:
                 stream = await client.aio.models.generate_content_stream(
@@ -426,7 +520,7 @@ class ModelExecutor(Executor):
                         # surface non-thought answer text as tokens to the user.
                         model_parts.append(part)
                         if part.text and not part.thought:
-                            full_text += part.text
+                            round_text += part.text
                             yield ExecEvent(kind=EventKind.token, text=part.text)
             except Exception as exc:
                 err = str(exc)
@@ -447,9 +541,20 @@ class ModelExecutor(Executor):
                 delta.cost_usd = self._compute_cost(delta)
                 total_usage = total_usage + delta
 
+            # Keep the latest turn's text as the result (the synthesis answer).
+            if round_text:
+                full_text = round_text
+
             fcalls = [p.function_call for p in model_parts if p.function_call]
-            if not fcalls:
+            if force_answer:
                 break
+            if not fcalls:
+                # Terminal turn. Keep its text if any; if empty, retry once as a
+                # forced synthesis instead of returning nothing.
+                if full_text:
+                    break
+                pending_synthesis = True
+                continue
 
             # Replay the model turn (incl. thought_signature) then the tool results.
             contents.append(types.Content(role="model", parts=model_parts))

@@ -199,7 +199,7 @@ async def secrets_status(db: AsyncSession, owner_id: str) -> list[dict]:
     Plan-CLI providers (no api key) and the local mock are omitted; they don't take
     a secret. Never returns any plaintext or ciphertext.
     """
-    from app.providers.registry import list_providers
+    from app.providers.registry import effective_model, get_instance, list_providers
 
     # Stored keys for this owner, indexed by credential provider id.
     stored = {row["provider"]: row for row in await list_credentials(db, owner_id)}
@@ -215,13 +215,18 @@ async def secrets_status(db: AsyncSession, owner_id: str) -> list[dict]:
             source = "env"
         else:
             source = "missing"
+        # Effective model id, so the surface can both display and edit it.
+        inst = get_instance(pdef.name)
+        model = effective_model(inst, pdef) if inst is not None else pdef.model
         rows.append({
             "provider": pdef.name,
             "tier": pdef.tier,
+            "kind": pdef.kind,
             "env_key": pdef.env_key,
             "local": pdef.local,
             "source": source,
             "key_hint": cred["key_hint"] if cred else None,
+            "model": model,
             "last_used_at": cred["last_used_at"] if cred else None,
         })
     return rows

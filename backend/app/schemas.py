@@ -472,10 +472,12 @@ class SecretStatusOut(BaseModel):
 
     provider: str
     tier: str
+    kind: str = ""  # "openai_compatible" | "anthropic" — drives whether a model is settable
     env_key: str | None = None
     local: bool = False
     source: str  # "stored" | "env" | "missing"
     key_hint: str | None = None
+    model: str | None = None  # effective model id (override > instance > template default)
     last_used_at: datetime | None = None
 
 

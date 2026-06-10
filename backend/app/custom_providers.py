@@ -69,6 +69,12 @@ class CustomProvider:
     # Routing capability tags (P-0044). When the operator sets these in the UI they
     # decide which tasks route here; empty falls back to the auto default below.
     capability_tags: list[str] = field(default_factory=list)
+    # Per-Mtok cost (USD), input/output. Pre-populated from the known-model price
+    # book when default_model is recognised, else operator-entered. 0.0 means
+    # unknown/free (the prior behaviour) and effective_pricing still falls back to
+    # the price book by model id at metering time.
+    cost_in_per_mtok: float = 0.0
+    cost_out_per_mtok: float = 0.0
 
     def to_provider_def(self):
         """Return a ProviderDef that the registry can add to its catalogue."""
@@ -91,8 +97,8 @@ class CustomProvider:
             capability_tags=capability_tags,
             base_url=self.base_url or None,
             model=self.default_model or None,
-            cost_in_per_mtok=0.0,
-            cost_out_per_mtok=0.0,
+            cost_in_per_mtok=self.cost_in_per_mtok,
+            cost_out_per_mtok=self.cost_out_per_mtok,
             env_key=self.env_key or None,
             mode="open",
             local=self.local,
@@ -259,6 +265,8 @@ def create_custom_provider(
     local: bool = False,
     extra_models: str = "",
     capability_tags: list[str] | None = None,
+    cost_in_per_mtok: float = 0.0,
+    cost_out_per_mtok: float = 0.0,
 ) -> CustomProvider:
     """Add a new custom provider. Raises CustomProviderError on validation failure."""
     cp_id = cp_id.strip()
@@ -276,6 +284,8 @@ def create_custom_provider(
         raise CustomProviderError("default_model is required")
     if auth_type not in ("none", "bearer", "api_key_header"):
         raise CustomProviderError("auth_type must be none | bearer | api_key_header")
+    if cost_in_per_mtok < 0 or cost_out_per_mtok < 0:
+        raise CustomProviderError("cost per Mtok cannot be negative")
 
     cp = CustomProvider(
         id=cp_id,
@@ -288,6 +298,8 @@ def create_custom_provider(
         enabled=True,
         extra_models=extra_models.strip(),
         capability_tags=_clean_tags(capability_tags),
+        cost_in_per_mtok=float(cost_in_per_mtok),
+        cost_out_per_mtok=float(cost_out_per_mtok),
     )
     existing.append(cp)
     _save_raw(existing)
@@ -308,6 +320,8 @@ def update_custom_provider(
     enabled: bool | None = None,
     extra_models: str | None = None,
     capability_tags: list[str] | None = None,
+    cost_in_per_mtok: float | None = None,
+    cost_out_per_mtok: float | None = None,
 ) -> CustomProvider:
     """Update fields of an existing custom provider."""
     existing = load_custom_providers()
@@ -339,6 +353,14 @@ def update_custom_provider(
         cp.extra_models = extra_models.strip()
     if capability_tags is not None:
         cp.capability_tags = _clean_tags(capability_tags)
+    if cost_in_per_mtok is not None:
+        if cost_in_per_mtok < 0:
+            raise CustomProviderError("cost per Mtok cannot be negative")
+        cp.cost_in_per_mtok = float(cost_in_per_mtok)
+    if cost_out_per_mtok is not None:
+        if cost_out_per_mtok < 0:
+            raise CustomProviderError("cost per Mtok cannot be negative")
+        cp.cost_out_per_mtok = float(cost_out_per_mtok)
 
     _save_raw(existing)
     reload_custom_providers()

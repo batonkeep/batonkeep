@@ -124,6 +124,16 @@ export interface ProviderHealth {
   usage_seen_at: string | null; // when /usage quota was last captured (D-0023 b)
   mode: string; // plan | api | open | mock
   capability_tags: string[]; // effective routing tags (override > template) — P-0044
+  cost_in_per_mtok: number; // effective $/Mtok input (override > registry > template)
+  cost_out_per_mtok: number; // effective $/Mtok output
+  pricing_source: "override" | "registry" | "template";
+}
+
+export interface ModelPricing {
+  model: string;
+  known: boolean;
+  cost_in_per_mtok: number | null;
+  cost_out_per_mtok: number | null;
 }
 
 export interface ProviderLimitsUpdate {
@@ -437,6 +447,8 @@ export interface CustomProvider {
   enabled: boolean;
   extra_models: string;
   capability_tags: string[];
+  cost_in_per_mtok: number;
+  cost_out_per_mtok: number;
 }
 
 export interface CustomProviderInput {
@@ -449,6 +461,8 @@ export interface CustomProviderInput {
   local?: boolean;
   extra_models?: string;
   capability_tags?: string[];
+  cost_in_per_mtok?: number;
+  cost_out_per_mtok?: number;
 }
 
 export interface CustomProviderUpdate {
@@ -461,4 +475,6 @@ export interface CustomProviderUpdate {
   enabled?: boolean | null;
   extra_models?: string | null;
   capability_tags?: string[] | null;
+  cost_in_per_mtok?: number | null;
+  cost_out_per_mtok?: number | null;
 }

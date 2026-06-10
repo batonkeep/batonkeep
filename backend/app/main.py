@@ -54,6 +54,7 @@ from app.schemas import (
     GitImportIn,
     ImportOut,
     LoginRequest,
+    ModelPricingOut,
     ModeOut,
     ProviderHealth,
     ProviderLimitsUpdate,
@@ -1477,6 +1478,8 @@ async def create_custom_provider_route(body: CustomProviderCreate):
             local=body.local,
             extra_models=body.extra_models,
             capability_tags=body.capability_tags,
+            cost_in_per_mtok=body.cost_in_per_mtok,
+            cost_out_per_mtok=body.cost_out_per_mtok,
         )
     except CustomProviderError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
@@ -1499,6 +1502,8 @@ async def update_custom_provider_route(cp_id: str, body: CustomProviderUpdate):
             enabled=body.enabled,
             extra_models=body.extra_models,
             capability_tags=body.capability_tags,
+            cost_in_per_mtok=body.cost_in_per_mtok,
+            cost_out_per_mtok=body.cost_out_per_mtok,
         )
     except CustomProviderError as exc:
         raise HTTPException(status_code=404 if "not found" in str(exc).lower() else 422,
@@ -1522,9 +1527,12 @@ async def list_providers():
     List all registered providers with their current health state.
     NOTE: est_used_pct is approximate — reliable guarantee is failover on observed limits.
     """
+    from app.providers import model_pricing
     from app.providers.registry import (
         effective_capability_tags,
         effective_model,
+        effective_pricing,
+        get_pricing_override,
         get_provider_def,
         is_instance_connected,
         list_instances,
@@ -1538,13 +1546,21 @@ async def list_providers():
             continue
         health = quota_tracker.get_health(inst.id)
         connected = await is_instance_connected(inst)
+        model = effective_model(inst, pdef)
+        in_rate, out_rate = effective_pricing(pdef, inst.id, model)
+        if get_pricing_override(inst.id) is not None:
+            pricing_source = "override"
+        elif model_pricing.lookup(model) is not None:
+            pricing_source = "registry"
+        else:
+            pricing_source = "template"
         # Healthy only if actually usable (connected/logged-in) AND not cooling.
         # A not-connected instance reports unhealthy with no cooldown → UI shows "offline".
         result.append(ProviderHealth(
             name=inst.id,
             template=inst.template,
             label=inst.label,
-            model=effective_model(inst, pdef),
+            model=model,
             kind=pdef.kind,
             tier=pdef.tier,
             healthy=connected and health.healthy,
@@ -1554,6 +1570,9 @@ async def list_providers():
             usage_seen_at=health.subscription_seen_at,
             mode=pdef.mode,
             capability_tags=effective_capability_tags(pdef),
+            cost_in_per_mtok=in_rate,
+            cost_out_per_mtok=out_rate,
+            pricing_source=pricing_source,
         ))
     return result
 
@@ -1674,7 +1693,12 @@ async def set_provider_model(
     fence is about *exec-in-container* actions; CLI-plan models are still owned by the
     CLI and rejected here.
     """
-    from app.providers.registry import get_instance, get_provider_def, set_model_override
+    from app.providers.registry import (
+        get_instance,
+        get_provider_def,
+        set_model_override,
+        set_pricing_override,
+    )
     inst = get_instance(instance_id)
     if inst is None:
         raise HTTPException(status_code=404, detail="Unknown provider instance")
@@ -1685,8 +1709,29 @@ async def set_provider_model(
             detail="Plan-CLI model is set inside the CLI (use the console), not here.",
         )
     set_model_override(instance_id, (body.model or "").strip() or None)
+    # Pricing: clear_pricing drops any override (fall back to the price book);
+    # both rates present sets an explicit override; otherwise leave pricing untouched.
+    if body.clear_pricing:
+        set_pricing_override(instance_id, None)
+    elif body.cost_in_per_mtok is not None and body.cost_out_per_mtok is not None:
+        if body.cost_in_per_mtok < 0 or body.cost_out_per_mtok < 0:
+            raise HTTPException(status_code=400, detail="cost per Mtok cannot be negative")
+        set_pricing_override(instance_id, (body.cost_in_per_mtok, body.cost_out_per_mtok))
     logger.info("Set model for %s -> %s (owner=%s)", instance_id, body.model, owner_id)
     return {"status": "ok", "instance": instance_id, "model": body.model or None}
+
+
+@app.get("/api/model-pricing", response_model=ModelPricingOut, tags=["providers"])
+async def get_model_pricing(model: str):
+    """Known-model price lookup so the UI can pre-populate $/Mtok rates (or know to
+    ask the operator to enter them). Owner-scoped config; no secrets involved."""
+    from app.providers import model_pricing
+    rates = model_pricing.lookup(model)
+    if rates is None:
+        return ModelPricingOut(model=model, known=False)
+    return ModelPricingOut(
+        model=model, known=True, cost_in_per_mtok=rates[0], cost_out_per_mtok=rates[1]
+    )
 
 
 @app.post("/api/providers/{provider_name}/tags", tags=["providers"])

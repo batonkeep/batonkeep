@@ -15,6 +15,7 @@ import type {
   FileEntry,
   ImportResult,
   Mode,
+  ModelPricing,
   ProviderHealth,
   ProviderLimitsUpdate,
   Run,
@@ -223,11 +224,26 @@ export const api = {
   logout: () => req<AuthStatus>("/auth/logout", { method: "POST" }),
   // Owner-scoped (model-set is no longer console-gated for API providers); the
   // optional token is kept for the ProvidersPanel call sites and is harmless if sent.
-  setProviderModel: (instanceId: string, model: string | null, token = "") =>
-    req<{ status: string; instance: string; model: string | null }>(
+  setProviderModel: (
+    instanceId: string,
+    model: string | null,
+    token = "",
+    pricing?: { cost_in_per_mtok: number; cost_out_per_mtok: number } | "clear",
+  ) => {
+    const body: Record<string, unknown> = { model };
+    if (pricing === "clear") body.clear_pricing = true;
+    else if (pricing) {
+      body.cost_in_per_mtok = pricing.cost_in_per_mtok;
+      body.cost_out_per_mtok = pricing.cost_out_per_mtok;
+    }
+    return req<{ status: string; instance: string; model: string | null }>(
       `/providers/${encodeURIComponent(instanceId)}/model`,
-      { method: "POST", headers: token ? { "X-Console-Token": token } : {}, body: JSON.stringify({ model }) }
-    ),
+      { method: "POST", headers: token ? { "X-Console-Token": token } : {}, body: JSON.stringify(body) }
+    );
+  },
+  // Known-model price lookup so the UI can pre-populate $/Mtok or ask for input.
+  getModelPricing: (model: string) =>
+    req<ModelPricing>(`/model-pricing?model=${encodeURIComponent(model)}`),
   // Kicks off a background capture (202); the result lands on the providers list.
   captureSubscriptionUsage: (instanceId: string, token: string) =>
     req<{ status: string; instance: string }>(

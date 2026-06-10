@@ -36,6 +36,8 @@ interface FormState {
   local: boolean;
   extra_models: string;
   capability_tags: string[];
+  cost_in_per_mtok: string; // text field; parsed to number on save
+  cost_out_per_mtok: string;
 }
 
 function emptyForm(): FormState {
@@ -49,6 +51,8 @@ function emptyForm(): FormState {
     local: false,
     extra_models: "",
     capability_tags: [],
+    cost_in_per_mtok: "",
+    cost_out_per_mtok: "",
   };
 }
 
@@ -63,6 +67,8 @@ function fromExisting(cp: CustomProvider): FormState {
     local: cp.local,
     extra_models: cp.extra_models,
     capability_tags: cp.capability_tags ?? [],
+    cost_in_per_mtok: cp.cost_in_per_mtok ? String(cp.cost_in_per_mtok) : "",
+    cost_out_per_mtok: cp.cost_out_per_mtok ? String(cp.cost_out_per_mtok) : "",
   };
 }
 
@@ -94,6 +100,10 @@ export default function CustomProviderForm({ existing, onSaved, onCancel }: Prop
   );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Whether the current rate fields were pre-filled from the known-model price book
+  // (vs. operator-entered). Drives the "from registry" hint and avoids clobbering
+  // values the operator typed by hand.
+  const [pricingFromRegistry, setPricingFromRegistry] = useState(false);
 
   // Auto-generate slug from label (create mode only).
   useEffect(() => {
@@ -101,6 +111,38 @@ export default function CustomProviderForm({ existing, onSaved, onCancel }: Prop
       setForm((prev) => ({ ...prev, id: slugify(prev.label) }));
     }
   }, [form.label, isEdit]);
+
+  // Pre-populate $/Mtok from the backend price book when the model is recognised.
+  // Only fills empty fields or values it set itself — never overwrites manual input.
+  useEffect(() => {
+    const model = form.default_model.trim();
+    if (!model) return;
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      try {
+        const p = await api.getModelPricing(model);
+        if (cancelled || !p.known) return;
+        setForm((prev) => {
+          const untouched =
+            (prev.cost_in_per_mtok === "" && prev.cost_out_per_mtok === "") ||
+            pricingFromRegistry;
+          if (!untouched) return prev;
+          return {
+            ...prev,
+            cost_in_per_mtok: String(p.cost_in_per_mtok ?? ""),
+            cost_out_per_mtok: String(p.cost_out_per_mtok ?? ""),
+          };
+        });
+        setPricingFromRegistry(true);
+      } catch {
+        /* lookup is best-effort; operator can still type rates */
+      }
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [form.default_model, pricingFromRegistry]);
 
   function set<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -112,6 +154,11 @@ export default function CustomProviderForm({ existing, onSaved, onCancel }: Prop
     setSaving(true);
     setError(null);
     try {
+      const costIn = parseFloat(form.cost_in_per_mtok) || 0;
+      const costOut = parseFloat(form.cost_out_per_mtok) || 0;
+      if (costIn < 0 || costOut < 0) {
+        throw new Error("Cost per Mtok cannot be negative");
+      }
       if (isEdit && existing) {
         await api.updateCustomProvider(existing.id, {
           label: form.label,
@@ -122,6 +169,8 @@ export default function CustomProviderForm({ existing, onSaved, onCancel }: Prop
           local: form.local,
           extra_models: form.extra_models,
           capability_tags: form.capability_tags,
+          cost_in_per_mtok: costIn,
+          cost_out_per_mtok: costOut,
         });
       } else {
         await api.createCustomProvider({
@@ -134,6 +183,8 @@ export default function CustomProviderForm({ existing, onSaved, onCancel }: Prop
           local: form.local,
           extra_models: form.extra_models,
           capability_tags: form.capability_tags,
+          cost_in_per_mtok: costIn,
+          cost_out_per_mtok: costOut,
         });
       }
       onSaved();
@@ -220,6 +271,50 @@ export default function CustomProviderForm({ existing, onSaved, onCancel }: Prop
             required
           />
         </Field>
+
+        {/* ── Pricing ($/Mtok) ── */}
+        <div>
+          <span className="mb-1.5 block font-mono text-[11px] font-medium uppercase tracking-wider text-muted">
+            Pricing (USD per 1M tokens)
+          </span>
+          <div className="flex gap-2">
+            <Field label="Input $/Mtok" htmlFor={`${uid}-cost-in`}>
+              <input
+                id={`${uid}-cost-in`}
+                className={`${FIELD_BASE} h-9 font-mono`}
+                type="number"
+                min="0"
+                step="0.01"
+                placeholder="0.00"
+                value={form.cost_in_per_mtok}
+                onChange={(e) => {
+                  setPricingFromRegistry(false);
+                  set("cost_in_per_mtok", e.target.value);
+                }}
+              />
+            </Field>
+            <Field label="Output $/Mtok" htmlFor={`${uid}-cost-out`}>
+              <input
+                id={`${uid}-cost-out`}
+                className={`${FIELD_BASE} h-9 font-mono`}
+                type="number"
+                min="0"
+                step="0.01"
+                placeholder="0.00"
+                value={form.cost_out_per_mtok}
+                onChange={(e) => {
+                  setPricingFromRegistry(false);
+                  set("cost_out_per_mtok", e.target.value);
+                }}
+              />
+            </Field>
+          </div>
+          <span className="mt-1 block text-[11px] text-muted">
+            {pricingFromRegistry
+              ? "Pre-filled from the known-model price book — edit if your host charges differently."
+              : "Used for cost estimates. Leave at 0 for free/local models. Recognised models pre-fill automatically."}
+          </span>
+        </div>
 
         {/* ── Capability tags (routing) ── */}
         <div>

@@ -32,9 +32,21 @@ _settings = get_settings()
 # (CLAUDE.md / AGENTS.md / GEMINI.md) we seed for the web-TTY lane (D-0017).
 _EXCLUDED_TOP = {".git", ws.BRIEF_FILENAME} | context_filenames()
 
+# Package-manager / build-artifact directories never worth shipping in a download
+# pack or share bundle, pruned at ANY depth (D-0029 part 2). Defence-in-depth: the
+# agent is also instructed to .gitignore these (so they never get committed), but
+# the bundle stays lean even if a user downloads before the agent has cleaned up,
+# or the agent installs to a path it forgot to ignore.
+_EXCLUDED_DIRS = {
+    "node_modules", "__pycache__", ".venv", "venv", "env", "dist", "build",
+    ".next", ".nuxt", ".cache", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    ".gradle", "target", "vendor", ".tox", "site-packages",
+}
+
 
 def _publishable_files(workspace: str) -> list[str]:
-    """Relative paths of the workspace's static assets (excludes .git, SESSION.md)."""
+    """Relative paths of the workspace's static assets (excludes .git, SESSION.md,
+    and package/build artifact dirs at any depth — D-0029)."""
     out: list[str] = []
     root = os.path.abspath(workspace)
     for dirpath, dirnames, filenames in os.walk(root):
@@ -43,9 +55,11 @@ def _publishable_files(workspace: str) -> list[str]:
         if top in _EXCLUDED_TOP:
             dirnames[:] = []
             continue
-        # Prune excluded dirs at the root level before descending.
-        if rel_dir == ".":
-            dirnames[:] = [d for d in dirnames if d not in _EXCLUDED_TOP]
+        # Prune excluded top-level entries and package/build dirs at every level.
+        dirnames[:] = [
+            d for d in dirnames
+            if d not in _EXCLUDED_DIRS and not (rel_dir == "." and d in _EXCLUDED_TOP)
+        ]
         for name in filenames:
             if rel_dir == "." and name in _EXCLUDED_TOP:
                 continue

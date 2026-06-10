@@ -7,7 +7,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { marked } from "marked";
 import hljs from "highlight.js/lib/common";
 import "highlight.js/styles/github-dark.css";
-import { Activity, Archive, Check, ChevronLeft, ChevronRight, Cloud, Copy, Download, FileCode, Globe, History, Link2, Loader2, Lock, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, Shield, SquareTerminal, X } from "lucide-react";
+import { Activity, Archive, Check, ChevronDown, ChevronLeft, ChevronRight, Cloud, Copy, Download, FileCode, Folder, Globe, History, Link2, Loader2, Lock, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, Shield, SquareTerminal, X } from "lucide-react";
 import type { CloudflareStatus, FileChange, ProviderHealth, Publish, Session, SessionTemplate, SessionTurn, Version } from "../types";
 import { api } from "../api";
 import { useSessionEvents, type SessionEvent } from "../useLiveFeed";
@@ -42,6 +42,24 @@ function highlightCode(content: string, path: string): { html: string; lang: str
   }
 }
 
+// How a workspace file should be rendered in the Preview pane (D-0028). Images
+// render in an <img>, markdown through the markdown renderer, text/code in a
+// syntax-highlighted block, and anything else (binary, unknown) offers a download.
+type FileKind = "image" | "markdown" | "code" | "binary";
+const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "webp", "gif", "svg", "avif", "ico", "bmp"]);
+const CODE_EXTS = new Set([
+  "txt", "js", "jsx", "ts", "tsx", "py", "css", "scss", "json", "yaml", "yml",
+  "toml", "ini", "cfg", "sh", "bash", "html", "htm", "xml", "sql", "csv", "rb",
+  "go", "rs", "java", "c", "h", "cpp", "env", "gitignore", "log", "conf",
+]);
+function fileKind(path: string): FileKind {
+  const ext = path.split(".").pop()?.toLowerCase() || "";
+  if (IMAGE_EXTS.has(ext)) return "image";
+  if (ext === "md" || ext === "markdown") return "markdown";
+  if (CODE_EXTS.has(ext) || path.split("/").pop()?.startsWith(".")) return "code";
+  return "binary";
+}
+
 // Default a Cloudflare Pages project name from a session title (mirrors the backend).
 function slugProject(title: string): string {
   const s = (title || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 58);
@@ -51,6 +69,7 @@ function slugProject(title: string): string {
 // A file the user opened from a chat link, shown in the Preview pane.
 interface OpenFile {
   path: string;
+  kind: FileKind;
   content: string;
   loading: boolean;
   error?: string;
@@ -86,6 +105,66 @@ const STATUS_DOT: Record<string, string> = {
   removed: "text-bad",
 };
 
+function FileChangeRow({ f, onOpen }: { f: FileChange; onOpen: (path: string) => void }) {
+  // Within a folder group the leading dir is implied — show just the basename.
+  const label = f.path.includes("/") ? f.path.slice(f.path.lastIndexOf("/") + 1) : f.path;
+  return (
+    <button
+      onClick={() => onOpen(f.path)}
+      className="group flex w-full items-center gap-2 rounded px-1 py-0.5 text-left hover:bg-edge/40"
+      title={`Open ${f.path}`}
+    >
+      <FileCode size={13} className={`shrink-0 ${STATUS_DOT[f.status] || "text-muted"}`} />
+      <span className="flex-1 truncate font-mono text-xs text-ink group-hover:underline">
+        {label}
+      </span>
+      <span className="shrink-0 font-mono text-[11px]">
+        {f.additions != null && <span className="text-ok">+{f.additions}</span>}
+        {f.additions != null && f.deletions != null && " "}
+        {f.deletions != null && <span className="text-bad">−{f.deletions}</span>}
+        {f.additions == null && f.deletions == null && <span className="text-muted">bin</span>}
+      </span>
+    </button>
+  );
+}
+
+// A collapsible folder group of changed files, collapsed by default so a package
+// install or build step doesn't flood the artifact card (D-0029 part 3).
+function FolderGroup({
+  dir,
+  files,
+  onOpen,
+}: {
+  dir: string;
+  files: FileChange[];
+  onOpen: (path: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <li>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center gap-2 rounded px-1 py-0.5 text-left hover:bg-edge/40"
+        title={`${open ? "Collapse" : "Expand"} ${dir}/`}
+      >
+        {open ? <ChevronDown size={13} className="shrink-0 text-muted" /> : <ChevronRight size={13} className="shrink-0 text-muted" />}
+        <Folder size={13} className="shrink-0 text-muted" />
+        <span className="flex-1 truncate font-mono text-xs text-ink">{dir}/</span>
+        <span className="shrink-0 font-mono text-[11px] text-muted">{files.length}</span>
+      </button>
+      {open && (
+        <ul className="ml-4 space-y-0.5 border-l border-edge/60 pl-1">
+          {files.map((f) => (
+            <li key={f.path}>
+              <FileChangeRow f={f} onOpen={onOpen} />
+            </li>
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+}
+
 function ArtifactList({
   files,
   onOpen,
@@ -93,6 +172,22 @@ function ArtifactList({
   files: FileChange[];
   onOpen: (path: string) => void;
 }) {
+  // Group by top-level folder; root files stay inline, folders collapse (D-0029).
+  const { roots, folders } = useMemo(() => {
+    const roots: FileChange[] = [];
+    const folders = new Map<string, FileChange[]>();
+    for (const f of files) {
+      const slash = f.path.indexOf("/");
+      if (slash === -1) {
+        roots.push(f);
+      } else {
+        const dir = f.path.slice(0, slash);
+        (folders.get(dir) ?? folders.set(dir, []).get(dir)!).push(f);
+      }
+    }
+    return { roots, folders: [...folders.entries()].sort((a, b) => a[0].localeCompare(b[0])) };
+  }, [files]);
+
   if (files.length === 0) return null;
   return (
     <div className="rounded-lg border border-edge bg-base/60 px-2 py-1.5">
@@ -101,26 +196,12 @@ function ArtifactList({
         <span className="text-muted/80">result</span>
       </div>
       <ul className="space-y-0.5">
-        {files.map((f) => (
+        {folders.map(([dir, group]) => (
+          <FolderGroup key={dir} dir={dir} files={group} onOpen={onOpen} />
+        ))}
+        {roots.map((f) => (
           <li key={f.path}>
-            <button
-              onClick={() => onOpen(f.path)}
-              className="group flex w-full items-center gap-2 rounded px-1 py-0.5 text-left hover:bg-edge/40"
-              title={`Open ${f.path}`}
-            >
-              <FileCode size={13} className={`shrink-0 ${STATUS_DOT[f.status] || "text-muted"}`} />
-              <span className="flex-1 truncate font-mono text-xs text-ink group-hover:underline">
-                {f.path}
-              </span>
-              <span className="shrink-0 font-mono text-[11px]">
-                {f.additions != null && <span className="text-ok">+{f.additions}</span>}
-                {f.additions != null && f.deletions != null && " "}
-                {f.deletions != null && <span className="text-bad">−{f.deletions}</span>}
-                {f.additions == null && f.deletions == null && (
-                  <span className="text-muted">bin</span>
-                )}
-              </span>
-            </button>
+            <FileChangeRow f={f} onOpen={onOpen} />
           </li>
         ))}
       </ul>
@@ -567,13 +648,20 @@ export default function SessionView({
   const viewFile = useCallback(
     async (path: string) => {
       if (!selectedId) return;
-      setOpenFile({ path, content: "", loading: true });
+      const kind = fileKind(path);
       setMobilePane("preview"); // surface it on mobile, where panes are tabbed
+      // Images and binaries render straight from the raw-file URL (an <img> or a
+      // download button) — no point fetching their bytes as text (D-0028).
+      if (kind === "image" || kind === "binary") {
+        setOpenFile({ path, kind, content: "", loading: false });
+        return;
+      }
+      setOpenFile({ path, kind, content: "", loading: true });
       try {
         const content = await api.getFileContent(selectedId, path);
-        setOpenFile({ path, content, loading: false });
+        setOpenFile({ path, kind, content, loading: false });
       } catch (e) {
-        setOpenFile({ path, content: "", loading: false, error: e instanceof Error ? e.message : "Could not load file" });
+        setOpenFile({ path, kind, content: "", loading: false, error: e instanceof Error ? e.message : "Could not load file" });
       }
     },
     [selectedId]
@@ -1446,6 +1534,7 @@ export default function SessionView({
         {openFile ? (
           <FileViewer
             file={openFile}
+            rawHref={selectedId ? api.fileRawUrl(selectedId, openFile.path) : "#"}
             downloadHref={selectedId ? api.fileRawUrl(selectedId, openFile.path, true) : "#"}
             copied={fileCopied}
             onCopy={handleCopyFile}
@@ -1629,21 +1718,28 @@ export default function SessionView({
 // syntax-highlighted, with copy + download, and a close back to the live preview.
 function FileViewer({
   file,
+  rawHref,
   downloadHref,
   copied,
   onCopy,
   onClose,
 }: {
   file: OpenFile;
+  rawHref: string;
   downloadHref: string;
   copied: boolean;
   onCopy: () => void;
   onClose: () => void;
 }) {
   const { html, lang } = useMemo(
-    () => (file.content ? highlightCode(file.content, file.path) : { html: "", lang: "" }),
-    [file.content, file.path]
+    () =>
+      file.kind === "code" && file.content
+        ? highlightCode(file.content, file.path)
+        : { html: "", lang: "" },
+    [file.kind, file.content, file.path]
   );
+  // Copy only applies to the text lanes (code/markdown carry fetched content).
+  const copyable = file.kind === "code" || file.kind === "markdown";
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex items-center justify-between gap-2 border-b border-edge bg-base/60 px-3 py-1.5">
@@ -1657,15 +1753,17 @@ function FileViewer({
           )}
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="px-1.5"
-            icon={copied ? <Check size={13} className="text-ok" /> : <Copy size={13} />}
-            onClick={onCopy}
-            disabled={!file.content}
-            title="Copy file content"
-          />
+          {copyable && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="px-1.5"
+              icon={copied ? <Check size={13} className="text-ok" /> : <Copy size={13} />}
+              onClick={onCopy}
+              disabled={!file.content}
+              title="Copy file content"
+            />
+          )}
           <a href={downloadHref} title="Download this file" className="inline-flex">
             <Button variant="ghost" size="sm" className="px-1.5" icon={<Download size={13} />} />
           </a>
@@ -1687,6 +1785,30 @@ function FileViewer({
         <div className="flex flex-1 items-center justify-center p-6 text-center text-sm text-bad">
           {file.error}
         </div>
+      ) : file.kind === "image" ? (
+        <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-base/40 p-4">
+          <img
+            src={rawHref}
+            alt={file.path}
+            className="max-h-full max-w-full object-contain"
+          />
+        </div>
+      ) : file.kind === "binary" ? (
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
+          <p className="text-sm text-muted">
+            This file can’t be previewed here.
+          </p>
+          <a href={downloadHref} className="inline-flex">
+            <Button variant="outline" size="sm" className="gap-1.5" icon={<Download size={13} />}>
+              Download file
+            </Button>
+          </a>
+        </div>
+      ) : file.kind === "markdown" ? (
+        <div
+          className="markdown min-h-0 flex-1 overflow-auto p-4 text-sm"
+          dangerouslySetInnerHTML={{ __html: renderMarkdown(file.content) }}
+        />
       ) : (
         <pre className="hljs min-h-0 flex-1 overflow-auto p-3 text-[12px] leading-relaxed">
           <code dangerouslySetInnerHTML={{ __html: html }} />

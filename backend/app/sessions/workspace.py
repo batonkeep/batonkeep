@@ -323,8 +323,24 @@ def build_turn_context(workspace: str, user_message: str) -> str:
     return (
         f"{brief}\n\n"
         f"## Workspace files\n{file_list}\n\n"
+        f"{GITIGNORE_GUIDANCE}\n\n"
         f"## User message\n{user_message}\n"
     )
+
+
+# Agent instruction to keep the workspace clean (D-0029 part 1): whenever the agent
+# creates package/build directories (installs deps, compiles), it should add them to
+# .gitignore so they don't get committed per-turn, clutter the file listing, or ride
+# along in the download/share bundle. The agent owns this file; we never seed a fixed
+# baseline (it adapts to non-standard install paths — D-0029).
+GITIGNORE_GUIDANCE = (
+    "## Keeping the workspace clean\n"
+    "Maintain a `.gitignore` in the workspace root. If you install packages or "
+    "generate build artifacts (e.g. `node_modules/`, `.venv/`, `__pycache__/`, "
+    "`dist/`, `build/`, or any package/dependency directory), add those paths to "
+    "`.gitignore` so they are not tracked. Keep only source and content files "
+    "tracked — the user's downloads and shared site should not contain dependencies."
+)
 
 
 # ── Versioning: per-turn commits, diff, restore (M1.3) ────────────────────────

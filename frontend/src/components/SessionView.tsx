@@ -8,7 +8,7 @@ import { marked } from "marked";
 import hljs from "highlight.js/lib/common";
 import "highlight.js/styles/github-dark.css";
 import { Activity, Archive, Check, ChevronDown, ChevronLeft, ChevronRight, Cloud, Copy, Download, FileCode, Folder, Globe, History, Link2, Loader2, Lock, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, Shield, SquareTerminal, X } from "lucide-react";
-import type { CloudflareStatus, FileChange, ProviderHealth, Publish, Session, SessionTemplate, SessionTurn, Version } from "../types";
+import type { CloudflareStatus, FileChange, FileEntry, ProviderHealth, Publish, Session, SessionTemplate, SessionTurn, Version } from "../types";
 import { api } from "../api";
 import { useSessionEvents, type SessionEvent } from "../useLiveFeed";
 import { fmtTime } from "../format";
@@ -209,6 +209,142 @@ function ArtifactList({
   );
 }
 
+// Compact human file size for the Files browser (P-0034).
+function fmtSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function FileEntryRow({
+  entry,
+  onOpen,
+  active,
+  stripDir,
+}: {
+  entry: FileEntry;
+  onOpen: (path: string) => void;
+  active: boolean;
+  stripDir: boolean;
+}) {
+  const label = stripDir && entry.path.includes("/")
+    ? entry.path.slice(entry.path.lastIndexOf("/") + 1)
+    : entry.path;
+  return (
+    <button
+      onClick={() => onOpen(entry.path)}
+      title={`Open ${entry.path}`}
+      className={`group flex w-full items-center gap-2 rounded px-1 py-0.5 text-left hover:bg-edge/40 ${active ? "bg-brand/10" : ""}`}
+    >
+      <FileCode size={13} className={`shrink-0 ${active ? "text-brand" : "text-muted"}`} />
+      <span className="flex-1 truncate font-mono text-xs text-ink group-hover:underline">{label}</span>
+      <span className="shrink-0 font-mono text-[10px] text-muted">{fmtSize(entry.size)}</span>
+    </button>
+  );
+}
+
+// Persistent workspace file browser — the Files tab (P-0034). Lists every file in
+// the session workspace, grouped by top-level folder with folders collapsed by
+// default (consistent with the artifact card, D-0029), each click-to-open in the
+// right Preview pane via the same viewFile path as the artifact list (D-0028).
+function FileBrowser({
+  entries,
+  loading,
+  onOpen,
+  activePath,
+}: {
+  entries: FileEntry[];
+  loading: boolean;
+  onOpen: (path: string) => void;
+  activePath?: string;
+}) {
+  const { roots, folders } = useMemo(() => {
+    const roots: FileEntry[] = [];
+    const folders = new Map<string, FileEntry[]>();
+    for (const e of entries) {
+      const slash = e.path.indexOf("/");
+      if (slash === -1) roots.push(e);
+      else {
+        const dir = e.path.slice(0, slash);
+        (folders.get(dir) ?? folders.set(dir, []).get(dir)!).push(e);
+      }
+    }
+    return {
+      roots: roots.sort((a, b) => a.path.localeCompare(b.path)),
+      folders: [...folders.entries()].sort((a, b) => a[0].localeCompare(b[0])),
+    };
+  }, [entries]);
+
+  return (
+    <div className="flex-1 overflow-y-auto p-3">
+      {loading && entries.length === 0 ? (
+        <div className="flex items-center justify-center py-10 text-sm text-muted">
+          <Loader2 size={14} className="mr-2 animate-spin" /> Loading files…
+        </div>
+      ) : entries.length === 0 ? (
+        <div className="px-2 py-10 text-center text-sm text-muted">
+          No files in this workspace yet — run a turn to generate some.
+        </div>
+      ) : (
+        <ul className="space-y-0.5">
+          {folders.map(([dir, group]) => (
+            <FileBrowserFolder
+              key={dir}
+              dir={dir}
+              entries={group}
+              onOpen={onOpen}
+              activePath={activePath}
+            />
+          ))}
+          {roots.map((e) => (
+            <li key={e.path}>
+              <FileEntryRow entry={e} onOpen={onOpen} active={e.path === activePath} stripDir={false} />
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function FileBrowserFolder({
+  dir,
+  entries,
+  onOpen,
+  activePath,
+}: {
+  dir: string;
+  entries: FileEntry[];
+  onOpen: (path: string) => void;
+  activePath?: string;
+}) {
+  // Auto-expand if the currently-open file lives in this folder.
+  const [open, setOpen] = useState(() => !!activePath && activePath.startsWith(dir + "/"));
+  return (
+    <li>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center gap-2 rounded px-1 py-0.5 text-left hover:bg-edge/40"
+        title={`${open ? "Collapse" : "Expand"} ${dir}/`}
+      >
+        {open ? <ChevronDown size={13} className="shrink-0 text-muted" /> : <ChevronRight size={13} className="shrink-0 text-muted" />}
+        <Folder size={13} className="shrink-0 text-muted" />
+        <span className="flex-1 truncate font-mono text-xs text-ink">{dir}/</span>
+        <span className="shrink-0 font-mono text-[11px] text-muted">{entries.length}</span>
+      </button>
+      {open && (
+        <ul className="ml-4 space-y-0.5 border-l border-edge/60 pl-1">
+          {entries.map((e) => (
+            <li key={e.path}>
+              <FileEntryRow entry={e} onOpen={onOpen} active={e.path === activePath} stripDir />
+            </li>
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+}
+
 // Lazy so xterm.js only loads when a web-TTY session is actually opened.
 const WebTtyConsole = lazy(() => import("./WebTtyConsole"));
 
@@ -251,7 +387,9 @@ export default function SessionView({
   consoleToken,
   appAuthEnabled,
 }: Props) {
-  const [mode, setMode] = useState<"chat" | "terminal">("chat"); // center-pane lane
+  const [mode, setMode] = useState<"chat" | "terminal" | "files">("chat"); // center-pane lane
+  const [files, setFiles] = useState<FileEntry[]>([]); // workspace files (Files tab)
+  const [filesLoading, setFilesLoading] = useState(false);
   const [detail, setDetail] = useState<Session | null>(null);
   const [turns, setTurns] = useState<SessionTurn[]>([]);
   const [message, setMessage] = useState("");
@@ -357,6 +495,17 @@ export default function SessionView({
     api.getPublish(selectedId).then(setPublish).catch(() => { });
   }, [selectedId]);
 
+  // Workspace file listing for the Files tab (P-0034). Always-current: refreshed
+  // when the tab opens and whenever a turn/capture changes the workspace.
+  const loadFiles = useCallback(() => {
+    if (!selectedId) return;
+    setFilesLoading(true);
+    api.listFiles(selectedId)
+      .then(setFiles)
+      .catch(() => setFiles([]))
+      .finally(() => setFilesLoading(false));
+  }, [selectedId]);
+
   // Load the selected session detail (for the preview token) + its turn history.
   useEffect(() => {
     setDetail(null);
@@ -380,6 +529,7 @@ export default function SessionView({
     setMobilePane("chat");
     setMode("chat");
     setOpenFile(null);
+    setFiles([]);
     // Consume the pending template set by handleCreate, or reset to null on a
     // normal session switch where no create was in flight.
     setActiveTemplate(pendingTemplateRef.current !== undefined ? pendingTemplateRef.current : null);
@@ -410,9 +560,15 @@ export default function SessionView({
       loadVersions();
       onSessionsChanged(); // session.updated_at + provider may have changed
       setPreviewNonce((n) => n + 1);
+      if (mode === "files") loadFiles(); // keep the Files tab current after a turn
       setPendingMessage(null); // clear now that the real completed card is available
     }
-  }, [lastTurn, loadTurns, loadVersions, onSessionsChanged]);
+  }, [lastTurn, loadTurns, loadVersions, onSessionsChanged, mode, loadFiles]);
+
+  // Load the workspace file listing whenever the Files tab opens (P-0034).
+  useEffect(() => {
+    if (mode === "files") loadFiles();
+  }, [mode, loadFiles]);
 
   // Auto-scroll the chat to the latest content — but not while History is open,
   // since the History card sits at the top of the stream and we want it in view.
@@ -1029,10 +1185,12 @@ export default function SessionView({
               )}
             </div>
 
-            {/* Chat | Terminal — two ways to work the same workspace, one at a
+            {/* Chat | Terminal | Files — ways to work the same workspace, one at a
                 time. Terminal swaps the transcript+composer for a live CLI you
-                drive yourself (web-TTY). Only CLI providers (`>_`) can. */}
-            {consoleAvailable && (
+                drive yourself (web-TTY; CLI providers only). Files is a persistent
+                workspace browser (P-0034) so you can re-open any file without
+                scrolling history. Shown whenever a session is open. */}
+            {inSession && (
               <div className="flex items-center gap-2 border-b border-edge px-4 py-1.5">
                 <div className="inline-flex rounded-md border border-edge p-0.5">
                   <button
@@ -1042,22 +1200,44 @@ export default function SessionView({
                   >
                     Chat
                   </button>
+                  {consoleAvailable && (
+                    <button
+                      type="button"
+                      onClick={() => terminalReady && setMode("terminal")}
+                      disabled={!terminalReady}
+                      title={terminalReady
+                        ? "Drive this provider's CLI live in the session workspace"
+                        : terminalCapable
+                          ? (appAuthEnabled
+                              ? "Web console is not enabled on this deployment"
+                              : "Unlock the web console (token in Settings → AI Plans) to use Terminal")
+                          : "Terminal needs a CLI provider (›_) — switch the agent below"}
+                      className={`inline-flex items-center gap-1 rounded px-2 py-0.5 font-mono text-[11px] disabled:opacity-40 ${mode === "terminal" ? "bg-brand/15 text-brand" : "text-muted hover:text-ink"}`}
+                    >
+                      <SquareTerminal size={11} /> Terminal
+                    </button>
+                  )}
                   <button
                     type="button"
-                    onClick={() => terminalReady && setMode("terminal")}
-                    disabled={!terminalReady}
-                    title={terminalReady
-                      ? "Drive this provider's CLI live in the session workspace"
-                      : terminalCapable
-                        ? (appAuthEnabled
-                            ? "Web console is not enabled on this deployment"
-                            : "Unlock the web console (token in Settings → AI Plans) to use Terminal")
-                        : "Terminal needs a CLI provider (›_) — switch the agent below"}
-                    className={`inline-flex items-center gap-1 rounded px-2 py-0.5 font-mono text-[11px] disabled:opacity-40 ${mode === "terminal" ? "bg-brand/15 text-brand" : "text-muted hover:text-ink"}`}
+                    onClick={() => setMode("files")}
+                    title="Browse every file in this session's workspace"
+                    className={`inline-flex items-center gap-1 rounded px-2 py-0.5 font-mono text-[11px] ${mode === "files" ? "bg-brand/15 text-brand" : "text-muted hover:text-ink"}`}
                   >
-                    <SquareTerminal size={11} /> Terminal
+                    <Folder size={11} /> Files
                   </button>
                 </div>
+                {mode === "files" && (
+                  <button
+                    type="button"
+                    onClick={() => loadFiles()}
+                    disabled={filesLoading}
+                    title="Refresh the file listing"
+                    className="ml-auto inline-flex items-center gap-1 rounded border border-edge px-2 py-0.5 font-mono text-[11px] text-muted hover:text-ink disabled:opacity-40"
+                  >
+                    {filesLoading ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
+                    Refresh
+                  </button>
+                )}
                 {mode === "terminal" && (
                   <>
                     <span className="font-mono text-[11px] text-muted">{activeInstance} · live · you drive every turn</span>
@@ -1097,6 +1277,13 @@ export default function SessionView({
                   />
                 </Suspense>
               </div>
+            ) : mode === "files" ? (
+              <FileBrowser
+                entries={files}
+                loading={filesLoading}
+                onOpen={viewFile}
+                activePath={openFile?.path}
+              />
             ) : (
             <>
             <div

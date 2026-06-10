@@ -473,7 +473,8 @@ class SecretStatusOut(BaseModel):
 
     provider: str
     tier: str
-    kind: str = ""  # "openai_compatible" | "anthropic" — drives whether a model is settable
+    # "openai_compatible" | "anthropic" | "gemini" — drives whether a model is settable
+    kind: str = ""
     env_key: str | None = None
     local: bool = False
     source: str  # "stored" | "env" | "missing"

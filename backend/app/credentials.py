@@ -206,7 +206,7 @@ async def secrets_status(db: AsyncSession, owner_id: str) -> list[dict]:
 
     rows: list[dict] = []
     for pdef in list_providers():
-        if pdef.kind not in ("openai_compatible", "anthropic") or not pdef.env_key:
+        if pdef.kind not in ("openai_compatible", "anthropic", "gemini") or not pdef.env_key:
             continue  # CLI/mock providers don't authenticate with a stored secret
         cred = stored.get(pdef.name)
         if cred is not None:

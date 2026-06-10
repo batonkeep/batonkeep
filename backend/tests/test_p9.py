@@ -107,14 +107,18 @@ class TestProviderConnected:
 
 
 class TestNewApiProviders:
-    def test_grok_and_gemini_registered_as_openai_compat(self):
+    def test_grok_openai_compat_and_gemini_native(self):
+        # Grok stays on the OpenAI-compat shim; Gemini flipped to the native
+        # google-genai executor (D-0034 / P-0043) — the shim drops Gemini's
+        # thought_signature and 400s on multi-step tool calls. The native def
+        # carries no base_url (the SDK targets the Developer API directly).
         from app.providers.registry import get_provider_def
         grok = get_provider_def("grok-api")
         gem = get_provider_def("gemini-api")
         assert grok and grok.kind == "openai_compatible" and grok.env_key == "XAI_API_KEY"
         assert grok.base_url and "x.ai" in grok.base_url
-        assert gem and gem.kind == "openai_compatible" and gem.env_key == "GEMINI_API_KEY"
-        assert gem.base_url and "googleapis.com" in gem.base_url
+        assert gem and gem.kind == "gemini" and gem.env_key == "GEMINI_API_KEY"
+        assert gem.base_url is None
 
     @pytest.mark.asyncio
     async def test_connection_follows_their_own_env_keys(self, fresh_db, monkeypatch):

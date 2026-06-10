@@ -218,15 +218,19 @@ def _resolve_capability(
 
     Returns a tuple so callers can distinguish tag-mismatch from actual cooldown.
     """
+    from app.providers.registry import effective_capability_tags
+
     matched_healthy = []
     cooling = []
     for iid, pdef in providers:
-        # Tag match: if no required tags, any provider qualifies
+        # Tag match: if no required tags, any provider qualifies. Use the
+        # operator's tag override when set (P-0044), else the template tags.
+        prov_tags = effective_capability_tags(pdef)
         if required_tags:
-            if not set(required_tags).intersection(pdef.capability_tags):
+            if not set(required_tags).intersection(prov_tags):
                 logger.debug(
                     "[router] %s skipped — tags %s don't match required %s",
-                    iid, pdef.capability_tags, required_tags,
+                    iid, prov_tags, required_tags,
                 )
                 continue
         # Health check (tag matched — now check cooldown), per-instance

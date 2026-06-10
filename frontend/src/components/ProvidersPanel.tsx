@@ -10,6 +10,7 @@ import { api } from "../api";
 import { countdown, fmtRelative } from "../format";
 import { Badge, Button, Card, Input, StatusDot } from "../ui";
 import CustomProviderForm from "./CustomProviderForm";
+import TagEditor from "./TagEditor";
 
 const AuthConsole = lazy(() => import("./AuthConsole"));
 
@@ -42,6 +43,8 @@ const TIER_LABEL: Record<string, string> = {
 export default function ProvidersPanel({ providers, now, onRefresh, consoleAvailable, consoleToken, onSetConsoleToken, appAuthEnabled }: Props) {
   const [editingModel, setEditingModel] = useState<string | null>(null);
   const [modelDraft, setModelDraft] = useState("");
+  const [editingTags, setEditingTags] = useState<string | null>(null);
+  const [tagsDraft, setTagsDraft] = useState<string[]>([]);
   const [authTarget, setAuthTarget] = useState<string | null>(null);
 
   // ── Custom providers (D-0026) ──────────────────────────────────────────────
@@ -76,6 +79,11 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
 
   const saveModel = async (instanceId: string) => {
     try { await api.setProviderModel(instanceId, modelDraft.trim() || null, consoleToken); setEditingModel(null); onRefresh(); }
+    catch { /* surfaced via disabled state */ }
+  };
+
+  const saveTags = async (providerName: string) => {
+    try { await api.setProviderTags(providerName, tagsDraft); setEditingTags(null); onRefresh(); }
     catch { /* surfaced via disabled state */ }
   };
 
@@ -242,6 +250,36 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
                             {capturing === p.name ? "capturing…" : "refresh"}
                           </button>
                         )}
+                      </div>
+                    )}
+                  </Zone>
+
+                  {/* ROUTING zone — capability tags (which tasks route here) + edit */}
+                  <Zone label="routing">
+                    {editingTags === p.name ? (
+                      <div className="space-y-2">
+                        <TagEditor value={tagsDraft} onChange={setTagsDraft} />
+                        <div className="flex items-center gap-2">
+                          <button onClick={() => saveTags(p.name)}
+                            className="flex items-center gap-1 font-mono text-[11px] text-ok hover:text-ink">
+                            <Check size={12} /> save tags
+                          </button>
+                          <button onClick={() => setEditingTags(null)}
+                            className="font-mono text-[11px] text-muted hover:text-ink">cancel</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex min-w-0 flex-wrap items-center gap-1">
+                          {p.capability_tags.length === 0
+                            ? <span className="font-mono text-[10px] text-muted">no tags</span>
+                            : p.capability_tags.map((t) => (
+                              <Badge key={t} tone="neutral">{t}</Badge>
+                            ))}
+                        </div>
+                        <button onClick={() => { setEditingTags(p.name); setTagsDraft(p.capability_tags); }}
+                          title="Set which task capability-tags route to this provider"
+                          className="shrink-0 text-muted hover:text-brand"><Pencil size={11} /></button>
                       </div>
                     )}
                   </Zone>

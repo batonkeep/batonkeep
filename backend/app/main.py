@@ -58,6 +58,7 @@ from app.schemas import (
     ProviderHealth,
     ProviderLimitsUpdate,
     ProviderModelUpdate,
+    ProviderTagsUpdate,
     PublishOut,
     RestoreOut,
     RestoreRequest,
@@ -1475,6 +1476,7 @@ async def create_custom_provider_route(body: CustomProviderCreate):
             env_key=body.env_key,
             local=body.local,
             extra_models=body.extra_models,
+            capability_tags=body.capability_tags,
         )
     except CustomProviderError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
@@ -1496,6 +1498,7 @@ async def update_custom_provider_route(cp_id: str, body: CustomProviderUpdate):
             local=body.local,
             enabled=body.enabled,
             extra_models=body.extra_models,
+            capability_tags=body.capability_tags,
         )
     except CustomProviderError as exc:
         raise HTTPException(status_code=404 if "not found" in str(exc).lower() else 422,
@@ -1520,6 +1523,7 @@ async def list_providers():
     NOTE: est_used_pct is approximate — reliable guarantee is failover on observed limits.
     """
     from app.providers.registry import (
+        effective_capability_tags,
         effective_model,
         get_provider_def,
         is_instance_connected,
@@ -1549,6 +1553,7 @@ async def list_providers():
             est_used_pct=health.est_used_pct,
             usage_seen_at=health.subscription_seen_at,
             mode=pdef.mode,
+            capability_tags=effective_capability_tags(pdef),
         ))
     return result
 
@@ -1682,6 +1687,27 @@ async def set_provider_model(
     set_model_override(instance_id, (body.model or "").strip() or None)
     logger.info("Set model for %s -> %s (owner=%s)", instance_id, body.model, owner_id)
     return {"status": "ok", "instance": instance_id, "model": body.model or None}
+
+
+@app.post("/api/providers/{provider_name}/tags", tags=["providers"])
+async def set_provider_tags(
+    provider_name: str,
+    body: ProviderTagsUpdate,
+    owner_id: str = Depends(_owner_id),
+):
+    """Set or clear a built-in provider's routing capability-tags override (P-0044).
+
+    Owner-scoped operator config (not console-gated), like the model override: it
+    decides which tasks route to this provider. Custom providers carry their tags in
+    their own record (PUT /api/custom-providers/{id}); this is for the built-in catalogue.
+    """
+    from app.providers.registry import get_provider_def, set_tags_override
+    if get_provider_def(provider_name) is None:
+        raise HTTPException(status_code=404, detail="Unknown provider")
+    tags = body.capability_tags or []
+    set_tags_override(provider_name, tags or None)
+    logger.info("Set tags for %s -> %s (owner=%s)", provider_name, tags, owner_id)
+    return {"status": "ok", "provider": provider_name, "capability_tags": tags}
 
 
 @app.post("/api/usage/subscription/{instance_id}", status_code=202, tags=["console"])

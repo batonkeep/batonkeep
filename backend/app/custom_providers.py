@@ -23,7 +23,7 @@ import json
 import logging
 import os
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 
 logger = logging.getLogger(__name__)
 
@@ -66,16 +66,23 @@ class CustomProvider:
     enabled: bool = True
     # Optional extra model names (comma-separated) for display / routing tags.
     extra_models: str = ""
+    # Routing capability tags (P-0044). When the operator sets these in the UI they
+    # decide which tasks route here; empty falls back to the auto default below.
+    capability_tags: list[str] = field(default_factory=list)
 
     def to_provider_def(self):
         """Return a ProviderDef that the registry can add to its catalogue."""
         from app.providers.registry import ProviderDef
 
-        capability_tags: list[str] = ["any"]
-        if self.local:
-            capability_tags += ["local"]
-        # Custom providers inherit the "open" capability tag used for open-weight models.
-        capability_tags.append("open")
+        # Operator-set tags win; otherwise fall back to the sensible auto default.
+        if self.capability_tags:
+            capability_tags = list(self.capability_tags)
+        else:
+            capability_tags = ["any"]
+            if self.local:
+                capability_tags += ["local"]
+            # Custom providers inherit the "open" tag used for open-weight models.
+            capability_tags.append("open")
 
         return ProviderDef(
             name=self.id,
@@ -212,6 +219,18 @@ def list_all_custom_providers() -> list[CustomProvider]:
 
 # ── Validation ────────────────────────────────────────────────────────────────
 
+def _clean_tags(tags: list[str] | None) -> list[str]:
+    """Normalise routing tags: trim, drop blanks, de-dupe, preserve order."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for t in tags or []:
+        s = t.strip()
+        if s and s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
+
+
 def _validate_id(cp_id: str) -> str | None:
     """Return an error message if the id is invalid, else None."""
     if not _ID_RE.match(cp_id):
@@ -239,6 +258,7 @@ def create_custom_provider(
     env_key: str | None = None,
     local: bool = False,
     extra_models: str = "",
+    capability_tags: list[str] | None = None,
 ) -> CustomProvider:
     """Add a new custom provider. Raises CustomProviderError on validation failure."""
     cp_id = cp_id.strip()
@@ -267,6 +287,7 @@ def create_custom_provider(
         local=local,
         enabled=True,
         extra_models=extra_models.strip(),
+        capability_tags=_clean_tags(capability_tags),
     )
     existing.append(cp)
     _save_raw(existing)
@@ -286,6 +307,7 @@ def update_custom_provider(
     local: bool | None = None,
     enabled: bool | None = None,
     extra_models: str | None = None,
+    capability_tags: list[str] | None = None,
 ) -> CustomProvider:
     """Update fields of an existing custom provider."""
     existing = load_custom_providers()
@@ -315,6 +337,8 @@ def update_custom_provider(
         cp.enabled = enabled
     if extra_models is not None:
         cp.extra_models = extra_models.strip()
+    if capability_tags is not None:
+        cp.capability_tags = _clean_tags(capability_tags)
 
     _save_raw(existing)
     reload_custom_providers()

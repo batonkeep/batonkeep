@@ -321,6 +321,54 @@ def set_model_override(instance_id: str, model: str | None) -> None:
         logger.error("[registry] failed to persist model overrides: %s", exc)
 
 
+# ── Runtime capability-tag overrides (P-0044) ────────────────────────────────
+# Same pattern as model overrides: operators set a built-in provider's routing
+# tags from the UI so they can align a provider to what their tasks require.
+# Resolution for a provider's effective tags: override (if set) > template tags.
+# Custom providers carry their tags in their own record (custom_providers.py).
+
+_TAGS_OVERRIDES_PATH = os.environ.get("TAGS_OVERRIDES_PATH", "/data/tags-overrides.json")
+
+
+def _load_tags_overrides() -> dict[str, list[str]]:
+    try:
+        with open(_TAGS_OVERRIDES_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+        return {
+            str(k): [str(t) for t in v]
+            for k, v in data.items()
+            if isinstance(v, list) and v
+        }
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+_TAGS_OVERRIDES: dict[str, list[str]] = _load_tags_overrides()
+
+
+def get_tags_override(name: str) -> list[str] | None:
+    return _TAGS_OVERRIDES.get(name)
+
+
+def set_tags_override(name: str, tags: list[str] | None) -> None:
+    """Set (or clear, when tags is empty) a provider's routing-tag override + persist."""
+    cleaned = [t.strip() for t in (tags or []) if t and t.strip()]
+    if cleaned:
+        _TAGS_OVERRIDES[name] = cleaned
+    else:
+        _TAGS_OVERRIDES.pop(name, None)
+    try:
+        with open(_TAGS_OVERRIDES_PATH, "w", encoding="utf-8") as f:
+            json.dump(_TAGS_OVERRIDES, f, indent=2)
+    except OSError as exc:
+        logger.error("[registry] failed to persist tags overrides: %s", exc)
+
+
+def effective_capability_tags(pdef: ProviderDef) -> list[str]:
+    """The routing tags a provider actually matches on: override > template tags."""
+    return get_tags_override(pdef.name) or pdef.capability_tags
+
+
 # ── Headless capability (D-0016 / P-0019) ──────────────────────────────────────
 # Plan-CLI templates that do NOT ship a documented headless `-p` mode. Scheduled/
 # cron tasks ride the headless lane (sanctioned + provider-metered), so any such

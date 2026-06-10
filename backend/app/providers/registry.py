@@ -339,7 +339,7 @@ def _load_pricing_overrides() -> dict[str, tuple[float, float]]:
             data = json.load(f)
         out: dict[str, tuple[float, float]] = {}
         for k, v in data.items():
-            if isinstance(v, (list, tuple)) and len(v) == 2:
+            if isinstance(v, list | tuple) and len(v) == 2:
                 out[str(k)] = (float(v[0]), float(v[1]))
         return out
     except (OSError, json.JSONDecodeError, TypeError, ValueError):

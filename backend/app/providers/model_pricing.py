@@ -100,7 +100,7 @@ def _load_overlay() -> dict[str, tuple[float, float]]:
         return {}
     out: dict[str, tuple[float, float]] = {}
     for k, v in data.items():
-        if isinstance(v, (list, tuple)) and len(v) == 2:
+        if isinstance(v, list | tuple) and len(v) == 2:
             try:
                 out[_normalise(str(k))] = (float(v[0]), float(v[1]))
             except (TypeError, ValueError):

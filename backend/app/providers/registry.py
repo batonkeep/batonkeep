@@ -324,6 +324,73 @@ def set_model_override(instance_id: str, model: str | None) -> None:
         logger.error("[registry] failed to persist model overrides: %s", exc)
 
 
+# ── Runtime per-instance pricing overrides ───────────────────────────────────
+# Operator-entered $/Mtok rates for an API/custom instance, persisted like the
+# model overrides. These win over the known-model price book and the template
+# default so cost estimates track the model actually in use (see model_pricing.py
+# and effective_pricing below). Stored as {instance_id: [in_per_mtok, out_per_mtok]}.
+
+_PRICING_OVERRIDES_PATH = os.environ.get("PRICING_OVERRIDES_PATH", "/data/pricing-overrides.json")
+
+
+def _load_pricing_overrides() -> dict[str, tuple[float, float]]:
+    try:
+        with open(_PRICING_OVERRIDES_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+        out: dict[str, tuple[float, float]] = {}
+        for k, v in data.items():
+            if isinstance(v, (list, tuple)) and len(v) == 2:
+                out[str(k)] = (float(v[0]), float(v[1]))
+        return out
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return {}
+
+
+_PRICING_OVERRIDES: dict[str, tuple[float, float]] = _load_pricing_overrides()
+
+
+def get_pricing_override(instance_id: str) -> tuple[float, float] | None:
+    return _PRICING_OVERRIDES.get(instance_id)
+
+
+def set_pricing_override(
+    instance_id: str, rates: tuple[float, float] | None
+) -> None:
+    """Set (or clear, when rates is None) an instance's $/Mtok override + persist."""
+    if rates is None:
+        _PRICING_OVERRIDES.pop(instance_id, None)
+    else:
+        _PRICING_OVERRIDES[instance_id] = (float(rates[0]), float(rates[1]))
+    try:
+        with open(_PRICING_OVERRIDES_PATH, "w", encoding="utf-8") as f:
+            json.dump(
+                {k: list(v) for k, v in _PRICING_OVERRIDES.items()}, f, indent=2
+            )
+    except OSError as exc:
+        logger.error("[registry] failed to persist pricing overrides: %s", exc)
+
+
+def effective_pricing(
+    pdef: ProviderDef, instance_id: str | None, model: str | None
+) -> tuple[float, float]:
+    """
+    The $/Mtok (input, output) rates a run should be metered at, resolved as:
+        operator override (per instance) > known-model price book > template default.
+
+    `model` is the effective model id for the instance (registry.effective_model).
+    """
+    from app.providers import model_pricing
+
+    if instance_id:
+        override = get_pricing_override(instance_id)
+        if override is not None:
+            return override
+    known = model_pricing.lookup(model)
+    if known is not None:
+        return known
+    return (pdef.cost_in_per_mtok, pdef.cost_out_per_mtok)
+
+
 # ── Runtime capability-tag overrides (P-0044) ────────────────────────────────
 # Same pattern as model overrides: operators set a built-in provider's routing
 # tags from the UI so they can align a provider to what their tasks require.

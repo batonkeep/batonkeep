@@ -206,6 +206,16 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
                             )}
                           </Badge>
                         )}
+                        {/* Effective $/Mtok the run meters at, with where it came from:
+                            override (operator-set) · registry (known-model book) · est. (template fallback). */}
+                        {p.kind !== "cli" && (p.cost_in_per_mtok > 0 || p.cost_out_per_mtok > 0) && (
+                          <Badge tone={p.pricing_source === "template" ? "warn" : "neutral"}>
+                            ${p.cost_in_per_mtok}/${p.cost_out_per_mtok} per Mtok
+                            <span className="ml-1 text-muted">
+                              · {p.pricing_source === "override" ? "set" : p.pricing_source === "registry" ? "registry" : "est."}
+                            </span>
+                          </Badge>
+                        )}
                       </div>
                     </div>
                     <Badge tone={healthTone}>

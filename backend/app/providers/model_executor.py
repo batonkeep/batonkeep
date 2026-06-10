@@ -102,9 +102,17 @@ class ModelExecutor(Executor):
         return True
 
     def _compute_cost(self, usage: Usage) -> float:
+        # Meter at the *effective* rate for the model actually in use: operator
+        # pricing override > known-model price book > template default. Pinning to
+        # the template made an overridden/custom model bill at the wrong rate.
+        from app.providers.registry import effective_pricing
+
+        in_rate, out_rate = effective_pricing(
+            self._def, self._instance.id if self._instance else None, self._model
+        )
         return (
-            usage.tokens_in * self._def.cost_in_per_mtok / 1_000_000
-            + usage.tokens_out * self._def.cost_out_per_mtok / 1_000_000
+            usage.tokens_in * in_rate / 1_000_000
+            + usage.tokens_out * out_rate / 1_000_000
         )
 
     async def run_stream(

@@ -342,6 +342,10 @@ class ProviderHealth(BaseModel):
     usage_seen_at: datetime | None = None  # when /usage quota was last captured (D-0023 b)
     mode: str  # plan | api | open | mock
     capability_tags: list[str] = []  # effective routing tags (override > template) — P-0044
+    # Effective $/Mtok the instance meters at (override > known-model book > template).
+    cost_in_per_mtok: float = 0.0
+    cost_out_per_mtok: float = 0.0
+    pricing_source: str = "template"  # "override" | "registry" | "template"
 
 
 class ProviderLimitsUpdate(BaseModel):
@@ -351,8 +355,26 @@ class ProviderLimitsUpdate(BaseModel):
 
 
 class ProviderModelUpdate(BaseModel):
-    """Set (or clear, when null/empty) an instance's runtime model override."""
+    """Set (or clear, when null/empty) an instance's runtime model override.
+
+    Optional per-Mtok pricing: when provided, stored as a per-instance override so
+    cost estimates track the chosen model. Omit both to leave pricing resolution to
+    the known-model price book (keyed by the effective model id). Set
+    `clear_pricing` to drop a previously-set override and fall back to the book.
+    """
     model: str | None = None
+    cost_in_per_mtok: float | None = None
+    cost_out_per_mtok: float | None = None
+    clear_pricing: bool = False
+
+
+class ModelPricingOut(BaseModel):
+    """Known-model price lookup (GET /api/model-pricing). `known` is False when the
+    backend doesn't recognise the model — the UI then asks the operator to enter rates."""
+    model: str
+    known: bool
+    cost_in_per_mtok: float | None = None
+    cost_out_per_mtok: float | None = None
 
 
 class ConsoleConfig(BaseModel):
@@ -504,6 +526,8 @@ class CustomProviderCreate(BaseModel):
     local: bool = False           # True → eligible for confidential (P-0009 #1) routing
     extra_models: str = ""        # comma-separated extra model names for display
     capability_tags: list[str] = []  # routing tags; empty → sensible auto default (P-0044)
+    cost_in_per_mtok: float = 0.0    # $/Mtok input; 0 = unknown (falls back to price book)
+    cost_out_per_mtok: float = 0.0   # $/Mtok output
 
 
 class CustomProviderUpdate(BaseModel):
@@ -517,6 +541,8 @@ class CustomProviderUpdate(BaseModel):
     enabled: bool | None = None
     extra_models: str | None = None
     capability_tags: list[str] | None = None
+    cost_in_per_mtok: float | None = None
+    cost_out_per_mtok: float | None = None
 
 
 class ProviderTagsUpdate(BaseModel):
@@ -538,3 +564,5 @@ class CustomProviderOut(BaseModel):
     enabled: bool
     extra_models: str
     capability_tags: list[str] = []
+    cost_in_per_mtok: float = 0.0
+    cost_out_per_mtok: float = 0.0

@@ -58,13 +58,16 @@ export default function PtyTerminal({ wsPath, init, title, subtitle, onClose, em
   const initRef = useRef(init);
   initRef.current = init;
 
-  // Send a raw key sequence to the PTY, then refocus the terminal (D-0030).
+  // Send a raw key sequence straight to the PTY over the WS (D-0030). We do NOT
+  // focus the terminal here: focusing xterm's hidden textarea summons the mobile
+  // soft keyboard on every tap, which makes repeated ↑/↓ navigation cumbersome.
+  // The keystroke lands regardless of focus; the keyboard only opens when the user
+  // actually taps the terminal surface.
   const sendKey = (seq: string) => {
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: "input", data: seq }));
     }
-    termRef.current?.focus();
   };
 
   useEffect(() => {

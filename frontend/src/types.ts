@@ -123,6 +123,7 @@ export interface ProviderHealth {
   est_used_pct: number | null;
   usage_seen_at: string | null; // when /usage quota was last captured (D-0023 b)
   mode: string; // plan | api | open | mock
+  capability_tags: string[]; // effective routing tags (override > template) — P-0044
 }
 
 export interface ProviderLimitsUpdate {
@@ -435,6 +436,7 @@ export interface CustomProvider {
   local: boolean;
   enabled: boolean;
   extra_models: string;
+  capability_tags: string[];
 }
 
 export interface CustomProviderInput {
@@ -446,6 +448,7 @@ export interface CustomProviderInput {
   env_key?: string | null;
   local?: boolean;
   extra_models?: string;
+  capability_tags?: string[];
 }
 
 export interface CustomProviderUpdate {
@@ -457,4 +460,5 @@ export interface CustomProviderUpdate {
   local?: boolean | null;
   enabled?: boolean | null;
   extra_models?: string | null;
+  capability_tags?: string[] | null;
 }

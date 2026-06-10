@@ -266,6 +266,13 @@ export const api = {
     }),
   deleteCustomProvider: (id: string) =>
     req<void>(`/custom-providers/${encodeURIComponent(id)}`, { method: "DELETE" }),
+
+  // Built-in provider routing-tag override (P-0044); owner-scoped, like setProviderModel.
+  setProviderTags: (providerName: string, capability_tags: string[]) =>
+    req<{ status: string; provider: string; capability_tags: string[] }>(
+      `/providers/${encodeURIComponent(providerName)}/tags`,
+      { method: "POST", body: JSON.stringify({ capability_tags }) }
+    ),
 };
 
 export { ApiError };

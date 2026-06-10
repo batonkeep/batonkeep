@@ -12,6 +12,7 @@ import { api } from "../api";
 import type { CustomProvider, CustomProviderAuthType } from "../types";
 import { Badge, Button, Card } from "../ui";
 import { Field, FIELD_BASE } from "../ui/Input";
+import TagEditor from "./TagEditor";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -34,6 +35,7 @@ interface FormState {
   env_key: string;
   local: boolean;
   extra_models: string;
+  capability_tags: string[];
 }
 
 function emptyForm(): FormState {
@@ -46,6 +48,7 @@ function emptyForm(): FormState {
     env_key: "",
     local: false,
     extra_models: "",
+    capability_tags: [],
   };
 }
 
@@ -59,6 +62,7 @@ function fromExisting(cp: CustomProvider): FormState {
     env_key: cp.env_key ?? "",
     local: cp.local,
     extra_models: cp.extra_models,
+    capability_tags: cp.capability_tags ?? [],
   };
 }
 
@@ -117,6 +121,7 @@ export default function CustomProviderForm({ existing, onSaved, onCancel }: Prop
           env_key: form.env_key || null,
           local: form.local,
           extra_models: form.extra_models,
+          capability_tags: form.capability_tags,
         });
       } else {
         await api.createCustomProvider({
@@ -128,6 +133,7 @@ export default function CustomProviderForm({ existing, onSaved, onCancel }: Prop
           env_key: form.env_key || null,
           local: form.local,
           extra_models: form.extra_models,
+          capability_tags: form.capability_tags,
         });
       }
       onSaved();
@@ -214,6 +220,21 @@ export default function CustomProviderForm({ existing, onSaved, onCancel }: Prop
             required
           />
         </Field>
+
+        {/* ── Capability tags (routing) ── */}
+        <div>
+          <span className="mb-1.5 block font-mono text-[11px] font-medium uppercase tracking-wider text-muted">
+            Capability tags (routing)
+          </span>
+          <TagEditor
+            value={form.capability_tags}
+            onChange={(tags) => set("capability_tags", tags)}
+          />
+          <span className="mt-1 block text-[11px] text-muted">
+            Which tasks route here — a task runs on this provider only if its required tags
+            overlap these. Leave empty for a sensible default (any · open).
+          </span>
+        </div>
 
         {/* ── Auth type ── */}
         <fieldset>

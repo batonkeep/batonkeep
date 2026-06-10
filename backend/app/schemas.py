@@ -341,6 +341,7 @@ class ProviderHealth(BaseModel):
     est_used_pct: float | None
     usage_seen_at: datetime | None = None  # when /usage quota was last captured (D-0023 b)
     mode: str  # plan | api | open | mock
+    capability_tags: list[str] = []  # effective routing tags (override > template) — P-0044
 
 
 class ProviderLimitsUpdate(BaseModel):
@@ -501,6 +502,7 @@ class CustomProviderCreate(BaseModel):
     env_key: str | None = None    # optional env var to resolve the API key from
     local: bool = False           # True → eligible for confidential (P-0009 #1) routing
     extra_models: str = ""        # comma-separated extra model names for display
+    capability_tags: list[str] = []  # routing tags; empty → sensible auto default (P-0044)
 
 
 class CustomProviderUpdate(BaseModel):
@@ -513,6 +515,12 @@ class CustomProviderUpdate(BaseModel):
     local: bool | None = None
     enabled: bool | None = None
     extra_models: str | None = None
+    capability_tags: list[str] | None = None
+
+
+class ProviderTagsUpdate(BaseModel):
+    """Set (or clear, when empty) a built-in provider's routing-tag override (P-0044)."""
+    capability_tags: list[str] = []
 
 
 class CustomProviderOut(BaseModel):
@@ -528,3 +536,4 @@ class CustomProviderOut(BaseModel):
     local: bool
     enabled: bool
     extra_models: str
+    capability_tags: list[str] = []

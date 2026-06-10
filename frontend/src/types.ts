@@ -216,7 +216,7 @@ export interface Cockpit {
 export interface SecretStatus {
   provider: string;
   tier: string;
-  kind: string; // "openai_compatible" | "anthropic"
+  kind: string; // "openai_compatible" | "anthropic" | "gemini"
   env_key: string | null;
   local: boolean;
   source: "stored" | "env" | "missing";

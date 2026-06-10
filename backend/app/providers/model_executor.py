@@ -101,6 +101,12 @@ class ModelExecutor(Executor):
                 max_rounds=max_rounds, budget_usd=budget_usd,
             ):
                 yield ev
+        elif self._def.kind == "gemini":
+            async for ev in self._run_gemini(
+                prompt, workdir=workdir, tools_enabled=tools_enabled,
+                max_rounds=max_rounds, budget_usd=budget_usd,
+            ):
+                yield ev
         else:
             async for ev in self._run_openai_compat(
                 prompt, workdir=workdir, tools_enabled=tools_enabled,
@@ -332,6 +338,136 @@ class ModelExecutor(Executor):
                     yield ExecEvent(kind=EventKind.error, message=err)
                 return
 
+        exec_result = ExecResult(text=full_text, usage=total_usage, provider=self.name,
+                                 model=self._model or "unknown")
+        yield ExecEvent(kind=EventKind.result, message=f"[{self.name}] done",
+                        data={"result": exec_result, "usage": total_usage.__dict__})
+
+    # ── Gemini (native google-genai) ──────────────────────────────────────────
+
+    async def _run_gemini(
+        self, prompt: str, *, workdir: str, tools_enabled: bool,
+        max_rounds: int, budget_usd: float,
+    ) -> AsyncIterator[ExecEvent]:
+        # Native path (D-0034 / P-0043). The OpenAI-compat shim drops Gemini's
+        # `thought_signature`, which thinking models require replayed on every
+        # later turn — so multi-step tool use 400s on the second tool round. Here
+        # we replay the model's `Content` parts **verbatim** (signatures intact),
+        # which is the whole reason this path exists; do not "clean up" or merge
+        # the model parts before sending them back.
+        from google import genai
+        from google.genai import types
+
+        from app.credentials import resolve_api_key
+
+        api_key = await resolve_api_key(
+            self._cred_provider, self._def.env_key or "GEMINI_API_KEY"
+        )
+        if not api_key:
+            yield ExecEvent(
+                kind=EventKind.error,
+                message=(
+                    f"no credentials for {self.name}: "
+                    f"set {self._def.env_key or 'GEMINI_API_KEY'} "
+                    "or store a key via /api/credentials"
+                ),
+            )
+            return
+
+        client = genai.Client(api_key=api_key)
+        tools = None
+        if tools_enabled:
+            tools = [
+                types.Tool(function_declarations=[
+                    types.FunctionDeclaration(
+                        name=t["name"],
+                        description=t["description"],
+                        parameters_json_schema=t["parameters"],
+                    )
+                    for t in TOOL_SCHEMAS
+                ])
+            ]
+        config = types.GenerateContentConfig(
+            system_instruction=_SYSTEM_PROMPT,
+            tools=tools,
+        )
+        contents: list[types.Content] = [
+            types.Content(role="user", parts=[types.Part(text=prompt)])
+        ]
+        total_usage = Usage()
+        full_text = ""
+
+        yield ExecEvent(kind=EventKind.log, message=f"[{self.name}] starting (gemini)")
+        yield ExecEvent(kind=EventKind.phase, phase="running")
+
+        for round_num in range(max_rounds):
+            if total_usage.cost_usd > budget_usd:
+                yield ExecEvent(
+                    kind=EventKind.log, message=f"[{self.name}] budget exceeded ${budget_usd:.4f}"
+                )
+                break
+
+            model_parts: list[types.Part] = []
+            last_usage = None
+            try:
+                stream = await client.aio.models.generate_content_stream(
+                    model=self._model or "gemini-2.5-flash",
+                    contents=contents,
+                    config=config,
+                )
+                async for chunk in stream:
+                    if chunk.usage_metadata:
+                        last_usage = chunk.usage_metadata
+                    cand = chunk.candidates[0] if chunk.candidates else None
+                    if not cand or not cand.content or not cand.content.parts:
+                        continue
+                    for part in cand.content.parts:
+                        # Replay every part verbatim (signatures live here). Only
+                        # surface non-thought answer text as tokens to the user.
+                        model_parts.append(part)
+                        if part.text and not part.thought:
+                            full_text += part.text
+                            yield ExecEvent(kind=EventKind.token, text=part.text)
+            except Exception as exc:
+                err = str(exc)
+                _rl = ("rate", "limit", "quota", "429", "resource_exhausted")
+                if any(kw in err.lower() for kw in _rl):
+                    yield ExecEvent(kind=EventKind.error, message=f"rate_limit_reached: {err}",
+                                    data={"rate_limit": True})
+                else:
+                    yield ExecEvent(kind=EventKind.error, message=err)
+                return
+
+            if last_usage:
+                tokens_out = last_usage.candidates_token_count or 0
+                if last_usage.thoughts_token_count:
+                    tokens_out += last_usage.thoughts_token_count
+                delta = Usage(tokens_in=last_usage.prompt_token_count or 0,
+                              tokens_out=tokens_out)
+                delta.cost_usd = self._compute_cost(delta)
+                total_usage = total_usage + delta
+
+            fcalls = [p.function_call for p in model_parts if p.function_call]
+            if not fcalls:
+                break
+
+            # Replay the model turn (incl. thought_signature) then the tool results.
+            contents.append(types.Content(role="model", parts=model_parts))
+            resp_parts = []
+            for fc in fcalls:
+                result = await self._call_tool(
+                    fc.name, json.dumps(dict(fc.args or {})), workdir=workdir
+                )
+                yield ExecEvent(kind=EventKind.tool, message=f"[{fc.name}] called",
+                                data={"tool": fc.name, "result_chars": len(result)})
+                resp_parts.append(
+                    types.Part.from_function_response(
+                        name=fc.name, response={"result": result}
+                    )
+                )
+            contents.append(types.Content(role="user", parts=resp_parts))
+
+        total_usage.cost_usd = self._compute_cost(total_usage)
         exec_result = ExecResult(text=full_text, usage=total_usage, provider=self.name,
                                  model=self._model or "unknown")
         yield ExecEvent(kind=EventKind.result, message=f"[{self.name}] done",

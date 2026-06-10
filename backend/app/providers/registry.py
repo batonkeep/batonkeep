@@ -25,7 +25,7 @@ _settings = get_settings()
 @dataclass
 class ProviderDef:
     name: str
-    kind: str          # openai_compatible | anthropic | cli | mock
+    kind: str          # openai_compatible | anthropic | gemini | cli | mock
     tier: str          # open | frontier | agent | mock
     # Capability tags for routing (§4.3)
     capability_tags: list[str] = field(default_factory=list)
@@ -130,13 +130,16 @@ _ALL_PROVIDERS: list[ProviderDef] = [
         env_key="XAI_API_KEY",
         mode="api",
     ),
-    # Google Gemini via its OpenAI-compatible endpoint.
+    # Google Gemini via the native google-genai SDK (Developer API).
     ProviderDef(
+        # Native google-genai executor (D-0034 / P-0043): the OpenAI-compat shim
+        # drops Gemini's thought_signature and 400s on multi-step tool calls with
+        # thinking on, so this is kind="gemini" (no base_url — the SDK targets the
+        # Developer API directly from the AI Studio key, D-0032).
         name="gemini-api",
-        kind="openai_compatible",
+        kind="gemini",
         tier="frontier",
         capability_tags=["longcontext", "synthesis", "frontier"],
-        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
         model="gemini-3.5-flash",  # adjust to your enabled Gemini model
         cost_in_per_mtok=1.25,
         cost_out_per_mtok=10.0,
@@ -619,7 +622,7 @@ async def is_instance_connected(inst: ProviderInstance) -> bool:
         sub = _CLI_DEFAULT_DIR.get(pdef.name)
         return await sandbox.path_exists(os.path.join(home, sub)) if sub else True
 
-    if pdef.kind in ("openai_compatible", "anthropic"):
+    if pdef.kind in ("openai_compatible", "anthropic", "gemini"):
         from app.credentials import resolve_api_key
 
         cred_provider = inst.credential_provider or pdef.name
@@ -658,7 +661,7 @@ def get_executor(instance_id: str) -> Executor | None:
             logger.warning("CLIExecutor not yet available (P4)")
             return None
 
-    if pdef.kind in ("openai_compatible", "anthropic"):
+    if pdef.kind in ("openai_compatible", "anthropic", "gemini"):
         # Wired in P3
         try:
             from app.providers.model_executor import ModelExecutor

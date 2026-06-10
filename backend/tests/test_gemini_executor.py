@@ -193,13 +193,54 @@ async def test_last_round_withholds_tools_to_force_synthesis(gemini_executor):
     ]
 
     assert len(fake_models.configs) == 2
-    # Round 0: tools offered. Round 1 (last): tools withheld + nudge applied.
+    # Round 0: tools offered, calls allowed. Round 1 (last): tools still declared
+    # (history holds function calls) but calls forbidden via tool_config mode=NONE,
+    # plus the synthesis nudge.
     assert fake_models.configs[0].tools is not None
-    assert fake_models.configs[1].tools is None
+    assert fake_models.configs[0].tool_config is None
+    assert fake_models.configs[1].tools is not None
+    assert (
+        fake_models.configs[1].tool_config.function_calling_config.mode
+        == types.FunctionCallingConfigMode.NONE
+    )
     assert "stop researching" in fake_models.configs[1].system_instruction.lower()
+    # The synthesis instruction is also delivered as a user turn — the system nudge
+    # alone proved unreliable mid-conversation (empty reply) in live claude-api runs.
+    last_turn = fake_models.contents_snapshots[1][-1]
+    assert last_turn.role == "user"
+    assert any(p.text and "Stop researching" in p.text for p in last_turn.parts)
 
     result_ev = next(e for e in events if e.kind == EventKind.result)
     assert "Complete synthesized report" in result_ev.data["result"].text
+
+
+async def test_degenerate_empty_turn_retries_as_synthesis(gemini_executor):
+    """A turn that returns no tool call AND no text (a degenerate empty turn) must be
+    retried as a forced synthesis, not accepted as an empty result. This is the bug
+    the in-container claude-api integration test surfaced: the loop broke on an empty
+    end-turn and returned nothing."""
+    executor, monkeypatch = gemini_executor
+
+    empty = types.Part(text="just thinking", thought=True)  # no surfaced text, no call
+    answer = types.Part(text="# Brief\n\nThe synthesized answer.")
+    # Round 0 is empty (not the last round) → must retry forced; round 1 answers.
+    fake_models = _FakeModels([([empty], _usage()), ([answer], _usage())])
+    monkeypatch.setattr(
+        "google.genai.Client", lambda *a, **k: _FakeClient(fake_models)
+    )
+
+    events = [
+        ev async for ev in executor.run_stream("brief", workdir="/tmp", max_rounds=3)
+    ]
+
+    # Round 1 was forced (tool_config mode=NONE) even though it is not the last round.
+    assert len(fake_models.configs) == 2
+    assert (
+        fake_models.configs[1].tool_config.function_calling_config.mode
+        == types.FunctionCallingConfigMode.NONE
+    )
+    result_ev = next(e for e in events if e.kind == EventKind.result)
+    assert "synthesized answer" in result_ev.data["result"].text
 
 
 async def test_missing_credentials_errors_cleanly(monkeypatch):

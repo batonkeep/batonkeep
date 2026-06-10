@@ -11,7 +11,32 @@ import os
 
 import pytest
 
-from app.sessions.preview import resolve_preview_file, check_token, PreviewError
+from app.sessions.preview import (
+    PreviewError,
+    check_token,
+    guess_media_type,
+    resolve_preview_file,
+)
+
+
+class TestGuessMediaType:
+    """D-0028: text/code/markdown render inline; images keep image/*; unknown → octet."""
+
+    def test_markdown_served_as_utf8_text(self):
+        assert guess_media_type("README.md") == "text/plain; charset=utf-8"
+
+    def test_code_served_as_utf8_text(self):
+        for name in ("app.py", "main.ts", "style.css", "data.json"):
+            assert guess_media_type(name) == "text/plain; charset=utf-8", name
+
+    def test_dotfile_gitignore_served_as_text(self):
+        assert guess_media_type(".gitignore") == "text/plain; charset=utf-8"
+
+    def test_image_keeps_image_mime(self):
+        assert guess_media_type("logo.png") == "image/png"
+
+    def test_unknown_binary_is_octet_stream(self):
+        assert guess_media_type("blob.bin") == "application/octet-stream"
 
 
 class TestPreviewResolution:

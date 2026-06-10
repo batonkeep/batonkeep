@@ -54,6 +54,27 @@ class TestPublishBundle:
         pub.remove_bundle("tok123", dest)
         assert not os.path.exists(dest)
 
+    def test_publishable_files_excludes_package_dirs(self, tmp_path):
+        # D-0029: package/build artifact dirs are pruned at any depth so they never
+        # ride along in the download pack or share bundle.
+        from app.sessions import publish as pub
+        ws_dir = self._make_workspace(tmp_path)
+        # A root-level node_modules and a nested __pycache__ + .venv.
+        os.makedirs(os.path.join(ws_dir, "node_modules", "left-pad"))
+        open(os.path.join(ws_dir, "node_modules", "left-pad", "index.js"), "w").close()
+        os.makedirs(os.path.join(ws_dir, "src", "__pycache__"))
+        open(os.path.join(ws_dir, "src", "__pycache__", "m.pyc"), "w").close()
+        (tmp_path / "workspace" / "src").joinpath("app.py").write_text("print(1)")
+        os.makedirs(os.path.join(ws_dir, "api", ".venv", "bin"))
+        open(os.path.join(ws_dir, "api", ".venv", "bin", "python"), "w").close()
+
+        files = pub._publishable_files(ws_dir)
+        assert "index.html" in files
+        assert os.path.join("src", "app.py") in files
+        assert not any("node_modules" in f for f in files)
+        assert not any("__pycache__" in f for f in files)
+        assert not any(".venv" in f for f in files)
+
     def test_publish_token_dir_rejects_traversal(self, tmp_path, monkeypatch):
         from app.sessions import publish as pub
         monkeypatch.setitem(pub._settings.__dict__, "publish_dir", str(tmp_path / "pub"))

@@ -23,7 +23,12 @@ from __future__ import annotations
 import logging
 import os
 
-from app.sessions.workspace import BRIEF_FILENAME, list_files, read_brief
+from app.sessions.workspace import (
+    BRIEF_FILENAME,
+    GITIGNORE_GUIDANCE,
+    list_files,
+    read_brief,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +88,8 @@ def render_session_context(workspace: str) -> str:
         "## Brief\n"
         f"{brief or '_(no brief recorded yet)_'}\n\n"
         "## Workspace files\n"
-        f"{file_list}\n"
+        f"{file_list}\n\n"
+        f"{GITIGNORE_GUIDANCE}\n"
     )
 
 

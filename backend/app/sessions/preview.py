@@ -22,6 +22,33 @@ from app.sessions import workspace as ws
 # Files served when a directory (or the root) is requested, in order.
 _INDEX_FILES = ("index.html", "index.htm")
 
+# Extensions mimetypes either guesses wrong (or as a download-y type) but that we
+# want the browser/preview pane to treat as readable UTF-8 text (D-0028): code and
+# config files, plus markdown (mimetypes → text/markdown, which some browsers
+# offer to download rather than render). Served as text/plain; charset=utf-8.
+_TEXT_EXTENSIONS = {
+    ".md", ".markdown", ".txt", ".py", ".js", ".jsx", ".ts", ".tsx", ".css",
+    ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".sh", ".bash", ".env",
+    ".sql", ".rb", ".go", ".rs", ".java", ".c", ".h", ".cpp", ".xml", ".csv",
+    ".gitignore",
+}
+
+
+def guess_media_type(path: str) -> str:
+    """
+    MIME type for a workspace file, tuned for in-browser preview (D-0028):
+      - known text/code/markdown extensions → text/plain; charset=utf-8 (renders
+        inline instead of downloading; lets the preview pane fetch it as text);
+      - everything else → mimetypes' guess (images get image/*), falling back to
+        application/octet-stream so an unknown binary is offered as a download.
+    """
+    ext = os.path.splitext(path)[1].lower()
+    # `.gitignore` has no extension via splitext; match on basename too.
+    if ext in _TEXT_EXTENSIONS or os.path.basename(path).lower() in _TEXT_EXTENSIONS:
+        return "text/plain; charset=utf-8"
+    media, _ = mimetypes.guess_type(path)
+    return media or "application/octet-stream"
+
 
 class PreviewError(Exception):
     """Raised with an HTTP-ish status for the route to translate."""
@@ -57,8 +84,7 @@ def resolve_preview_file(workspace: str, relpath: str) -> tuple[str, str]:
     if not os.path.isfile(target):
         raise PreviewError(404, "Not found")
 
-    media, _ = mimetypes.guess_type(target)
-    return target, media or "application/octet-stream"
+    return target, guess_media_type(target)
 
 
 def check_token(expected: str | None, provided: str | None) -> None:
@@ -86,8 +112,7 @@ def resolve_workspace_file(workspace: str, relpath: str) -> tuple[str, str]:
         raise PreviewError(404, "Not found")
     if not os.path.isfile(target):
         raise PreviewError(404, "Not found")
-    media, _ = mimetypes.guess_type(target)
-    return target, media or "application/octet-stream"
+    return target, guess_media_type(target)
 
 
 def rewrite_workspace_file_links(text: str, session_id: str, workspace: str) -> str:

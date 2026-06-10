@@ -1654,13 +1654,21 @@ async def console_config():
     return ConsoleConfig(available=settings.web_console_available)
 
 
-@app.post("/api/providers/{instance_id}/model", tags=["console"])
+@app.post("/api/providers/{instance_id}/model", tags=["providers"])
 async def set_provider_model(
     instance_id: str,
     body: ProviderModelUpdate,
-    _: None = Depends(_require_console),
+    owner_id: str = Depends(_owner_id),
 ):
-    """Set or clear an instance's runtime model override (persisted)."""
+    """Set or clear an API instance's runtime model override (persisted).
+
+    Owner-scoped (not console-gated): choosing an API provider's model id is benign
+    config of the same sensitivity as storing its API key (POST /api/credentials,
+    also owner-scoped) — and the operator setting it is already authenticated to reach
+    Settings (D-0023 folds the console token into the signed-in session). The console
+    fence is about *exec-in-container* actions; CLI-plan models are still owned by the
+    CLI and rejected here.
+    """
     from app.providers.registry import get_instance, get_provider_def, set_model_override
     inst = get_instance(instance_id)
     if inst is None:
@@ -1672,7 +1680,7 @@ async def set_provider_model(
             detail="Plan-CLI model is set inside the CLI (use the console), not here.",
         )
     set_model_override(instance_id, (body.model or "").strip() or None)
-    logger.info("Console set model for %s -> %s", instance_id, body.model)
+    logger.info("Set model for %s -> %s (owner=%s)", instance_id, body.model, owner_id)
     return {"status": "ok", "instance": instance_id, "model": body.model or None}
 
 

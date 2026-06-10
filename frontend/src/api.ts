@@ -221,10 +221,12 @@ export const api = {
   login: (password: string) =>
     req<AuthStatus>("/auth/login", { method: "POST", body: JSON.stringify({ password }) }),
   logout: () => req<AuthStatus>("/auth/logout", { method: "POST" }),
-  setProviderModel: (instanceId: string, model: string | null, token: string) =>
+  // Owner-scoped (model-set is no longer console-gated for API providers); the
+  // optional token is kept for the ProvidersPanel call sites and is harmless if sent.
+  setProviderModel: (instanceId: string, model: string | null, token = "") =>
     req<{ status: string; instance: string; model: string | null }>(
       `/providers/${encodeURIComponent(instanceId)}/model`,
-      { method: "POST", headers: { "X-Console-Token": token }, body: JSON.stringify({ model }) }
+      { method: "POST", headers: token ? { "X-Console-Token": token } : {}, body: JSON.stringify({ model }) }
     ),
   // Kicks off a background capture (202); the result lands on the providers list.
   captureSubscriptionUsage: (instanceId: string, token: string) =>

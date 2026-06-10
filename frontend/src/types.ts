@@ -215,10 +215,12 @@ export interface Cockpit {
 export interface SecretStatus {
   provider: string;
   tier: string;
+  kind: string; // "openai_compatible" | "anthropic"
   env_key: string | null;
   local: boolean;
   source: "stored" | "env" | "missing";
   key_hint: string | null;
+  model: string | null;
   last_used_at: string | null;
 }
 

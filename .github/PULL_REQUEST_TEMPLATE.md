@@ -1,5 +1,5 @@
 <!--
-Thanks for contributing to Batonkeep! Please keep PRs focused and explain the "why".
+Thanks for contributing to batonkeep! Please keep PRs focused and explain the "why".
 -->
 
 ## What & why

@@ -1,9 +1,9 @@
-# Batonkeep
+# batonkeep
 
 **Your plans, your keys, your machine.**
 **Switch agents mid-task, keep the work.**
 
-Batonkeep is the device-independent control plane for your own subscription-backed AI
+batonkeep is the device-independent control plane for your own subscription-backed AI
 agents. Schedule tasks, run interactive build sessions, switch providers mid-task when
 rate-limited, and publish work to shareable URLs — all on a backend you control.
 
@@ -56,7 +56,7 @@ instead of pulling. `make auth` runs the guided login. `make test` runs the back
 
 ## License
 
-Copyright © 2026 BLAZE LABS PTY LTD. Batonkeep is licensed under the **AGPLv3** — see
+Copyright © 2026 BLAZE LABS PTY LTD. batonkeep is licensed under the **AGPLv3** — see
 `LICENSE`. Enterprise/commercial licensing available — open an issue.
 
 ## Contributing

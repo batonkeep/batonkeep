@@ -65,7 +65,7 @@ function TelemetryContent() {
           className="mt-0.5 shrink-0 accent-brand"
         />
         <span className="text-sm text-ink">
-          Send anonymous usage counts to help improve Batonkeep
+          Send anonymous usage counts to help improve batonkeep
           <span className="mt-1 block text-[11px] text-muted">
             No prompts, file names, content, or identifiers are ever collected.
             Only structural metadata: feature flags, error classes, run counts.

@@ -1,6 +1,6 @@
-# Self-hosting Batonkeep
+# Self-hosting batonkeep
 
-Batonkeep runs as two containers from prebuilt images on [GHCR](https://github.com/orgs/batonkeep/packages):
+batonkeep runs as two containers from prebuilt images on [GHCR](https://github.com/orgs/batonkeep/packages):
 a backend (control plane + agent CLIs) and a frontend (nginx serving the SPA and
 reverse-proxying the API/WebSocket). **Only the frontend is exposed** — the backend is
 reachable only on the internal compose network. That single web port is the one surface you

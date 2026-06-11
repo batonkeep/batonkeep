@@ -1,6 +1,6 @@
 # Security Policy
 
-Batonkeep orchestrates your own AI provider plans and API keys on a backend you run, so it
+batonkeep orchestrates your own AI provider plans and API keys on a backend you run, so it
 holds **credentials** and runs **agent processes**. We take reports seriously and appreciate
 responsible disclosure.
 
@@ -28,7 +28,7 @@ credential mode), steps, and impact. A proof of concept helps but is not require
 
 ## Supported versions
 
-Batonkeep is pre-1.0 and ships from `main`. Security fixes land on `main` and in the next
+batonkeep is pre-1.0 and ships from `main`. Security fixes land on `main` and in the next
 tagged release; we do not backport to older `0.x` tags. Always run the latest release.
 
 | Version | Supported |
@@ -38,7 +38,7 @@ tagged release; we do not backport to older `0.x` tags. Always run the latest re
 
 ## Scope notes
 
-Batonkeep is **self-hosted and single-tenant by default**: you control the host, the network
+batonkeep is **self-hosted and single-tenant by default**: you control the host, the network
 exposure, and the credentials. Reports most useful to us include credential handling and
 storage, the agent execution / sandbox boundary, the privilege-separation model
 (`batond` vs `sandbox`), authentication (the app-auth gate), the publish/share surface, and

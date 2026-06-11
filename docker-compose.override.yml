@@ -1,0 +1,26 @@
+# ── Dev / contributor override (auto-merged from a repo clone) ────────────────
+# Docker Compose merges this on top of docker-compose.yml automatically whenever
+# it is present (i.e. when you have the source tree). It makes `make up` build the
+# images locally from this checkout instead of pulling the released GHCR tags.
+#
+# Self-hosters who only downloaded docker-compose.yml never have this file, so
+# their `docker compose up` pulls the prebuilt images — exactly as intended.
+#
+# It also re-publishes the backend port for local debugging convenience; the
+# production compose deliberately does not (nginx is the single surface there).
+
+services:
+  backend:
+    build:
+      context: backend
+      dockerfile: Dockerfile
+    image: ghcr.io/batonkeep/batonkeep-backend:${TAG:-latest}
+    # Local debugging only — reach the API/docs directly at http://localhost:8000.
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  frontend:
+    build:
+      context: frontend
+      dockerfile: Dockerfile
+    image: ghcr.io/batonkeep/batonkeep-frontend:${TAG:-latest}

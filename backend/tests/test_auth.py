@@ -95,6 +95,11 @@ def test_protected_route_401_without_session(settings_env):
     s = client.get("/api/auth/status")
     assert s.status_code == 200
     assert s.json() == {"auth_enabled": True, "authenticated": False}
+    # /health is the container liveness probe — must answer 200 without a session
+    # or the docker healthcheck fails and the frontend never starts.
+    h = client.get("/health")
+    assert h.status_code == 200
+    assert h.json()["status"] == "ok"
 
 
 def test_login_logout_flow(settings_env):

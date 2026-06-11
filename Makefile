@@ -1,9 +1,18 @@
-.PHONY: up down logs build auth auth-shell seed shell fmt selfhost sync dev-backend dev-frontend test push build-base prod-up prod-down prod-logs backup restore
+.PHONY: up down logs build pull auth auth-shell seed shell fmt selfhost sync dev-backend dev-frontend test backup restore
 
 # ── Core ──────────────────────────────────────────────────────────────────────
 
+## Start the stack. From a repo clone, docker-compose.override.yml builds the
+## images locally; with only docker-compose.yml present it pulls from GHCR.
+## Dashboard at http://localhost:${WEB_PORT:-8080}.
 up:
 	docker compose up -d
+
+## Pull the latest released images from GHCR (production upgrade path; pair with
+## the alembic migration that runs automatically at backend startup, D-0021).
+##   make pull TAG=v0.1.0 && make up
+pull:
+	docker compose pull
 
 down:
 	docker compose down
@@ -77,30 +86,11 @@ dev-frontend:
 test:
 	cd backend && uv run pytest tests/ -v
 
-# ── Registry / Deployment ────────────────────────────────────────────────────
-
-## Build the heavy base image (OS + Node + CLI agents + frozen Python venv).
-## Required before the first `make push`.
-build-base:
-	docker compose --profile build-base build backend-base
-
-## Push backend-base and frontend to the Cloudflare-proxied registry.
-## Requires: REGISTRY (e.g. registry.example.com/batonkeep) and optionally TAG.
-##   make push REGISTRY=registry.example.com/batonkeep TAG=v1.2.0
-push:
-	./scripts/push_to_registry.sh $(REGISTRY) $(TAG)
-
-## Start the production stack (images from registry, backend built on-host).
-## Requires: REGISTRY_PREFIX and TAG env vars.
-prod-up:
-	docker compose -f docker-compose.prod.yml build backend
-	docker compose -f docker-compose.prod.yml up -d
-
-prod-down:
-	docker compose -f docker-compose.prod.yml down
-
-prod-logs:
-	docker compose -f docker-compose.prod.yml logs -f
+# ── Release / Deployment ─────────────────────────────────────────────────────
+# Images are built and pushed to GHCR by CI on a version tag — see
+# .github/workflows/release.yml and docs/self-hosting.md. There is no manual
+# push step and no on-host base build; production runs the published images
+# (docker-compose.yml) and upgrades with `make pull && make up`.
 
 # ── Volume backup / restore ───────────────────────────────────────────────────
 

@@ -1,7 +1,7 @@
 {
   "name": "batonkeep — control plane",
   "short_name": "batonkeep",
-  "description": "Your plans, your keys, your machine — coordinated. Direct your own subscription-backed AI agents across providers from any device.",
+  "description": "Your plans, your keys, your machine. Switch agents mid-task, keep the work — direct your own subscription-backed AI agents across providers from any device.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

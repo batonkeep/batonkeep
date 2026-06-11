@@ -1,6 +1,7 @@
 # Batonkeep
 
-**Your plans, your keys, your machine — coordinated.**
+**Your plans, your keys, your machine.**
+**Switch agents mid-task, keep the work.**
 
 Batonkeep is the device-independent control plane for your own subscription-backed AI
 agents. Schedule tasks, run interactive build sessions, switch providers mid-task when
@@ -12,24 +13,46 @@ rate-limited, and publish work to shareable URLs — all on a backend you contro
   plans or API keys on a cron/interval schedule.
 - **Capacity routing + failover** — when one plan is rate-limited, work fails over to the
   next. You configure the candidate order; the router handles the rest.
+- **Build sessions** — interactive agent sessions with live preview and one-click artifact
+  publishing to a shareable URL.
 - **Sovereignty** — your subscription credentials never leave the machine running this
   backend. No third-party service holds your tokens.
 - **Device-independent PWA** — the frontend is installable; the phone is a first-class client.
-- *(Coming: M1)* **Build sessions** — interactive agent sessions with live preview and
-  one-click artifact publishing to a shareable URL.
 
 ## Stack
 
 Python 3.12 · FastAPI · SQLAlchemy 2 async + aiosqlite · APScheduler ·
 `openai` + `anthropic` SDKs · React + Vite + TypeScript + Tailwind · Docker Compose
 
-## Quickstart
+## Quickstart (run the released images)
+
+No build required — pull the prebuilt images from GHCR:
 
 ```bash
-cp .env.example .env          # set DATABASE_URL, API keys, or leave defaults
-make up                       # docker compose up — dashboard at http://localhost:8080
-make auth                     # log in to your subscription-plan CLIs (claude, grok, agy)
+curl -fsSLO https://raw.githubusercontent.com/batonkeep/batonkeep/main/docker-compose.yml
+curl -fsSL  https://raw.githubusercontent.com/batonkeep/batonkeep/main/.env.example -o .env   # then edit
+docker compose up -d                                  # dashboard at http://localhost:8080
 ```
+
+Then log in to your subscription-plan CLIs (one time; auth persists on a volume):
+
+```bash
+docker compose exec -u sandbox -e HOME=/home/agent backend bash /app/scripts/auth.sh
+```
+
+Or, once you're signed in, re-auth a plan from the app — **Settings → AI Plans** runs the
+same login flow in-browser when the scoped console is enabled (`ENABLE_WEB_CONSOLE=true`).
+
+A single port (the frontend) is exposed; it reverse-proxies the API and WebSocket to the
+backend over the internal network. To put it behind a public domain with TLS, point your
+own reverse proxy or a **cloudflared** tunnel at that one port — see
+[`docs/self-hosting.md`](docs/self-hosting.md) for the tunnel recipe, host requirements, and
+the upgrade path.
+
+### Run from source (contributors)
+
+Clone the repo and `make up` — `docker-compose.override.yml` builds the images locally
+instead of pulling. `make auth` runs the guided login. `make test` runs the backend suite.
 
 ## License
 

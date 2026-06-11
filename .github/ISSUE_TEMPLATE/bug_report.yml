@@ -1,0 +1,48 @@
+name: Bug report
+description: Something isn't working the way it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. For problems specific to a provider (auth, rate limits,
+        failover, bad output), please use the **Provider problem** template instead.
+        Never paste credentials, tokens, or API keys.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+      placeholder: Steps to reproduce → expected → actual.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Output from `docker compose logs backend` (or the browser console). Redact secrets.
+      render: shell
+  - type: dropdown
+    id: install
+    attributes:
+      label: How are you running it?
+      options:
+        - GHCR images (docker compose up)
+        - Built from source (make up)
+        - Local dev (uv / npm)
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: Release tag (e.g. v0.1.0) or `git rev-parse --short HEAD`.
+    validations:
+      required: true
+  - type: input
+    id: host
+    attributes:
+      label: Host / architecture
+      description: e.g. macOS arm64 (Apple Silicon), Ubuntu 24.04 amd64 VPS.
+    validations:
+      required: true

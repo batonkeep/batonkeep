@@ -1,0 +1,67 @@
+name: Provider problem
+description: A specific AI provider isn't authenticating, routing, failing over, or returning good output.
+labels: ["provider"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Batonkeep spans multiple providers across two lanes — **subscription-plan CLIs** and
+        **API keys** — which behave differently. This template captures what we need to triage.
+        **Never paste credentials, tokens, OAuth files, or API keys.**
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Which provider?
+      options:
+        - Claude (claude-code)
+        - Grok
+        - Antigravity (agy)
+        - Codex
+        - Custom / OpenAI-compatible (incl. self-hosted Ollama)
+        - Multiple / not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: lane
+    attributes:
+      label: Credential lane
+      description: Plan = subscription CLI login; BYO key = API key; mock = the default no-credential provider.
+      options:
+        - Subscription plan (CLI login)
+        - BYO API key
+        - mock
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: symptom
+    attributes:
+      label: What's failing?
+      options:
+        - Auth / login (can't connect, shows offline)
+        - Rate limit / quota not detected
+        - Failover not switching to the next plan
+        - Output quality / empty or truncated responses
+        - Cost or usage reporting
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: What happened?
+      description: Expected vs actual, and steps to reproduce.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: From `docker compose logs backend` or the run detail. Redact anything sensitive.
+      render: shell
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+    validations:
+      required: true

@@ -8,7 +8,10 @@ put a domain and TLS in front of.
 
 ## Host requirements
 
-- **Docker Engine** 24+ with the Compose v2 plugin (`docker compose`, not `docker-compose`).
+- **Docker Engine** 24+ recommended (20.10+ is known to work). The Compose **v2 plugin**
+  (`docker compose`) is recommended; the legacy standalone **`docker-compose` v1 (1.29.2) also
+  works** — it parses this Compose file and honors the healthcheck-gated startup and the
+  `selfhost` profile.
 - **Architecture:** `amd64` or `arm64` — both are published as a multi-arch manifest, so
   `docker pull` selects the right one automatically (Apple Silicon and ARM VPS included).
 - **Memory:** ~1 GB free for the stack; the backend is capped at 768 MB. Build sessions and
@@ -21,9 +24,33 @@ put a domain and TLS in front of.
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/batonkeep/batonkeep/main/docker-compose.yml
 curl -fsSL  https://raw.githubusercontent.com/batonkeep/batonkeep/main/.env.example -o .env
-# edit .env — at minimum set APP_SECRET (random 64-hex); pick DEFAULT_CANDIDATES after auth
+# edit .env — see "Configure your environment" below
 docker compose up -d
 ```
+
+### Configure your environment
+
+Edit the `.env` you just downloaded. Two settings matter before you expose the app:
+
+- **`APP_SECRET`** — *required.* Encrypts stored credentials at rest. Generate one:
+
+  ```bash
+  python -c "import secrets; print(secrets.token_hex(32))"
+  ```
+
+- **`APP_PASSWORD`** — *strongly recommended, especially on a public host or VPS.* When set,
+  the **entire app requires login** — this protects your **data**, not just the UI. **If you
+  leave it empty there is no auth gate and anyone who can reach the web port has full access.**
+
+```bash
+# .env
+APP_SECRET=<paste the generated 64-hex value>
+APP_PASSWORD=<a strong password>      # leave unset only on a trusted private network
+```
+
+`DEFAULT_CANDIDATES` ships as `mock` so a fresh install runs with zero credentials; switch it
+to your real providers (e.g. `claude,grok`) after the auth step below. The in-browser console
+(`ENABLE_WEB_CONSOLE`) is optional and rides your `APP_PASSWORD` login when enabled.
 
 Pin a release instead of `latest` for production:
 
@@ -45,6 +72,14 @@ surfaces each provider's health, headroom, and a re-auth action that runs the sa
 flow in-browser. This requires the scoped in-UI console (`ENABLE_WEB_CONSOLE=true`); it is
 off by default and never available in `managed` mode. The `docker compose exec` form above
 always works regardless.
+
+### Air-gapped / offline hosts
+
+If the host can't pull from GHCR, transfer the images instead: `docker save` both
+`ghcr.io/batonkeep/batonkeep-backend` and `-frontend` on a connected machine, copy the
+archives over, and `docker load` them on the target. Then run with the same
+`docker-compose.yml` + `.env` — with the images already present locally, `docker compose up -d`
+(or `docker-compose up -d`) starts the stack without any pull.
 
 ## Putting it behind a public domain
 
@@ -91,7 +126,32 @@ Images carry the schema; the backend runs `alembic upgrade head` automatically a
 make pull && make up          # or: docker compose pull && docker compose up -d
 ```
 
-Back up the `appdata` volume (it holds the SQLite DB and outputs) before a major upgrade.
+Back up your volumes before a major upgrade — see **Data & backups** below.
+
+## Data & backups
+
+All of your state lives in two Docker named volumes. **If you lose them, it is gone — there
+is no cloud copy.** Back them up:
+
+- **`appdata`** (`/data`) — the SQLite database (tasks, sessions, runs, encrypted credentials)
+  and task outputs. Losing this loses all your work.
+- **`agent_home`** (`/home/agent`) — your plan-CLI OAuth logins. Losing this means re-running
+  the auth step for every provider.
+
+A simple snapshot of both (stack can keep running for a consistent-enough SQLite copy, or stop
+it first for a guaranteed-quiet one):
+
+```bash
+docker run --rm -v batonkeep_appdata:/data -v "$PWD:/backup" alpine \
+  tar czf /backup/appdata-$(date +%F).tar.gz -C /data .
+docker run --rm -v batonkeep_agent_home:/home/agent -v "$PWD:/backup" alpine \
+  tar czf /backup/agent_home-$(date +%F).tar.gz -C /home/agent .
+```
+
+(Volume names are prefixed with the compose project — usually the install directory; check
+with `docker volume ls`.) Restore by extracting the archives back into fresh volumes before
+`docker compose up -d`. **Note:** `docker compose down -v` deletes these volumes — never use
+`-v` on a live install you care about.
 
 ## Optional: self-hosted open-weight inference
 

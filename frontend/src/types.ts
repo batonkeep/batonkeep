@@ -372,6 +372,15 @@ export interface SessionTemplate {
   description: string;
 }
 
+// Starter task preset offered on a fresh install. `input` (seeded enabled=false)
+// pre-fills the task form; nothing is persisted until the user saves.
+export interface TaskTemplate {
+  id: string;
+  label: string;
+  description: string;
+  input: TaskInput;
+}
+
 // Payload accepted by PATCH /sessions/{id}.
 export interface SessionUpdate {
   title?: string | null;

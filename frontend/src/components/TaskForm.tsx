@@ -15,6 +15,9 @@ import CronPicker from "./CronPicker";
 
 interface Props {
   task: Task | null;
+  // Optional preset to pre-fill a NEW task (e.g. from a starter template). Ignored
+  // when editing an existing `task`; does not change create-vs-edit semantics.
+  initial?: TaskInput | null;
   providers: ProviderHealth[];
   onSave: (input: TaskInput, id?: number) => Promise<void>;
   onClose: () => void;
@@ -60,24 +63,27 @@ const ALL_TIMEZONES: string[] = (() => {
   catch { return ["UTC","America/Los_Angeles","America/New_York","Europe/London","Europe/Berlin","Asia/Kolkata","Asia/Singapore","Asia/Tokyo","Australia/Sydney"]; }
 })();
 
-export default function TaskForm({ task, providers, onSave, onClose }: Props) {
-  const [name, setName] = useState(task?.name ?? "");
-  const [description, setDescription] = useState(task?.description ?? "");
-  const [category, setCategory] = useState(task?.category ?? "");
-  const [promptTemplate, setPromptTemplate] = useState(task ? task.prompt_template : DEFAULT_PROMPT_TEMPLATE);
-  const [scheduleKind, setScheduleKind] = useState<Task["schedule_kind"]>(task?.schedule_kind ?? "none");
-  const [scheduleExpr, setScheduleExpr] = useState(task?.schedule_expr ?? "");
+export default function TaskForm({ task, initial, providers, onSave, onClose }: Props) {
+  // Field defaults come from the task being edited, else a starter preset, else blank.
+  // `task` (not `src`) still governs create-vs-edit semantics (button label, save id).
+  const src = task ?? initial ?? null;
+  const [name, setName] = useState(src?.name ?? "");
+  const [description, setDescription] = useState(src?.description ?? "");
+  const [category, setCategory] = useState(src?.category ?? "");
+  const [promptTemplate, setPromptTemplate] = useState(src ? src.prompt_template : DEFAULT_PROMPT_TEMPLATE);
+  const [scheduleKind, setScheduleKind] = useState<Task["schedule_kind"]>(src?.schedule_kind ?? "none");
+  const [scheduleExpr, setScheduleExpr] = useState(src?.schedule_expr ?? "");
   const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-  const [timezone, setTimezone] = useState(task?.timezone ?? browserTz);
-  const [wantMarkdown, setWantMarkdown] = useState(task?.want_markdown ?? true);
-  const [wantJson, setWantJson] = useState(task?.want_json ?? false);
-  const [enabled] = useState(task?.enabled ?? true);
+  const [timezone, setTimezone] = useState(src?.timezone ?? browserTz);
+  const [wantMarkdown, setWantMarkdown] = useState(src?.want_markdown ?? true);
+  const [wantJson, setWantJson] = useState(src?.want_json ?? false);
+  const [enabled] = useState(src?.enabled ?? true);
   const [routing, setRouting] = useState<RoutingPolicy>(
-    task?.routing ? { ...DEFAULT_ROUTING, ...task.routing } : DEFAULT_ROUTING
+    src?.routing ? { ...DEFAULT_ROUTING, ...src.routing } : DEFAULT_ROUTING
   );
   const [params, setParams] = useState<ParamRow[]>(
-    task
-      ? Object.entries(task.params ?? {}).map(([key, value]) => ({ key, value: String(value) }))
+    src
+      ? Object.entries(src.params ?? {}).map(([key, value]) => ({ key, value: String(value) }))
       : [{ key: "topic", value: "" }, { key: "timeframe", value: "the last 48 hours" }]
   );
   const [tagInput, setTagInput] = useState("");
@@ -86,10 +92,10 @@ export default function TaskForm({ task, providers, onSave, onClose }: Props) {
   const [copiedBuilder, setCopiedBuilder] = useState(false);
   // Progressive disclosure: Advanced section collapsed by default for new tasks.
   // When editing an existing task that has non-default advanced settings, start open.
-  const hasAdvanced = !!task && (
-    Object.keys(task.params ?? {}).length > 0 ||
-    task.want_json ||
-    (task.routing && JSON.stringify(task.routing) !== JSON.stringify(DEFAULT_ROUTING))
+  const hasAdvanced = !!src && (
+    Object.keys(src.params ?? {}).length > 0 ||
+    src.want_json ||
+    (src.routing && JSON.stringify(src.routing) !== JSON.stringify(DEFAULT_ROUTING))
   );
   const [showAdvanced, setShowAdvanced] = useState(hasAdvanced);
 

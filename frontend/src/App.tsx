@@ -1,9 +1,9 @@
 // App.tsx — top-level shell: data orchestration, view routing, modals.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { LogOut, Moon, Plus, Sun } from "lucide-react";
+import { LogOut, Moon, Plus, Search, Sun } from "lucide-react";
 import { api } from "./api";
 import { useLiveFeed } from "./useLiveFeed";
-import type { Credential, Mode, ProviderHealth, Run, Session, Stats, Task, TaskInput, UsageSummary } from "./types";
+import type { Credential, Mode, ProviderHealth, Run, Session, Stats, Task, TaskInput, TaskTemplate, UsageSummary } from "./types";
 import Sidebar, { View } from "./components/Sidebar";
 import StatsBar from "./components/StatsBar";
 import TaskList from "./components/TaskList";
@@ -15,7 +15,7 @@ import CockpitPanel from "./components/CockpitPanel";
 import Onboarding from "./components/Onboarding";
 import LoginPage from "./components/LoginPage";
 import Styleguide from "./components/Styleguide";
-import { Button, Logo, Tabs } from "./ui";
+import { Button, Input, Logo, Select, Tabs } from "./ui";
 import { STATUS_META, fmtTime } from "./format";
 
 function runsPerDay(runs: Run[], days = 14): number[] {
@@ -85,9 +85,14 @@ function AppShell({ appAuthEnabled, onLogout }: { appAuthEnabled: boolean; onLog
   const [consoleToken, setConsoleToken] = useState("");
 
   const [editingTask, setEditingTask] = useState<Task | null>(null);
+  // Preset to pre-fill a NEW task when started from a starter template.
+  const [formInitial, setFormInitial] = useState<TaskInput | null>(null);
+  const [taskTemplates, setTaskTemplates] = useState<TaskTemplate[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState<number | null>(null);
+  const [runQuery, setRunQuery] = useState(""); // filter the Live runs list
+  const [runStatusFilter, setRunStatusFilter] = useState<string>("all");
   const [busyTaskId, setBusyTaskId] = useState<number | null>(null);
   // “+ New” popover (D-0027 item 5 / D-0024). Ref for outside-click close.
   const [showNewMenu, setShowNewMenu] = useState(false);
@@ -140,6 +145,7 @@ function AppShell({ appAuthEnabled, onLogout }: { appAuthEnabled: boolean; onLog
     loadSessions();
     api.getMode().then(setMode).catch(() => { });
     api.getConsoleConfig().then((c) => setConsoleAvailable(c.available)).catch(() => { });
+    api.listTaskTemplates().then(setTaskTemplates).catch(() => { });
   }, [loadTasks, loadRuns, loadProviders, loadStats, loadCreds, loadSessions]);
 
   // Poll the slowly-changing aggregates. Run state is driven live over the WS, but
@@ -193,6 +199,28 @@ function AppShell({ appAuthEnabled, onLogout }: { appAuthEnabled: boolean; onLog
   const immersive = view === "build" && selectedSessionId != null;
   const selectedRun = selectedRunId != null ? mergedRuns.find((r) => r.id === selectedRunId) ?? null : null;
   const taskById = useMemo(() => Object.fromEntries(tasks.map((t) => [t.id, t])), [tasks]);
+
+  // Statuses actually present, so the run filter only offers real values.
+  const runStatuses = useMemo(() => {
+    const seen = new Set<string>();
+    for (const r of mergedRuns) seen.add(r.status);
+    return Array.from(seen);
+  }, [mergedRuns]);
+
+  // Live runs filtered by status + a search over task name / provider / run #.
+  const filteredRuns = useMemo(() => {
+    const q = runQuery.trim().toLowerCase();
+    return mergedRuns.filter((r) => {
+      if (runStatusFilter !== "all" && r.status !== runStatusFilter) return false;
+      if (!q) return true;
+      const name = (taskById[r.task_id]?.name ?? `task ${r.task_id}`).toLowerCase();
+      return (
+        name.includes(q) ||
+        (r.provider ?? "").toLowerCase().includes(q) ||
+        String(r.id).includes(q)
+      );
+    });
+  }, [mergedRuns, taskById, runQuery, runStatusFilter]);
 
   // ── Actions ──────────────────────────────────────────────────────────────--
   const handleRun = async (task: Task) => {
@@ -309,6 +337,7 @@ function AppShell({ appAuthEnabled, onLogout }: { appAuthEnabled: boolean; onLog
                     className="flex w-full items-center gap-2.5 px-4 py-3 text-left text-sm hover:bg-brand/5"
                     onClick={() => {
                       setShowNewMenu(false);
+                      setFormInitial(null);
                       setEditingTask(null);
                       setShowForm(true);
                     }}
@@ -368,11 +397,13 @@ function AppShell({ appAuthEnabled, onLogout }: { appAuthEnabled: boolean; onLog
                 now={now}
                 busyTaskId={busyTaskId}
                 onRun={handleRun}
-                onEdit={(t) => { setEditingTask(t); setShowForm(true); }}
+                onEdit={(t) => { setFormInitial(null); setEditingTask(t); setShowForm(true); }}
                 onDelete={handleDelete}
                 onToggle={handleToggle}
                 onOpenRun={(id) => { setSelectedRunId(id); setTasksTab("live"); }}
-                onNewTask={() => { setEditingTask(null); setShowForm(true); }}
+                onNewTask={() => { setFormInitial(null); setEditingTask(null); setShowForm(true); }}
+                templates={taskTemplates}
+                onUseTemplate={(input) => { setEditingTask(null); setFormInitial(input); setShowForm(true); }}
               />
             )}
 
@@ -384,7 +415,39 @@ function AppShell({ appAuthEnabled, onLogout }: { appAuthEnabled: boolean; onLog
                     <p className="text-xs text-muted">Hit “Run now” on a task to see live output here.</p>
                   </div>
                 )}
-                {mergedRuns.slice(0, 40).map((r) => {
+                {mergedRuns.length > 0 && (
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                    <div className="relative flex-1">
+                      <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+                      <Input
+                        value={runQuery}
+                        onChange={(e) => setRunQuery(e.target.value)}
+                        placeholder="Search runs — task, provider, or #…"
+                        className="pl-9"
+                        aria-label="Search runs"
+                      />
+                    </div>
+                    <Select
+                      value={runStatusFilter}
+                      onChange={(e) => setRunStatusFilter(e.target.value)}
+                      className="h-10 sm:w-44"
+                      aria-label="Filter runs by status"
+                    >
+                      <option value="all">All statuses</option>
+                      {runStatuses.map((s) => (
+                        <option key={s} value={s}>
+                          {STATUS_META[s as keyof typeof STATUS_META]?.label ?? s}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+                )}
+                {mergedRuns.length > 0 && filteredRuns.length === 0 && (
+                  <div className="rounded-xl border border-dashed border-edge p-8 text-center text-xs text-muted">
+                    No runs match your filters.
+                  </div>
+                )}
+                {filteredRuns.slice(0, 40).map((r) => {
                   const meta = STATUS_META[r.status];
                   return (
                     <button
@@ -463,9 +526,10 @@ function AppShell({ appAuthEnabled, onLogout }: { appAuthEnabled: boolean; onLog
       {showForm && (
         <TaskForm
           task={editingTask}
+          initial={formInitial}
           providers={providers}
           onSave={handleSave}
-          onClose={() => setShowForm(false)}
+          onClose={() => { setShowForm(false); setFormInitial(null); }}
         />
       )}
 

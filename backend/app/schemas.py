@@ -140,6 +140,19 @@ class SessionTemplateOut(BaseModel):
     description: str
 
 
+class TaskTemplateOut(BaseModel):
+    """A starter task preset the UI offers on a fresh install.
+
+    `input` is a TaskCreate-shaped payload (seeded enabled=False) the form pre-fills;
+    nothing is persisted until the user reviews and saves it.
+    """
+
+    id: str
+    label: str
+    description: str
+    input: TaskCreate
+
+
 class SessionUpdate(BaseModel):
     # rename a session (other fields like provider are switched via turns)
     title: str | None = None

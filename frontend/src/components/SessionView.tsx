@@ -416,6 +416,7 @@ export default function SessionView({
   const [copied, setCopied] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploaded, setUploaded] = useState<string[]>([]); // paths dropped this session, for chips
+  const [sessionQuery, setSessionQuery] = useState(""); // filter the session list
   const [templates, setTemplates] = useState<SessionTemplate[]>([]); // task-type starters
   const [activeTemplate, setActiveTemplate] = useState<string | null>(null); // template used to create the current session
   // Mobile only: the 3-pane grid can't fit a phone, so a selected session is a
@@ -1018,7 +1019,34 @@ export default function SessionView({
             No sessions yet.
           </div>
         )}
-        {sessions.map((s) => {
+        {sessions.length > 0 && (
+          <div className="relative">
+            <Search size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted" />
+            <Input
+              value={sessionQuery}
+              onChange={(e) => setSessionQuery(e.target.value)}
+              placeholder="Search sessions…"
+              className="!h-9 pl-8 text-xs"
+              aria-label="Search sessions"
+            />
+          </div>
+        )}
+        {(() => {
+          const q = sessionQuery.trim().toLowerCase();
+          const visible = q
+            ? sessions.filter(
+              (s) =>
+                s.title.toLowerCase().includes(q) || (s.provider ?? "").toLowerCase().includes(q),
+            )
+            : sessions;
+          if (sessions.length > 0 && visible.length === 0) {
+            return (
+              <div className="rounded-lg border border-dashed border-edge p-3 text-center text-xs text-muted">
+                No sessions match.
+              </div>
+            );
+          }
+          return visible.map((s) => {
           const active = s.id === selectedId;
           return (
             <button
@@ -1033,7 +1061,8 @@ export default function SessionView({
               </span>
             </button>
           );
-        })}
+          });
+        })()}
       </div>
 
       {/* ── Mobile detail toolbar: back to the list + Chat/Preview switch.

@@ -9,10 +9,13 @@ on:
     branches: [main]
   pull_request:
 
-# A newer push to the same ref cancels the in-flight run.
+# A newer push to the same PR cancels its in-flight run (saves CI on rapid pushes).
+# Pushes to main are NOT cancelled — every merge runs to completion so the default
+# branch always has a real pass/fail (and the README CI badge stays reliable, not
+# left showing a "cancelled" run when merges land close together).
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   backend:

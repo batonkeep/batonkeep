@@ -117,6 +117,7 @@ export const api = {
     req<Session>("/sessions", { method: "POST", body: JSON.stringify(body) }),
   updateSession: (id: string, body: SessionUpdate) =>
     req<Session>(`/sessions/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteSession: (id: string) => req<void>(`/sessions/${id}`, { method: "DELETE" }),
   listTurns: (id: string) => req<SessionTurn[]>(`/sessions/${id}/turns`),
   createTurn: (id: string, body: TurnInput) =>
     req<SessionTurn>(`/sessions/${id}/turns`, { method: "POST", body: JSON.stringify(body) }),

@@ -40,6 +40,12 @@ docker compose exec -u sandbox -e HOME=/home/agent backend bash /app/scripts/aut
 
 The dashboard is at `http://<host>:8080`.
 
+Once signed in, you can also re-auth a plan from the frontend — **Settings → AI Plans**
+surfaces each provider's health, headroom, and a re-auth action that runs the same login
+flow in-browser. This requires the scoped in-UI console (`ENABLE_WEB_CONSOLE=true`); it is
+off by default and never available in `managed` mode. The `docker compose exec` form above
+always works regardless.
+
 ## Putting it behind a public domain
 
 The frontend is the only exposed port and the app is single-origin, so any TLS-terminating

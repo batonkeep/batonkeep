@@ -1,7 +1,7 @@
 # Batonkeep
 
 **Your plans, your keys, your machine.**
-**Switch agents mid-task. Keep the work.**
+**Switch agents mid-task, keep the work.**
 
 Batonkeep is the device-independent control plane for your own subscription-backed AI
 agents. Schedule tasks, run interactive build sessions, switch providers mid-task when
@@ -39,6 +39,9 @@ Then log in to your subscription-plan CLIs (one time; auth persists on a volume)
 ```bash
 docker compose exec -u sandbox -e HOME=/home/agent backend bash /app/scripts/auth.sh
 ```
+
+Or, once you're signed in, re-auth a plan from the app — **Settings → AI Plans** runs the
+same login flow in-browser when the scoped console is enabled (`ENABLE_WEB_CONSOLE=true`).
 
 A single port (the frontend) is exposed; it reverse-proxies the API and WebSocket to the
 backend over the internal network. To put it behind a public domain with TLS, point your

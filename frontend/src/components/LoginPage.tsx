@@ -49,7 +49,7 @@ export default function LoginPage({ onAuthed }: { onAuthed: () => void }) {
           <p className="mt-1.5 max-w-xs text-sm text-muted">
             Your plans, your keys, your machine.
             <br />
-            Switch agents mid-task. Keep the work.
+            Switch agents mid-task, keep the work.
           </p>
         </div>
       </div>

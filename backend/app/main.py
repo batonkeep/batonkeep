@@ -203,6 +203,10 @@ _AUTH_PUBLIC_PREFIXES = ("/api/auth/", "/api/share/")
 
 
 def _http_path_is_public(path: str) -> bool:
+    # Container liveness probe (docker healthcheck) — content-free, no data; must
+    # answer 200 even with app-auth on, or the stack never reports healthy.
+    if path == "/health":
+        return True
     if path.startswith(_AUTH_PUBLIC_PREFIXES):
         return True
     # /api/sessions/{id}/preview/{token}[/...] — own token, loaded in an iframe.

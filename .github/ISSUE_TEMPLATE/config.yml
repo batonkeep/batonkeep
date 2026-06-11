@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions & ideas (Discussions)
+    url: https://github.com/batonkeep/batonkeep/discussions
+    about: Ask a question, share what you built, or float an idea before filing an issue.
+  - name: Report a security vulnerability
+    url: https://github.com/batonkeep/batonkeep/security/advisories/new
+    about: Do NOT open a public issue for security problems — report privately. See SECURITY.md.

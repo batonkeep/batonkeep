@@ -1,12 +1,29 @@
+# ── Batonkeep — install / production compose ──────────────────────────────────
+# Pulls prebuilt images from GHCR (no build context required). This is the file a
+# self-hoster downloads; the three-line install is:
+#
+#   curl -fsSLO https://raw.githubusercontent.com/batonkeep/batonkeep/main/docker-compose.yml
+#   curl -fsSL  https://raw.githubusercontent.com/batonkeep/batonkeep/main/.env.example -o .env  # then edit
+#   docker compose up -d
+#
+# Then log in to your plan CLIs:  docker compose exec -u sandbox -e HOME=/home/agent backend bash /app/scripts/auth.sh
+#
+# Single exposed surface: the frontend nginx (serves the SPA and reverse-proxies
+# /api + /ws to the backend over the internal network). The backend is NOT
+# published to the host. Put TLS / a public domain in front of the one web port
+# with your own reverse proxy or a cloudflared tunnel — see docs/self-hosting.md.
+#
+# WEB_BIND  — host interface for the web port. Default 0.0.0.0 (LAN/VPS reachable).
+#             Set WEB_BIND=127.0.0.1 to expose only to a local tunnel (cloudflared).
+# WEB_PORT  — host port for the web UI (default 8080).
+# TAG       — image tag to run (default latest; pin to e.g. v0.1.0 in production).
+#
+# Contributors building from source: docker-compose.override.yml (auto-merged
+# from a repo clone) adds local `build:` so `make up` builds instead of pulls.
+
 services:
   backend:
-    build:
-      context: backend
-      dockerfile: Dockerfile
-      args:
-        REGISTRY_PREFIX: ${REGISTRY_PREFIX:-}
-        TAG: ${TAG:-latest}
-    image: batonkeep-backend
+    image: ghcr.io/batonkeep/batonkeep-backend:${TAG:-latest}
     env_file: .env
     # Note: HOME is intentionally NOT set here. A container-wide HOME would leak
     # into `docker exec -u sandbox` and agent subprocesses, masking sandbox's real
@@ -17,42 +34,43 @@ services:
       # sandbox's home — persists plan-CLI OAuth; mount path unchanged so existing
       # auth on the agent_home volume keeps working after the user split.
       - agent_home:/home/agent
-    ports:
-      - "8000:8000"
+    # No host port: the backend is reachable only on the internal compose network.
+    expose:
+      - "8000"
     restart: unless-stopped
+    mem_limit: 768m
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
 
   frontend:
-    build:
-      context: frontend
-      dockerfile: Dockerfile
-    image: batonkeep-frontend
+    image: ghcr.io/batonkeep/batonkeep-frontend:${TAG:-latest}
     ports:
-      - "8080:80"
+      # The one exposed surface. Bind to 127.0.0.1 (WEB_BIND) for tunnel-only hosts.
+      - "${WEB_BIND:-0.0.0.0}:${WEB_PORT:-8080}:80"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
   # Optional self-hosted open-weight inference — activate with: make selfhost
-  # or: docker compose --profile selfhost up
+  # or: docker compose --profile selfhost up -d
   inference:
     profiles: [selfhost]
     image: ollama/ollama:latest
-    ports:
-      - "11434:11434"
+    expose:
+      - "11434"
     volumes:
       - ollama_data:/root/.ollama
     restart: unless-stopped
-
-  # ── Build-only: base image for the registry ──────────────────────────────────
-  # Contains OS packages, Node 20, CLI agents, uv, and the frozen Python venv.
-  # Never run directly; used by `make push` / push_to_registry.sh.
-  #   docker compose --profile build-base build backend-base
-  backend-base:
-    profiles: [build-base]
-    build:
-      context: backend
-      dockerfile: Dockerfile.base
-    image: batonkeep-backend-base
 
 volumes:
   appdata:

@@ -47,7 +47,9 @@ export default function LoginPage({ onAuthed }: { onAuthed: () => void }) {
             baton<span className="text-muted">keep</span>
           </h1>
           <p className="mt-1.5 max-w-xs text-sm text-muted">
-            Your plans, your keys, your machine — coordinated.
+            Your plans, your keys, your machine.
+            <br />
+            Switch agents mid-task. Keep the work.
           </p>
         </div>
       </div>

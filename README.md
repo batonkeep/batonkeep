@@ -1,5 +1,9 @@
 # batonkeep
 
+[![CI](https://github.com/batonkeep/batonkeep/actions/workflows/ci.yml/badge.svg)](https://github.com/batonkeep/batonkeep/actions/workflows/ci.yml)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
+[![Discussions](https://img.shields.io/github/discussions/batonkeep/batonkeep)](https://github.com/batonkeep/batonkeep/discussions)
+
 **Your plans, your keys, your machine.**
 **Switch agents mid-task, keep the work.**
 

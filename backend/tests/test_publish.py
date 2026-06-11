@@ -39,6 +39,21 @@ class TestPublishBundle:
         assert "SESSION.md" not in files
         assert not any(f.startswith(".git") for f in files)
 
+    def test_publishable_files_excludes_symlinks_escaping_workspace(self, tmp_path):
+        # A sandbox agent could plant a symlink pointing at a control-plane file
+        # (e.g. /data/batonkeep.db). The backend user can read it, so it must never
+        # be followed into a publicly-served bundle.
+        from app.sessions import publish as pub
+        ws_dir = self._make_workspace(tmp_path)
+        secret = tmp_path / "outside_secret.txt"
+        secret.write_text("encrypted-keys-and-run-history")
+        os.symlink(str(secret), os.path.join(ws_dir, "leak.txt"))
+
+        files = pub._publishable_files(ws_dir)
+        assert "leak.txt" not in files
+        # Real assets still publish.
+        assert "index.html" in files
+
     def test_build_bundle_materializes_assets(self, tmp_path, monkeypatch):
         from app.sessions import publish as pub
         monkeypatch.setitem(pub._settings.__dict__, "publish_dir", str(tmp_path / "pub"))

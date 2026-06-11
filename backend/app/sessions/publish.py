@@ -64,6 +64,15 @@ def _publishable_files(workspace: str) -> list[str]:
             if rel_dir == "." and name in _EXCLUDED_TOP:
                 continue
             full = os.path.join(dirpath, name)
+            # Never follow symlinks out of the workspace. build_bundle/zip_workspace
+            # run as the backend user (batond), which can read control-plane files
+            # the sandbox agent cannot (/data incl. the DB, /app). A symlink planted
+            # in the workspace would otherwise be followed and its target copied into
+            # a publicly-served share bundle — a sandbox→control-plane leak. The
+            # import side skips symlinks too; keep export symmetric. realpath guards
+            # against a symlinked parent dir as defence in depth.
+            if os.path.islink(full) or not os.path.realpath(full).startswith(root + os.sep):
+                continue
             out.append(os.path.relpath(full, root))
     return sorted(out)
 

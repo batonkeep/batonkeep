@@ -28,6 +28,7 @@ import type {
   Stats,
   Task,
   TaskInput,
+  TaskTemplate,
   TurnInput,
   Publish,
   SessionTemplate,
@@ -82,6 +83,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   // ── Tasks ──────────────────────────────────────────────────────────────
   listTasks: () => req<Task[]>("/tasks"),
+  listTaskTemplates: () => req<TaskTemplate[]>("/task-templates"),
   getTask: (id: number) => req<Task>(`/tasks/${id}`),
   createTask: (body: TaskInput) =>
     req<Task>("/tasks", { method: "POST", body: JSON.stringify(body) }),

@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LogOut, Moon, Plus, Sun } from "lucide-react";
 import { api } from "./api";
 import { useLiveFeed } from "./useLiveFeed";
-import type { Credential, Mode, ProviderHealth, Run, Session, Stats, Task, TaskInput, UsageSummary } from "./types";
+import type { Credential, Mode, ProviderHealth, Run, Session, Stats, Task, TaskInput, TaskTemplate, UsageSummary } from "./types";
 import Sidebar, { View } from "./components/Sidebar";
 import StatsBar from "./components/StatsBar";
 import TaskList from "./components/TaskList";
@@ -85,6 +85,9 @@ function AppShell({ appAuthEnabled, onLogout }: { appAuthEnabled: boolean; onLog
   const [consoleToken, setConsoleToken] = useState("");
 
   const [editingTask, setEditingTask] = useState<Task | null>(null);
+  // Preset to pre-fill a NEW task when started from a starter template.
+  const [formInitial, setFormInitial] = useState<TaskInput | null>(null);
+  const [taskTemplates, setTaskTemplates] = useState<TaskTemplate[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState<number | null>(null);
@@ -140,6 +143,7 @@ function AppShell({ appAuthEnabled, onLogout }: { appAuthEnabled: boolean; onLog
     loadSessions();
     api.getMode().then(setMode).catch(() => { });
     api.getConsoleConfig().then((c) => setConsoleAvailable(c.available)).catch(() => { });
+    api.listTaskTemplates().then(setTaskTemplates).catch(() => { });
   }, [loadTasks, loadRuns, loadProviders, loadStats, loadCreds, loadSessions]);
 
   // Poll the slowly-changing aggregates. Run state is driven live over the WS, but
@@ -309,6 +313,7 @@ function AppShell({ appAuthEnabled, onLogout }: { appAuthEnabled: boolean; onLog
                     className="flex w-full items-center gap-2.5 px-4 py-3 text-left text-sm hover:bg-brand/5"
                     onClick={() => {
                       setShowNewMenu(false);
+                      setFormInitial(null);
                       setEditingTask(null);
                       setShowForm(true);
                     }}
@@ -368,11 +373,13 @@ function AppShell({ appAuthEnabled, onLogout }: { appAuthEnabled: boolean; onLog
                 now={now}
                 busyTaskId={busyTaskId}
                 onRun={handleRun}
-                onEdit={(t) => { setEditingTask(t); setShowForm(true); }}
+                onEdit={(t) => { setFormInitial(null); setEditingTask(t); setShowForm(true); }}
                 onDelete={handleDelete}
                 onToggle={handleToggle}
                 onOpenRun={(id) => { setSelectedRunId(id); setTasksTab("live"); }}
-                onNewTask={() => { setEditingTask(null); setShowForm(true); }}
+                onNewTask={() => { setFormInitial(null); setEditingTask(null); setShowForm(true); }}
+                templates={taskTemplates}
+                onUseTemplate={(input) => { setEditingTask(null); setFormInitial(input); setShowForm(true); }}
               />
             )}
 
@@ -463,9 +470,10 @@ function AppShell({ appAuthEnabled, onLogout }: { appAuthEnabled: boolean; onLog
       {showForm && (
         <TaskForm
           task={editingTask}
+          initial={formInitial}
           providers={providers}
           onSave={handleSave}
-          onClose={() => setShowForm(false)}
+          onClose={() => { setShowForm(false); setFormInitial(null); }}
         />
       )}
 

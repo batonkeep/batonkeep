@@ -3,10 +3,11 @@
 //     badges on a dedicated teal-tinted row; enable toggle in card footer.
 // (6) Empty state: icon + friendly copy + inline New task CTA.
 // D-track: composed from ui/ primitives (Button, Badge, Card, StatusDot).
-import { CalendarClock, ChevronRight, Pencil, Play, Plus, Trash2 } from "lucide-react";
-import type { Run, Task } from "../types";
+import { useMemo, useState } from "react";
+import { CalendarClock, ChevronRight, Pencil, Play, Plus, Search, Sparkles, Trash2 } from "lucide-react";
+import type { Run, Task, TaskInput, TaskTemplate } from "../types";
 import { STATUS_META, countdown, humanizeSchedule } from "../format";
-import { Badge, Button, Card, StatusDot } from "../ui";
+import { Badge, Button, Card, Input, Select, StatusDot } from "../ui";
 
 interface Props {
   tasks: Task[];
@@ -19,6 +20,8 @@ interface Props {
   onToggle: (task: Task) => void;
   onOpenRun: (runId: number) => void;
   onNewTask?: () => void; // for the empty-state CTA
+  templates?: TaskTemplate[]; // starter presets offered when the list is empty
+  onUseTemplate?: (input: TaskInput) => void; // pre-fill the form from a preset
 }
 
 // Maps a run status to a left-border accent colour.
@@ -59,8 +62,39 @@ export default function TaskList({
   onToggle,
   onOpenRun,
   onNewTask,
+  templates = [],
+  onUseTemplate,
 }: Props) {
-  // ── Empty state (D-0027 item 6) ───────────────────────────────────────────
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<string>("all");
+
+  // Status options present in the current set, so the filter only offers real values.
+  const statuses = useMemo(() => {
+    const seen = new Set<string>();
+    for (const t of tasks) {
+      const s = latestRunByTask[t.id]?.status;
+      seen.add(s ?? "never");
+    }
+    return Array.from(seen);
+  }, [tasks, latestRunByTask]);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return tasks.filter((t) => {
+      if (statusFilter !== "all") {
+        const s = latestRunByTask[t.id]?.status ?? "never";
+        if (s !== statusFilter) return false;
+      }
+      if (!q) return true;
+      return (
+        t.name.toLowerCase().includes(q) ||
+        (t.description ?? "").toLowerCase().includes(q) ||
+        (t.category ?? "").toLowerCase().includes(q)
+      );
+    });
+  }, [tasks, latestRunByTask, query, statusFilter]);
+
+  // ── Empty state (D-0027 item 6) — with one-click starter templates ────────
   if (tasks.length === 0) {
     return (
       <div className="rounded-xl border border-dashed border-edge p-10 text-center">
@@ -72,13 +106,69 @@ export default function TaskList({
             New task
           </Button>
         )}
+        {templates.length > 0 && onUseTemplate && (
+          <div className="mx-auto mt-7 max-w-md border-t border-edge pt-6 text-left">
+            <p className="mb-3 flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-muted">
+              <Sparkles size={12} /> Start from a template
+            </p>
+            <div className="flex flex-col gap-2">
+              {templates.map((tpl) => (
+                <button
+                  key={tpl.id}
+                  onClick={() => onUseTemplate(tpl.input)}
+                  className="rounded-lg border border-edge bg-panel/60 px-4 py-3 text-left transition-colors hover:border-brand/50 hover:bg-brand/5"
+                >
+                  <span className="block font-mono text-sm font-semibold text-ink">{tpl.label}</span>
+                  <span className="mt-0.5 block text-xs text-muted">{tpl.description}</span>
+                </button>
+              ))}
+            </div>
+            <p className="mt-3 text-[11px] text-muted">
+              Templates open the task form pre-filled and disabled — review the schedule and
+              provider, then enable.
+            </p>
+          </div>
+        )}
       </div>
     );
   }
 
   return (
-    <div className="stagger grid grid-cols-1 gap-3 lg:grid-cols-2">
-      {tasks.map((task) => {
+    <div className="flex flex-col gap-3">
+      {/* ── Filter toolbar — search + last-run status ── */}
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <div className="relative flex-1">
+          <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search tasks…"
+            className="pl-9"
+            aria-label="Search tasks"
+          />
+        </div>
+        <Select
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value)}
+          className="h-10 sm:w-44"
+          aria-label="Filter by last-run status"
+        >
+          <option value="all">All statuses</option>
+          {statuses.map((s) => (
+            <option key={s} value={s}>
+              {s === "never" ? "Never run" : STATUS_META[s as keyof typeof STATUS_META]?.label ?? s}
+            </option>
+          ))}
+        </Select>
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-edge p-8 text-center text-xs text-muted">
+          No tasks match your filters.
+        </div>
+      ) : (
+        <div className="stagger grid grid-cols-1 gap-3 lg:grid-cols-2">
+          {filtered.map((task) => {
         const run = latestRunByTask[task.id];
         const meta = run ? STATUS_META[run.status] : null;
         const candidates = task.routing?.candidates || [];
@@ -194,8 +284,10 @@ export default function TaskList({
               </div>
             </div>
           </Card>
-        );
-      })}
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

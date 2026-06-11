@@ -64,6 +64,50 @@ class TestTemplateSeedsBrief:
             ws._settings.__dict__.pop("sessions_dir", None)
 
 
+class TestTaskTemplateRegistry:
+    """Starter task presets offered on a fresh install (seeded disabled)."""
+
+    def test_ships_brief_and_flight_watch(self):
+        from app.tasks import templates as ttmpl
+
+        ids = {t.id for t in ttmpl.list_templates()}
+        assert {"ai-ecosystem-brief", "flight-watch"} <= ids
+
+    def test_get_unknown_is_none(self):
+        from app.tasks import templates as ttmpl
+
+        assert ttmpl.get_template("nope") is None
+        assert ttmpl.get_template("flight-watch") is not None
+
+    def test_presets_validate_and_seed_disabled(self):
+        # Each preset must be a valid TaskCreate, and must seed enabled=False so a
+        # fresh install never auto-fires a scheduled task before the user reviews it.
+        from app.schemas import TaskCreate
+        from app.tasks import templates as ttmpl
+
+        for t in ttmpl.list_templates():
+            tc = TaskCreate(**t.input)
+            assert tc.enabled is False
+            assert tc.name and tc.prompt_template
+
+
+class TestTaskTemplateHTTP:
+    def test_list_task_templates(self):
+        from fastapi.testclient import TestClient
+        from app.main import app
+
+        c = TestClient(app)
+        r = c.get("/api/task-templates")
+        assert r.status_code == 200, r.text
+        templates = r.json()
+        ids = {t["id"] for t in templates}
+        assert {"ai-ecosystem-brief", "flight-watch"} <= ids
+        for t in templates:
+            assert {"id", "label", "description", "input"} <= t.keys()
+            # The pre-fill payload is seeded disabled.
+            assert t["input"]["enabled"] is False
+
+
 class TestTemplateHTTP:
     def test_list_and_create_with_template(self, tmp_path):
         import asyncio

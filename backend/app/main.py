@@ -75,6 +75,7 @@ from app.schemas import (
     SummaryOut,
     TaskCreate,
     TaskOut,
+    TaskTemplateOut,
     TaskUpdate,
     TurnCreate,
     UploadOut,
@@ -332,6 +333,20 @@ def _run_to_out(run: Run) -> RunOut:
 
 
 # ── /api/tasks ────────────────────────────────────────────────────────────────
+
+@app.get("/api/task-templates", response_model=list[TaskTemplateOut], tags=["tasks"])
+async def list_task_templates():
+    """Starter task presets offered on a fresh install (seeded disabled; the form
+    pre-fills them and nothing persists until the user saves)."""
+    from app.tasks import templates as tmpl
+
+    return [
+        TaskTemplateOut(
+            id=t.id, label=t.label, description=t.description, input=TaskCreate(**t.input)
+        )
+        for t in tmpl.list_templates()
+    ]
+
 
 @app.get("/api/tasks", response_model=list[TaskOut], tags=["tasks"])
 async def list_tasks(

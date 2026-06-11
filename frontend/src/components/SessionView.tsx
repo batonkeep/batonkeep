@@ -7,7 +7,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { marked } from "marked";
 import hljs from "highlight.js/lib/common";
 import "highlight.js/styles/github-dark.css";
-import { Activity, Archive, Check, ChevronDown, ChevronLeft, ChevronRight, Cloud, Copy, Download, FileCode, Folder, Globe, History, Link2, Loader2, Lock, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, Shield, SquareTerminal, X } from "lucide-react";
+import { Activity, Archive, Check, ChevronDown, ChevronLeft, ChevronRight, Cloud, Copy, Download, FileCode, Folder, Globe, History, Link2, Loader2, Lock, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, Shield, SquareTerminal, Trash2, X } from "lucide-react";
 import type { CloudflareStatus, FileChange, FileEntry, ProviderHealth, Publish, Session, SessionTemplate, SessionTurn, Version } from "../types";
 import { api } from "../api";
 import { useSessionEvents, type SessionEvent } from "../useLiveFeed";
@@ -608,6 +608,40 @@ export default function SessionView({
     }
   };
 
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Session | null>(null); // type-to-confirm modal
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
+
+  const performDelete = async (s: Session) => {
+    setDeletingId(s.id);
+    try {
+      await api.deleteSession(s.id);
+      if (selectedId === s.id) onSelect(null); // deselect if we just removed the open one
+      onSessionsChanged();
+      setDeleteTarget(null);
+      setDeleteConfirmText("");
+    } catch {
+      // leave the row in place; the list reload on next change will reconcile
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  const handleDelete = (s: Session) => {
+    // Sessions with content (turns) or a live publish get a stronger type-to-confirm
+    // guard; empty/Untitled sessions stay a single quick confirm (clearing clutter).
+    const hasContent = (s.turn_count ?? 0) > 0 || !!s.published;
+    if (hasContent) {
+      setDeleteConfirmText("");
+      setDeleteTarget(s);
+      return;
+    }
+    const label = s.title?.trim() || "this session";
+    if (window.confirm(`Delete "${label}"? This removes its workspace and cannot be undone.`)) {
+      performDelete(s);
+    }
+  };
+
   const handleToggleConfidential = async () => {
     if (!selectedId || !detail) return;
     const updated = await api.updateSession(selectedId, { confidential: !detail.confidential });
@@ -1049,17 +1083,30 @@ export default function SessionView({
           return visible.map((s) => {
           const active = s.id === selectedId;
           return (
-            <button
+            <div
               key={s.id}
-              onClick={() => onSelect(s.id)}
-              className={`block w-full rounded-lg border px-3 py-2 text-left transition-colors ${active ? "border-brand/50 bg-brand/10" : "border-edge bg-panel/60 hover:border-brand/30"
+              className={`group relative rounded-lg border transition-colors ${active ? "border-brand/50 bg-brand/10" : "border-edge bg-panel/60 hover:border-brand/30"
                 }`}
             >
-              <span className="block truncate font-mono text-sm text-ink">{s.title}</span>
-              <span className="font-mono text-[11px] text-muted">
-                {s.provider ?? "—"} · {fmtTime(s.updated_at)}
-              </span>
-            </button>
+              <button
+                onClick={() => onSelect(s.id)}
+                className="block w-full rounded-lg px-3 py-2 pr-9 text-left"
+              >
+                <span className="block truncate font-mono text-sm text-ink">{s.title}</span>
+                <span className="font-mono text-[11px] text-muted">
+                  {s.provider ?? "—"} · {fmtTime(s.updated_at)}
+                </span>
+              </button>
+              <button
+                onClick={() => handleDelete(s)}
+                disabled={deletingId === s.id}
+                title="Delete session"
+                aria-label={`Delete session ${s.title}`}
+                className="absolute right-1.5 top-1.5 rounded p-1.5 text-muted opacity-0 transition-opacity hover:bg-bad/10 hover:text-bad focus-visible:opacity-100 group-hover:opacity-100 disabled:opacity-50"
+              >
+                {deletingId === s.id ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+              </button>
+            </div>
           );
           });
         })()}
@@ -1925,6 +1972,56 @@ export default function SessionView({
           </Field>
           {cfError && <p className="text-xs text-bad">{cfError}</p>}
         </div>
+      </Modal>
+
+      {/* Type-to-confirm delete — for sessions with content or a live publish. */}
+      <Modal
+        open={deleteTarget !== null}
+        onClose={() => { setDeleteTarget(null); setDeleteConfirmText(""); }}
+        title="Delete session"
+        footer={deleteTarget && (
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" size="sm" onClick={() => { setDeleteTarget(null); setDeleteConfirmText(""); }}>
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              className="!bg-bad hover:!bg-bad/90"
+              disabled={deleteConfirmText.trim().toLowerCase() !== "delete" || deletingId === deleteTarget.id}
+              onClick={() => performDelete(deleteTarget)}
+              icon={deletingId === deleteTarget.id ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+            >
+              Delete session
+            </Button>
+          </div>
+        )}
+      >
+        {deleteTarget && (
+          <div className="space-y-3 text-sm">
+            <p className="text-ink">
+              This permanently removes <span className="font-mono font-semibold">{deleteTarget.title}</span> and
+              its workspace. This cannot be undone.
+            </p>
+            <ul className="space-y-1 text-xs text-muted">
+              {(deleteTarget.turn_count ?? 0) > 0 && (
+                <li>· {deleteTarget.turn_count} turn{deleteTarget.turn_count === 1 ? "" : "s"} of build history will be lost.</li>
+              )}
+              {deleteTarget.published && (
+                <li className="text-bad">· The live published site will be taken offline.</li>
+              )}
+            </ul>
+            <Field label={`Type "delete" to confirm`}>
+              <Input
+                value={deleteConfirmText}
+                onChange={(e) => setDeleteConfirmText(e.target.value)}
+                placeholder="delete"
+                aria-label="Type delete to confirm"
+                autoFocus
+              />
+            </Field>
+          </div>
+        )}
       </Modal>
     </div>
   );

@@ -646,7 +646,34 @@ async def list_sessions(
     result = await db.execute(
         select(Session).where(Session.owner_id == owner_id).order_by(Session.created_at.desc())
     )
-    return [SessionOut.model_validate(s) for s in result.scalars().all()]
+    sessions = result.scalars().all()
+    ids = [s.id for s in sessions]
+
+    # Content signals (used by the UI to scale delete confirmation): turn counts +
+    # which sessions have a live publish. Two grouped queries, not per-row.
+    turn_counts: dict[str, int] = {}
+    published: set[str] = set()
+    if ids:
+        rows = await db.execute(
+            select(SessionTurn.session_id, func.count())
+            .where(SessionTurn.session_id.in_(ids))
+            .group_by(SessionTurn.session_id)
+        )
+        turn_counts = {sid: n for sid, n in rows.all()}
+        pub_rows = await db.execute(
+            select(Artifact.session_id).where(
+                Artifact.session_id.in_(ids), Artifact.published.is_(True)
+            )
+        )
+        published = {sid for (sid,) in pub_rows.all()}
+
+    out: list[SessionOut] = []
+    for s in sessions:
+        item = SessionOut.model_validate(s)
+        item.turn_count = turn_counts.get(s.id, 0)
+        item.published = s.id in published
+        out.append(item)
+    return out
 
 
 @app.get("/api/sessions/{session_id}", response_model=SessionOut, tags=["sessions"])
@@ -682,6 +709,37 @@ async def update_session(
     await db.commit()
     await db.refresh(session)
     return SessionOut.model_validate(session)
+
+
+@app.delete("/api/sessions/{session_id}", status_code=204, tags=["sessions"])
+async def delete_session(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """Delete a session: removes any published bundle, the sandboxed workspace
+    directory, and the row (turns cascade). Unknown/foreign id → 404."""
+    import shutil
+
+    session = await db.get(Session, session_id)
+    if session is None or session.owner_id != owner_id:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # No cascade from Session → Artifact, so tear down any publish bundle + row first.
+    artifact = await _get_artifact(db, session_id)
+    if artifact is not None:
+        from app.sessions import publish as pub
+
+        pub.remove_bundle(artifact.share_token, artifact.path)
+        await db.delete(artifact)
+
+    # Remove the per-session workspace from disk (best-effort; DB is source of truth).
+    ws_path = session.workspace_path
+    if ws_path and os.path.isdir(ws_path):
+        shutil.rmtree(ws_path, ignore_errors=True)
+
+    await db.delete(session)
+    await db.commit()
 
 
 @app.get("/api/sessions/{session_id}/turns", response_model=list[SessionTurnOut], tags=["sessions"])

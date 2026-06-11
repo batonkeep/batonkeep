@@ -261,6 +261,9 @@ export interface Session {
   cf_project?: string | null;
   // P-0009 #1: pinned to a local model — prompt + workspace never leave the box.
   confidential: boolean;
+  // Content signals (from the list endpoint) used to scale delete confirmation.
+  turn_count?: number;
+  published?: boolean;
   created_at: string;
   updated_at: string;
 }

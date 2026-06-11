@@ -335,6 +335,10 @@ class SessionOut(BaseModel):
     status: str
     cf_project: str | None = None  # Cloudflare Pages project this session deploys to
     confidential: bool = False  # P-0009 #1: pinned to a local model
+    # Content signals for the UI (e.g. delete-confirmation strength). Populated by
+    # the list endpoint; default to empty/false elsewhere.
+    turn_count: int = 0
+    published: bool = False
     created_at: datetime
     updated_at: datetime
 

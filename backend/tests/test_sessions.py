@@ -278,6 +278,115 @@ class TestSessionRename:
             asyncio.get_event_loop().run_until_complete(engine.dispose())
 
 
+class TestSessionDelete:
+    """DELETE /api/sessions/{id} removes the row + its workspace dir; 404 otherwise."""
+
+    def test_delete_removes_row_and_workspace(self, tmp_path):
+        import asyncio
+        import os
+        from fastapi.testclient import TestClient
+        from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+        from app.db import Base, get_db
+        from app.models import Owner, Session as SessionModel
+        from app.main import app, _owner_id
+
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/d.db", echo=False)
+        ws_dir = tmp_path / "ws_s1"
+        ws_dir.mkdir()
+        (ws_dir / "index.html").write_text("<h1>hi</h1>")
+
+        async def _setup():
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+
+        asyncio.get_event_loop().run_until_complete(_setup())
+        Maker = async_sessionmaker(engine, expire_on_commit=False)
+
+        async def _seed():
+            async with Maker() as db:
+                db.add(Owner(id="local", label="Test"))
+                db.add(SessionModel(
+                    id="s1", owner_id="local", title="Untitled session", provider="mock",
+                    workspace_path=str(ws_dir), preview_token="tok", status="active",
+                ))
+                await db.commit()
+
+        asyncio.get_event_loop().run_until_complete(_seed())
+
+        async def _override_db():
+            async with Maker() as db:
+                yield db
+
+        app.dependency_overrides[get_db] = _override_db
+        app.dependency_overrides[_owner_id] = lambda: "local"
+        try:
+            c = TestClient(app)
+            assert c.delete("/api/sessions/s1").status_code == 204
+            # Row is gone and the workspace directory was torn down.
+            assert c.get("/api/sessions/s1").status_code == 404
+            assert not os.path.isdir(ws_dir)
+            # Idempotent on a second delete; unknown id is 404 too.
+            assert c.delete("/api/sessions/s1").status_code == 404
+            assert c.delete("/api/sessions/nope").status_code == 404
+        finally:
+            app.dependency_overrides.clear()
+            asyncio.get_event_loop().run_until_complete(engine.dispose())
+
+
+class TestSessionListContentSignals:
+    """GET /api/sessions surfaces turn_count + published so the UI can scale the
+    delete confirmation (empty → quick confirm; content/published → type-to-confirm)."""
+
+    def test_list_reports_turn_count_and_published(self, tmp_path):
+        import asyncio
+        from fastapi.testclient import TestClient
+        from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+        from app.db import Base, get_db
+        from app.models import Owner, Session as SessionModel, SessionTurn, Artifact
+        from app.main import app, _owner_id
+
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/c.db", echo=False)
+
+        async def _setup():
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+
+        asyncio.get_event_loop().run_until_complete(_setup())
+        Maker = async_sessionmaker(engine, expire_on_commit=False)
+
+        async def _seed():
+            async with Maker() as db:
+                db.add(Owner(id="local", label="Test"))
+                # empty session, session with 2 turns, and a published session.
+                for sid in ("empty", "withturns", "pub"):
+                    db.add(SessionModel(
+                        id=sid, owner_id="local", title=sid, provider="mock",
+                        workspace_path=str(tmp_path / sid), preview_token=sid, status="active",
+                    ))
+                db.add(SessionTurn(session_id="withturns", owner_id="local", seq=1, prompt="a"))
+                db.add(SessionTurn(session_id="withturns", owner_id="local", seq=2, prompt="b"))
+                db.add(Artifact(session_id="pub", owner_id="local", published=True, share_token="tok"))
+                await db.commit()
+
+        asyncio.get_event_loop().run_until_complete(_seed())
+
+        async def _override_db():
+            async with Maker() as db:
+                yield db
+
+        app.dependency_overrides[get_db] = _override_db
+        app.dependency_overrides[_owner_id] = lambda: "local"
+        try:
+            c = TestClient(app)
+            by_id = {s["id"]: s for s in c.get("/api/sessions").json()}
+            assert by_id["empty"]["turn_count"] == 0 and by_id["empty"]["published"] is False
+            assert by_id["withturns"]["turn_count"] == 2 and by_id["withturns"]["published"] is False
+            assert by_id["pub"]["published"] is True
+        finally:
+            app.dependency_overrides.clear()
+            asyncio.get_event_loop().run_until_complete(engine.dispose())
+
+
 # ── M1.3: artifacts + versioning ──────────────────────────────────────────────
 #
 # Verify gate (PLAN §M1.3): successive builds create per-turn commits; diff/

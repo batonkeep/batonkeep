@@ -1019,7 +1019,10 @@ async def session_preview(
     paths are confined to the session's own workspace.
     """
     from app.sessions.preview import (
-        PreviewError, check_token, resolve_preview_file, rewrite_html_root_paths,
+        PreviewError,
+        check_token,
+        resolve_preview_file,
+        rewrite_html_root_paths,
     )
 
     session = await db.get(Session, session_id)

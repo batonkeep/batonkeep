@@ -3,9 +3,13 @@
 [![CI](https://github.com/batonkeep/batonkeep/actions/workflows/ci.yml/badge.svg)](https://github.com/batonkeep/batonkeep/actions/workflows/ci.yml)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![Discussions](https://img.shields.io/github/discussions/batonkeep/batonkeep)](https://github.com/batonkeep/batonkeep/discussions)
+[![Website](https://img.shields.io/badge/website-batonkeep.com-ffaa00)](https://batonkeep.com)
+[![Docs](https://img.shields.io/badge/docs-batonkeep.com%2Fdocs-blue)](https://batonkeep.com/docs)
 
 **Your plans, your keys, your machine.**
 **Switch agents mid-task, keep the work.**
+
+[**Website**](https://batonkeep.com) · [**Documentation**](https://batonkeep.com/docs) · [**Self-hosting guide**](https://batonkeep.com/docs/self-hosting)
 
 batonkeep is the device-independent control plane for your own subscription-backed AI
 agents. Schedule tasks, run interactive build sessions, switch providers mid-task when

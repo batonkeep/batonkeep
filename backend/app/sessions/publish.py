@@ -84,17 +84,31 @@ def publish_token_dir(share_token: str) -> str:
     return os.path.abspath(os.path.join(_settings.publish_dir, share_token))
 
 
+def _site_root(workspace: str) -> str:
+    """
+    The directory to publish: the build-output dir when one exists (mirrors the
+    preview's site_root), else the workspace root. A bundled project's site lives
+    in dist/ — publishing the workspace root would ship the *source* (and exclude
+    dist via _EXCLUDED_DIRS), leaving the shared link blank while the preview works.
+    """
+    from app.sessions.preview import site_root
+
+    return site_root(workspace)
+
+
 def build_bundle(workspace: str, share_token: str) -> str:
     """
     Materialize the workspace's static assets into a fresh bundle dir named by the
     share token. Returns the bundle dir path. Replaces any existing bundle.
+    Publishes from the build-output dir when one exists (see _site_root).
     """
     dest = publish_token_dir(share_token)
     if os.path.isdir(dest):
         shutil.rmtree(dest, ignore_errors=True)
     os.makedirs(dest, exist_ok=True)
-    for rel in _publishable_files(workspace):
-        src = ws.safe_join(workspace, rel)
+    root = _site_root(workspace)
+    for rel in _publishable_files(root):
+        src = ws.safe_join(root, rel)
         dst = os.path.join(dest, rel)
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         shutil.copy2(src, dst)
@@ -114,9 +128,11 @@ def remove_bundle(share_token: str | None, path: str | None) -> None:
 
 
 def zip_workspace(workspace: str) -> bytes:
-    """Build an in-memory zip of the workspace's static assets (download pack #1)."""
+    """Build an in-memory zip of the static assets (download pack #1) — the
+    self-hostable site, so the build-output dir when one exists (see _site_root)."""
     buf = io.BytesIO()
+    root = _site_root(workspace)
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for rel in _publishable_files(workspace):
-            zf.write(ws.safe_join(workspace, rel), arcname=rel)
+        for rel in _publishable_files(root):
+            zf.write(ws.safe_join(root, rel), arcname=rel)
     return buf.getvalue()

@@ -69,6 +69,34 @@ class TestPublishBundle:
         pub.remove_bundle("tok123", dest)
         assert not os.path.exists(dest)
 
+    def test_build_bundle_publishes_built_site_from_dist(self, tmp_path, monkeypatch):
+        # A bundled project (Vite/CRA): the site is dist/, not the source tree.
+        # The bundle must serve dist's contents at its root — publishing the
+        # workspace root would ship source and exclude dist (D-0029), leaving the
+        # shared link blank while the preview (which prefers dist) works.
+        from app.sessions import publish as pub
+        monkeypatch.setitem(pub._settings.__dict__, "publish_dir", str(tmp_path / "pub"))
+        ws_dir = self._make_workspace(tmp_path)  # root index.html = source template
+        os.makedirs(os.path.join(ws_dir, "dist", "assets"))
+        with open(os.path.join(ws_dir, "dist", "index.html"), "w") as f:
+            f.write("<h1>built</h1>")
+        with open(os.path.join(ws_dir, "dist", "assets", "index-abc.js"), "w") as f:
+            f.write("console.log(1)")
+
+        dest = pub.build_bundle(ws_dir, "tok-dist")
+        with open(os.path.join(dest, "index.html")) as f:
+            assert "built" in f.read()
+        assert os.path.isfile(os.path.join(dest, "assets", "index-abc.js"))
+        # Source tree (workspace-root assets) is not in the bundle.
+        assert not os.path.exists(os.path.join(dest, "dist"))
+        assert not os.path.exists(os.path.join(dest, "assets", "logo.png"))
+
+        # The download pack ships the same built site.
+        data = pub.zip_workspace(ws_dir)
+        names = zipfile.ZipFile(io.BytesIO(data)).namelist()
+        assert "index.html" in names
+        assert "assets/index-abc.js" in names
+
     def test_publishable_files_excludes_package_dirs(self, tmp_path):
         # D-0029: package/build artifact dirs are pruned at any depth so they never
         # ride along in the download pack or share bundle.

@@ -401,7 +401,17 @@ export default function SessionView({
   const [confidentialDraft, setConfidentialDraft] = useState(false); // new-session local-only pin
   const [previewNonce, setPreviewNonce] = useState(0);
   const [rawOpen, setRawOpen] = useState(false);
-  const [activityOpen, setActivityOpen] = useState(false);
+  // Activity log defaults open: long agentic turns need continuous feedback, not
+  // a buried toggle. The toggle still works; the choice sticks for this browser.
+  const [activityOpen, setActivityOpen] = useState(
+    () => localStorage.getItem("bk.activityOpen") !== "0",
+  );
+  const toggleActivity = useCallback(() => {
+    setActivityOpen((o) => {
+      localStorage.setItem("bk.activityOpen", o ? "0" : "1");
+      return !o;
+    });
+  }, []);
   const [titleDraft, setTitleDraft] = useState<string | null>(null); // non-null = editing
   const [pendingMessage, setPendingMessage] = useState<string | null>(null); // optimistic turn
   const [sendError, setSendError] = useState<string | null>(null);
@@ -1254,7 +1264,7 @@ export default function SessionView({
                     size="sm"
                     className="gap-1.5 px-2"
                     icon={turnRunning ? <Loader2 size={13} className="animate-spin" /> : <Activity size={13} />}
-                    onClick={() => setActivityOpen((o) => !o)}
+                    onClick={toggleActivity}
                     title="Toggle activity log"
                   >
                     <span className="text-[11px]">{events.length > 0 ? events.length : "Log"}</span>

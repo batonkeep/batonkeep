@@ -86,8 +86,10 @@ def guess_preview_media_type(path: str) -> str:
     return _PREVIEW_MEDIA.get(ext) or guess_media_type(path)
 
 
-def _preview_root(workspace: str) -> str:
-    """The directory the preview serves from: a build-output dir if one exists."""
+def site_root(workspace: str) -> str:
+    """The directory the site lives in: a build-output dir if one exists, else the
+    workspace root. Shared by the preview AND publish (D-0009) so the shared link
+    serves the same built site the preview pane shows."""
     root = os.path.abspath(workspace)
     for name in _BUILD_DIRS:
         if os.path.isfile(os.path.join(root, name, "index.html")):
@@ -107,7 +109,7 @@ def resolve_preview_file(workspace: str, relpath: str) -> tuple[str, str]:
     Raises PreviewError(404) for escapes / missing files / empty directories.
     """
     relpath = (relpath or "").lstrip("/")
-    root = _preview_root(workspace)
+    root = site_root(workspace)
     try:
         target = ws.safe_join(root, relpath) if relpath else root
         if relpath and not os.path.exists(target) and root != os.path.abspath(workspace):

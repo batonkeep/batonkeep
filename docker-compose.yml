@@ -18,6 +18,9 @@
 # WEB_PORT  — host port for the web UI (default 8080).
 # TAG       — image tag to run (default latest; pin to e.g. v0.1.0 in production).
 #
+# Project name is pinned via COMPOSE_PROJECT_NAME in .env (default batonkeep) so
+# container + volume names are deterministic regardless of the install folder.
+#
 # Contributors building from source: docker-compose.override.yml (auto-merged
 # from a repo clone) adds local `build:` so `make up` builds instead of pulls.
 

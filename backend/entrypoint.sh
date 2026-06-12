@@ -24,6 +24,12 @@ run_migration() {
     [ -e "$f" ] && chown batond:batond "$f" && chmod 0640 "$f" || true
   done
   chown -R batond:batond /data/outputs 2>/dev/null || true
+  # Published share bundles (M1.4) are materialized + served by the backend only
+  # (never the sandbox), so this dir is batond-owned like /data/outputs. Create it
+  # here so a pre-existing root-owned dir (older image/volume) can't leave the
+  # backend unable to makedirs a token subdir (EACCES on POST …/publish).
+  mkdir -p /data/publish
+  chown -R batond:batond /data/publish 2>/dev/null || true
 
   # Shared lanes → agents group, setgid, group-writable (batond + sandbox co-write).
   for d in /data/sessions /work; do

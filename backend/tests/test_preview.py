@@ -15,7 +15,9 @@ from app.sessions.preview import (
     PreviewError,
     check_token,
     guess_media_type,
+    guess_preview_media_type,
     resolve_preview_file,
+    rewrite_html_root_paths,
 )
 
 
@@ -37,6 +39,35 @@ class TestGuessMediaType:
 
     def test_unknown_binary_is_octet_stream(self):
         assert guess_media_type("blob.bin") == "application/octet-stream"
+
+
+class TestGuessPreviewMediaType:
+    """Rendered preview keeps real CSS/JS types — text/plain stylesheets/scripts
+    are rejected by browsers, silently unstyling the previewed site."""
+
+    def test_css_and_js_keep_real_types(self):
+        assert guess_preview_media_type("style.css") == "text/css; charset=utf-8"
+        assert guess_preview_media_type("app.js") == "text/javascript; charset=utf-8"
+        assert guess_preview_media_type("mod.mjs") == "text/javascript; charset=utf-8"
+        assert guess_preview_media_type("data.json") == "application/json; charset=utf-8"
+
+    def test_other_text_still_plain(self):
+        assert guess_preview_media_type("notes.md") == "text/plain; charset=utf-8"
+        assert guess_preview_media_type("script.py") == "text/plain; charset=utf-8"
+
+
+class TestRewriteHtmlRootPaths:
+    BASE = "/api/sessions/s1/preview/tok"
+
+    def test_root_absolute_src_href_prefixed(self):
+        html = '<script src="/assets/index-abc.js"></script><link href="/style.css">'
+        out = rewrite_html_root_paths(html, self.BASE)
+        assert f'src="{self.BASE}/assets/index-abc.js"' in out
+        assert f'href="{self.BASE}/style.css"' in out
+
+    def test_relative_and_external_urls_untouched(self):
+        html = '<img src="logo.png"><a href="https://x.io"><script src="//cdn.x/y.js">'
+        assert rewrite_html_root_paths(html, self.BASE) == html
 
 
 class TestPreviewResolution:
@@ -75,6 +106,29 @@ class TestPreviewResolution:
         with pytest.raises(PreviewError) as ei:
             resolve_preview_file(root, "../secret.txt")
         assert ei.value.status == 404
+
+    def test_build_dir_preferred_over_root_source_index(self, tmp_path):
+        # A bundled project: root index.html is the source template (unrunnable
+        # in a browser); the built site in dist/ is what the preview must serve.
+        root = self._make_site(tmp_path)
+        os.makedirs(os.path.join(root, "dist", "assets"))
+        with open(os.path.join(root, "dist", "index.html"), "w") as f:
+            f.write("<h1>built</h1>")
+        with open(os.path.join(root, "dist", "assets", "index-abc.js"), "w") as f:
+            f.write("console.log(1)")
+
+        path, media = resolve_preview_file(root, "")
+        assert path.endswith(os.path.join("dist", "index.html"))
+        assert media == "text/html"
+        # Asset requests resolve under dist/ too.
+        path, media = resolve_preview_file(root, "assets/index-abc.js")
+        assert path.endswith(os.path.join("dist", "assets", "index-abc.js"))
+        assert media == "text/javascript; charset=utf-8"
+        # Explicit workspace paths still reachable (file links, root assets).
+        path, _ = resolve_preview_file(root, "dist/index.html")
+        assert path.endswith(os.path.join("dist", "index.html"))
+        path, _ = resolve_preview_file(root, "assets/logo.svg")
+        assert path.endswith(os.path.join("ws", "assets", "logo.svg"))
 
     def test_directory_without_index_404(self, tmp_path):
         root = str(tmp_path / "empty")

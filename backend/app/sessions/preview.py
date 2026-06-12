@@ -22,6 +22,23 @@ from app.sessions import workspace as ws
 # Files served when a directory (or the root) is requested, in order.
 _INDEX_FILES = ("index.html", "index.htm")
 
+# Build-output directories: when one of these holds an index.html at the workspace
+# root, the preview serves from it instead of the root. A bundled project's root
+# index.html is the *source* template (e.g. Vite's, pointing at /src/main.tsx,
+# which a browser can't run) — the built site lives in dist/ (or build/, etc.).
+# "public" is deliberately absent: it's a source-asset dir, not build output.
+_BUILD_DIRS = ("dist", "build", "out", "_site")
+
+# Extensions whose true MIME type the *preview* must keep: browsers refuse to
+# apply stylesheets and (especially module) scripts served as text/plain, which
+# silently strips all styling/behaviour from a previewed site.
+_PREVIEW_MEDIA = {
+    ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".mjs": "text/javascript; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+}
+
 # Extensions mimetypes either guesses wrong (or as a download-y type) but that we
 # want the browser/preview pane to treat as readable UTF-8 text (D-0028): code and
 # config files, plus markdown (mimetypes → text/markdown, which some browsers
@@ -59,15 +76,44 @@ class PreviewError(Exception):
         self.detail = detail
 
 
+def guess_preview_media_type(path: str) -> str:
+    """
+    MIME type for the *rendered* preview: stylesheets/scripts/JSON keep their real
+    type (text/plain CSS/JS is rejected by browsers — see _PREVIEW_MEDIA); the
+    rest follows guess_media_type.
+    """
+    ext = os.path.splitext(path)[1].lower()
+    return _PREVIEW_MEDIA.get(ext) or guess_media_type(path)
+
+
+def site_root(workspace: str) -> str:
+    """The directory the site lives in: a build-output dir if one exists, else the
+    workspace root. Shared by the preview AND publish (D-0009) so the shared link
+    serves the same built site the preview pane shows."""
+    root = os.path.abspath(workspace)
+    for name in _BUILD_DIRS:
+        if os.path.isfile(os.path.join(root, name, "index.html")):
+            return os.path.join(root, name)
+    return root
+
+
 def resolve_preview_file(workspace: str, relpath: str) -> tuple[str, str]:
     """
     Resolve a preview request to (absolute_file_path, media_type).
 
+    Paths resolve under the build-output dir when one exists (so a bundled
+    project previews its built site, not its source template), falling back to
+    the workspace root for anything not present there (explicit paths like
+    `dist/index.html`, root-level images, …).
+
     Raises PreviewError(404) for escapes / missing files / empty directories.
     """
     relpath = (relpath or "").lstrip("/")
+    root = site_root(workspace)
     try:
-        target = ws.safe_join(workspace, relpath) if relpath else os.path.abspath(workspace)
+        target = ws.safe_join(root, relpath) if relpath else root
+        if relpath and not os.path.exists(target) and root != os.path.abspath(workspace):
+            target = ws.safe_join(workspace, relpath)
     except ValueError:
         # Path traversal attempt — treat as not found (don't confirm the escape).
         raise PreviewError(404, "Not found")
@@ -84,7 +130,23 @@ def resolve_preview_file(workspace: str, relpath: str) -> tuple[str, str]:
     if not os.path.isfile(target):
         raise PreviewError(404, "Not found")
 
-    return target, guess_media_type(target)
+    return target, guess_preview_media_type(target)
+
+
+# src/href attributes with a root-absolute URL ("/assets/…") — but not
+# protocol-relative ("//cdn…") — in served preview HTML.
+_ROOT_URL_ATTR = re.compile(r"""(\s(?:src|href)=["'])/(?!/)""")
+
+
+def rewrite_html_root_paths(html: str, base: str) -> str:
+    """
+    Prefix root-absolute src/href URLs in preview HTML with the preview base.
+
+    Bundlers default to absolute asset URLs (`<script src="/assets/index-x.js">`),
+    which escape the token-carrying preview base and 404 — the page renders blank.
+    Relative URLs already resolve under the base and are left alone.
+    """
+    return _ROOT_URL_ATTR.sub(lambda m: m.group(1) + base.rstrip("/") + "/", html)
 
 
 def check_token(expected: str | None, provided: str | None) -> None:

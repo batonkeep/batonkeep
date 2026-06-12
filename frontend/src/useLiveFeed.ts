@@ -28,12 +28,16 @@ interface Snapshot {
 
 type RawListener = (msg: WsMessage) => void;
 
+// Per-session activity-log buffer cap (events kept per session in this tab).
+const SESSION_EVENT_CAP = 500;
+
 class LiveFeed {
   private started = false;
   private reconnectDelay = 1000;
   private rawListeners = new Set<RawListener>();
   private changeListeners = new Set<() => void>();
   private snapshot: Snapshot = { status: "connecting", runs: {}, sessionTurns: {} };
+  private sessionEventLog = new Map<string, SessionEvent[]>();
 
   start() {
     if (this.started) return;
@@ -88,8 +92,28 @@ class LiveFeed {
       };
       this.emitChange();
     }
+    // Buffer session events per session so the activity log survives switching
+    // away and back (events are stream-only — there's no REST backfill). Capped
+    // so a long-lived tab can't grow unbounded.
+    if (msg.type === "session.event" && msg.event.kind !== "token") {
+      const buf = this.sessionEventLog.get(msg.session_id) ?? [];
+      buf.push({
+        turn_seq: msg.turn_seq,
+        kind: msg.event.kind,
+        message: msg.event.message,
+        phase: msg.event.phase,
+        data: msg.event.data,
+      });
+      if (buf.length > SESSION_EVENT_CAP) buf.splice(0, buf.length - SESSION_EVENT_CAP);
+      this.sessionEventLog.set(msg.session_id, buf);
+    }
     // Fan out every frame to raw listeners (per-run / per-session event subscribers).
     this.rawListeners.forEach((l) => l(msg));
+  }
+
+  /** Buffered (non-token) events for a session, oldest first. */
+  sessionEvents(sessionId: string): SessionEvent[] {
+    return this.sessionEventLog.get(sessionId) ?? [];
   }
 
   private setStatus(status: WsStatus) {
@@ -187,7 +211,9 @@ export function useSessionEvents(sessionId: string | null) {
   const [lastTurn, setLastTurn] = useState<LiveTurn | null>(null);
 
   useEffect(() => {
-    setEvents([]);
+    // Rehydrate from the feed's per-session buffer so switching sessions and
+    // back doesn't lose the activity log (events are stream-only; no REST backfill).
+    setEvents(sessionId ? [...feed.sessionEvents(sessionId)] : []);
     setStreamingText("");
     setLastTurn(null);
     if (sessionId == null) return;
@@ -205,16 +231,8 @@ export function useSessionEvents(sessionId: string | null) {
         if (ev.text) setStreamingText((t) => t + ev.text);
         return;
       }
-      setEvents((prev) => [
-        ...prev,
-        {
-          turn_seq: msg.turn_seq,
-          kind: ev.kind,
-          message: ev.message,
-          phase: ev.phase,
-          data: ev.data,
-        },
-      ]);
+      // The feed buffered this frame before fan-out — mirror its log.
+      setEvents([...feed.sessionEvents(sessionId)]);
     });
     return () => {
       off();

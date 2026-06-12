@@ -148,8 +148,10 @@ docker run --rm -v batonkeep_agent_home:/home/agent -v "$PWD:/backup" alpine \
   tar czf /backup/agent_home-$(date +%F).tar.gz -C /home/agent .
 ```
 
-(Volume names are prefixed with the compose project — usually the install directory; check
-with `docker volume ls`.) Restore by extracting the archives back into fresh volumes before
+(The `batonkeep_` prefix comes from `COMPOSE_PROJECT_NAME` in `.env`, which the install ships
+set to `batonkeep` so these names are stable regardless of your install folder. If you changed
+it, adjust the volume names to match — confirm with `docker volume ls`.) Restore by extracting
+the archives back into fresh volumes before
 `docker compose up -d`. **Note:** `docker compose down -v` deletes these volumes — never use
 `-v` on a live install you care about.
 

@@ -1018,7 +1018,9 @@ async def session_preview(
     HTML rewriting. The workspace is never reachable without session auth, and
     paths are confined to the session's own workspace.
     """
-    from app.sessions.preview import PreviewError, check_token, resolve_preview_file
+    from app.sessions.preview import (
+        PreviewError, check_token, resolve_preview_file, rewrite_html_root_paths,
+    )
 
     session = await db.get(Session, session_id)
     if session is None or session.owner_id != owner_id:
@@ -1030,8 +1032,16 @@ async def session_preview(
     except PreviewError as exc:
         raise HTTPException(status_code=exc.status, detail=exc.detail)
 
+    headers = {"Cache-Control": "no-store"}
     # no-store: preview reflects the latest turn's edits, never a cached version.
-    return FileResponse(file_path, media_type=media, headers={"Cache-Control": "no-store"})
+    if media.startswith("text/html"):
+        # Bundler-built pages reference assets root-absolutely; pin them to the
+        # token-carrying preview base so they resolve.
+        with open(file_path, encoding="utf-8", errors="replace") as f:
+            html = f.read()
+        base = f"/api/sessions/{session_id}/preview/{token}"
+        return Response(rewrite_html_root_paths(html, base), media_type=media, headers=headers)
+    return FileResponse(file_path, media_type=media, headers=headers)
 
 
 # ── Session file browser (P-0016 b) ──────────────────────────────────────────
@@ -1320,7 +1330,7 @@ async def serve_share(
     auth — the unguessable token is the capability. Revoked/unknown tokens 404, and
     only the published bundle is reachable (the live workspace is never exposed here).
     """
-    from app.sessions.preview import PreviewError, resolve_preview_file
+    from app.sessions.preview import PreviewError, resolve_preview_file, rewrite_html_root_paths
 
     artifact = (await db.execute(
         select(Artifact).where(Artifact.share_token == token)
@@ -1332,6 +1342,10 @@ async def serve_share(
         file_path, media = resolve_preview_file(artifact.path, path)
     except PreviewError as exc:
         raise HTTPException(status_code=exc.status, detail=exc.detail)
+    if media.startswith("text/html"):
+        with open(file_path, encoding="utf-8", errors="replace") as f:
+            html = f.read()
+        return Response(rewrite_html_root_paths(html, f"/api/share/{token}"), media_type=media)
     return FileResponse(file_path, media_type=media)
 
 

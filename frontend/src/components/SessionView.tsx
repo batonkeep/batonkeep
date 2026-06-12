@@ -31,7 +31,9 @@ function highlightCode(content: string, path: string): { html: string; lang: str
   const lang = EXT_LANG[ext];
   try {
     if (lang && hljs.getLanguage(lang)) {
-      return { html: hljs.highlight(content, { language: lang }).value, lang };
+      // Label with the user-facing extension, not hljs's grammar name (HTML
+      // highlights via the "xml" grammar — tagging index.html "XML" reads wrong).
+      return { html: hljs.highlight(content, { language: lang }).value, lang: ext };
     }
     const auto = hljs.highlightAuto(content);
     return { html: auto.value, lang: auto.language || "text" };
@@ -1208,9 +1210,18 @@ export default function SessionView({
                 </>
               ) : (
                 <>
-                  <span className="flex-1 truncate font-mono text-sm text-ink">
-                    {detail?.title ?? "…"}
-                  </span>
+                  <button
+                    type="button"
+                    onClick={() => detail && setTitleDraft(detail.title ?? "")}
+                    disabled={!detail}
+                    title="Click to rename session"
+                    className="group flex min-w-0 flex-1 items-center gap-1.5 rounded px-1 py-0.5 text-left hover:bg-edge/40"
+                  >
+                    <span className="truncate font-mono text-sm text-ink">
+                      {detail?.title ?? "…"}
+                    </span>
+                    <Pencil size={12} className="shrink-0 text-muted opacity-0 transition-opacity group-hover:opacity-100" />
+                  </button>
                   {detail?.confidential && (
                     <span
                       className="flex items-center gap-1 rounded border border-brand/40 bg-brand/10 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-brand"
@@ -1227,15 +1238,6 @@ export default function SessionView({
                     onClick={handleToggleConfidential}
                     disabled={!detail}
                     title={detail?.confidential ? "Confidential: on — click to allow remote models" : "Make confidential — pin to a local model"}
-                  />
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="px-1.5"
-                    icon={<Pencil size={13} />}
-                    onClick={() => setTitleDraft(detail?.title ?? "")}
-                    disabled={!detail}
-                    title="Rename session"
                   />
                   <Button
                     variant={historyOpen ? "outline" : "ghost"}

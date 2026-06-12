@@ -159,3 +159,8 @@ the archives back into fresh volumes before
 
 `docker compose --profile selfhost up -d` adds an Ollama container on the internal network.
 Point a custom provider at `http://inference:11434/v1`.
+
+Note: open-weight and other API-key providers connect through the standard API path, which
+has **more limited agentic support** than plan-backed providers running each vendor's own
+agent CLI (native tool use, multimodal). Use them for sovereignty/offline work and expect the
+plan-CLI lane to be the more capable one.

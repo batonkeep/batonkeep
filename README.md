@@ -27,6 +27,13 @@ rate-limited, and publish work to shareable URLs — all on a backend you contro
   backend. No third-party service holds your tokens.
 - **Device-independent PWA** — the frontend is installable; the phone is a first-class client.
 
+> **Two provider lanes — different capability.** Plan-backed providers run through each
+> vendor's own agent CLI, so they get the full agentic experience: native tool use,
+> multimodal input, and the richest behavior. API-key providers — including self-hosted or
+> open-weight models behind an OpenAI-compatible endpoint — connect through a standard API
+> path with **more limited agentic support**. You can mix both; expect the CLI/plan lane to
+> be the more capable one.
+
 ## Stack
 
 Python 3.12 · FastAPI · SQLAlchemy 2 async + aiosqlite · APScheduler ·
@@ -38,7 +45,18 @@ No build required — pull the prebuilt images from GHCR:
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/batonkeep/batonkeep/main/docker-compose.yml
-curl -fsSL  https://raw.githubusercontent.com/batonkeep/batonkeep/main/.env.example -o .env   # then edit
+curl -fsSL  https://raw.githubusercontent.com/batonkeep/batonkeep/main/.env.example -o .env
+```
+
+Before starting, set two values in `.env`:
+
+- **`APP_SECRET`** (required) — encrypts your stored credentials at rest. Generate one with
+  `python -c "import secrets; print(secrets.token_hex(32))"`.
+- **`APP_PASSWORD`** (strongly recommended) — gates the whole app behind a login, protecting
+  your data and UI. **If it's empty there is no auth gate — anyone who can reach the web port
+  has full access.** Always set it on a public host or VPS.
+
+```bash
 docker compose up -d                                  # dashboard at http://localhost:8080
 ```
 

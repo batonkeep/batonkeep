@@ -11,6 +11,10 @@
 
 [**Website**](https://batonkeep.com) · [**Documentation**](https://batonkeep.com/docs) · [**Self-hosting guide**](https://batonkeep.com/docs/self-hosting)
 
+<p align="center">
+  <img src=".github/assets/hero.jpg" alt="batonkeep on mobile — task dashboard, build session, published site preview, and analytics" width="900">
+</p>
+
 batonkeep is the device-independent control plane for your own subscription-backed AI
 agents. Schedule tasks, run interactive build sessions, switch providers mid-task when
 rate-limited, and publish work to shareable URLs — all on a backend you control.

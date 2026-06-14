@@ -4,11 +4,12 @@
 #
 #   curl -fsSLO https://raw.githubusercontent.com/batonkeep/batonkeep/main/docker-compose.yml
 #   curl -fsSL  https://raw.githubusercontent.com/batonkeep/batonkeep/main/.env.example -o .env  # then edit
-#   mkdir -p searxng && curl -fsSL https://raw.githubusercontent.com/batonkeep/batonkeep/main/searxng/settings.yml -o searxng/settings.yml
+#   curl -fsSLO https://raw.githubusercontent.com/batonkeep/batonkeep/main/searxng-settings.yml
 #   docker compose up -d
 #
-# The searxng/settings.yml fetch enables the SearXNG web-search backend. Skip it and
-# web_search transparently falls back to the DuckDuckGo scrape (lower recall).
+# The searxng-settings.yml file (downloaded next to this one) enables the SearXNG
+# web-search backend. Skip it and web_search transparently falls back to the
+# DuckDuckGo scrape (lower recall).
 #
 # Then log in to your plan CLIs:  docker compose exec -u sandbox -e HOME=/home/agent backend bash /app/scripts/auth.sh
 #
@@ -75,16 +76,16 @@ services:
 
   # Self-hosted, key-free metasearch backing the `web_search` tool (P-0046 slice 5).
   # Internal-only (not published); the backend reaches it at http://searxng:8080.
-  # Mounts ./searxng/settings.yml, which enables the JSON API web_search needs (the
-  # upstream default disables it). Source/clone installs have it; a curl-only install
-  # should also fetch it (see the header) — if the dir is empty SearXNG boots with
-  # JSON off and web_search transparently falls back to the DuckDuckGo scrape.
+  # Mounts the single ./searxng-settings.yml (alongside this file — no dir to create),
+  # which enables the JSON API web_search needs (the upstream default disables it). A
+  # curl-only install fetches it next to docker-compose.yml (see the header); if it's
+  # absent web_search transparently falls back to the DuckDuckGo scrape.
   searxng:
     image: searxng/searxng:latest
     expose:
       - "8080"
     volumes:
-      - ./searxng:/etc/searxng:rw
+      - ./searxng-settings.yml:/etc/searxng/settings.yml:rw
     restart: unless-stopped
     mem_limit: 256m
 

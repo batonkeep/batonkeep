@@ -390,6 +390,9 @@ class ProviderHealth(BaseModel):
     kind: str
     tier: str
     healthy: bool
+    # Operator suspend toggle (default True). Disabled providers stay listed but are
+    # skipped in routing and reported unhealthy — suspend without deleting auth.
+    enabled: bool = True
     cooldown_until: datetime | None
     last_reset_seen: datetime | None
     est_used_pct: float | None
@@ -400,6 +403,12 @@ class ProviderHealth(BaseModel):
     cost_in_per_mtok: float = 0.0
     cost_out_per_mtok: float = 0.0
     pricing_source: str = "template"  # "override" | "registry" | "template"
+
+
+class ProviderEnabledUpdate(BaseModel):
+    """Operator suspend/reactivate toggle for a provider instance."""
+
+    enabled: bool
 
 
 class ProviderLimitsUpdate(BaseModel):

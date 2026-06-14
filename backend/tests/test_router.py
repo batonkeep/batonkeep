@@ -11,9 +11,10 @@ Verifies:
 """
 from __future__ import annotations
 
-import pytest
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
+
+import pytest
 
 from app.quota import QuotaTracker
 from app.router import CandidatePlan, DeferredResult, resolve
@@ -63,7 +64,7 @@ class TestCapabilityStrategy:
     def test_cooling_provider_skipped(self):
         """If mock is cooling down, it should be skipped."""
         q = fresh_quota()
-        q.mark_cooldown("mock", datetime.now(timezone.utc) + timedelta(minutes=5))
+        q.mark_cooldown("mock", datetime.now(UTC) + timedelta(minutes=5))
         result = resolve(_routing(candidates=["mock"]), q)
         # Only candidate is cooling → deferred
         assert isinstance(result, DeferredResult)
@@ -71,7 +72,7 @@ class TestCapabilityStrategy:
     def test_second_candidate_used_when_first_cooling(self):
         """mock cooling → should fall through to open-default if registered."""
         q = fresh_quota()
-        q.mark_cooldown("mock", datetime.now(timezone.utc) + timedelta(minutes=5))
+        q.mark_cooldown("mock", datetime.now(UTC) + timedelta(minutes=5))
         # open-default is in registry but requires OPENAI_API_KEY
         # For routing purposes it should still appear in the candidate list
         result = resolve(_routing(candidates=["mock", "open-default"], tags=[]), q)
@@ -105,21 +106,50 @@ class TestCapabilityStrategy:
         assert isinstance(result, CandidatePlan)
         assert "mock" in result.candidates
 
+    def test_operator_disabled_provider_excluded(self):
+        """A provider the operator suspended is skipped in routing (and a re-enable
+        restores it) — without touching its auth/config."""
+        from app.providers import registry
+
+        q = fresh_quota()
+        try:
+            registry.set_provider_enabled("mock", False)
+            result = resolve(_routing(candidates=["mock"]), q)
+            assert isinstance(result, DeferredResult)  # no available providers
+            registry.set_provider_enabled("mock", True)
+            result = resolve(_routing(candidates=["mock"]), q)
+            assert isinstance(result, CandidatePlan)
+            assert "mock" in result.candidates
+        finally:
+            registry._ENABLED_OVERRIDES.pop("mock", None)
+
+
+def test_enabled_override_default_and_persist(tmp_path, monkeypatch):
+    from app.providers import registry
+
+    monkeypatch.setattr(registry, "_ENABLED_OVERRIDES_PATH", str(tmp_path / "en.json"))
+    monkeypatch.setattr(registry, "_ENABLED_OVERRIDES", {})
+    assert registry.is_provider_enabled("anything") is True   # default
+    registry.set_provider_enabled("openai-api", False)
+    assert registry.is_provider_enabled("openai-api") is False
+    # reloads from disk
+    assert registry._load_enabled_overrides()["openai-api"] is False
+
 
 # ── All-cooling-down → deferred ───────────────────────────────────────────────
 
 class TestDeferral:
     def test_all_cooling_returns_deferred(self):
         q = fresh_quota()
-        reset = datetime.now(timezone.utc) + timedelta(minutes=10)
+        reset = datetime.now(UTC) + timedelta(minutes=10)
         q.mark_cooldown("mock", reset)
         result = resolve(_routing(candidates=["mock"]), q)
         assert isinstance(result, DeferredResult)
 
     def test_deferred_until_is_earliest_reset(self):
         q = fresh_quota()
-        reset1 = datetime.now(timezone.utc) + timedelta(minutes=10)
-        reset2 = datetime.now(timezone.utc) + timedelta(minutes=5)
+        reset1 = datetime.now(UTC) + timedelta(minutes=10)
+        reset2 = datetime.now(UTC) + timedelta(minutes=5)
         q.mark_cooldown("mock", reset1)
         # Create second mock by cooling two real providers
         q.mark_cooldown("claude", reset2)
@@ -138,7 +168,7 @@ class TestDeferral:
     def test_overflow_to_is_preserved(self):
         """Even in deferred case, overflow_to returned via CandidatePlan when overflow exists."""
         q = fresh_quota()
-        q.mark_cooldown("mock", datetime.now(timezone.utc) + timedelta(minutes=5))
+        q.mark_cooldown("mock", datetime.now(UTC) + timedelta(minutes=5))
         result = resolve(
             _routing(candidates=["mock"], overflow_to="open-default"),
             q,
@@ -151,7 +181,7 @@ class TestDeferral:
         """After cooldown expires, provider should be healthy again."""
         q = fresh_quota()
         # Set a cooldown in the past
-        expired = datetime.now(timezone.utc) - timedelta(seconds=1)
+        expired = datetime.now(UTC) - timedelta(seconds=1)
         q.mark_cooldown("mock", expired)
         # Now check health
         assert q.is_healthy("mock") is True
@@ -197,7 +227,7 @@ class TestRoundRobin:
 
     def test_round_robin_all_cooling_defers(self):
         q = fresh_quota()
-        q.mark_cooldown("mock", datetime.now(timezone.utc) + timedelta(minutes=5))
+        q.mark_cooldown("mock", datetime.now(UTC) + timedelta(minutes=5))
         routing = _routing(strategy="round_robin", candidates=["mock"])
         result = resolve(routing, q)
         assert isinstance(result, DeferredResult)
@@ -317,7 +347,7 @@ class TestProviderInstances:
         """Cooling one account leaves the sibling account routable."""
         q = fresh_quota()
         with patch("app.providers.registry._CONFIGURED_INSTANCES", self._two_open_instances()):
-            q.mark_cooldown("open-default:a", datetime.now(timezone.utc) + timedelta(minutes=5))
+            q.mark_cooldown("open-default:a", datetime.now(UTC) + timedelta(minutes=5))
             result = resolve(
                 _routing(candidates=["open-default:a", "open-default:b"], tags=[]),
                 q,
@@ -329,8 +359,8 @@ class TestProviderInstances:
     def test_both_instances_cooling_defers(self):
         q = fresh_quota()
         with patch("app.providers.registry._CONFIGURED_INSTANCES", self._two_open_instances()):
-            q.mark_cooldown("open-default:a", datetime.now(timezone.utc) + timedelta(minutes=5))
-            q.mark_cooldown("open-default:b", datetime.now(timezone.utc) + timedelta(minutes=5))
+            q.mark_cooldown("open-default:a", datetime.now(UTC) + timedelta(minutes=5))
+            q.mark_cooldown("open-default:b", datetime.now(UTC) + timedelta(minutes=5))
             result = resolve(
                 _routing(candidates=["open-default:a", "open-default:b"], tags=[]),
                 q,
@@ -361,12 +391,12 @@ class TestQuotaTracker:
 
     def test_mark_cooldown_makes_unhealthy(self):
         q = fresh_quota()
-        q.mark_cooldown("mock", datetime.now(timezone.utc) + timedelta(minutes=5))
+        q.mark_cooldown("mock", datetime.now(UTC) + timedelta(minutes=5))
         assert q.is_healthy("mock") is False
 
     def test_mark_healthy_clears_cooldown(self):
         q = fresh_quota()
-        q.mark_cooldown("mock", datetime.now(timezone.utc) + timedelta(minutes=5))
+        q.mark_cooldown("mock", datetime.now(UTC) + timedelta(minutes=5))
         q.mark_healthy("mock")
         assert q.is_healthy("mock") is True
 

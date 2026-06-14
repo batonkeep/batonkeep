@@ -511,6 +511,13 @@ export default function SessionView({
   // first available.
   const activeInstance = providerSwitch || detail?.provider || providerIds[0] || "";
   const terminalCapable = providerKind[activeInstance] === "cli";
+  // The code-exec execution policy only governs the API path (ModelExecutor's
+  // tool loop). CLI providers run their own binary with their own permission
+  // model and never touch our tool registry, so the selector is irrelevant for
+  // them (P-0046). Show it only for API-path provider kinds.
+  const activeKind = providerKind[activeInstance];
+  const execPolicyRelevant =
+    activeKind != null && activeKind !== "cli" && activeKind !== "mock";
   // Terminal mode needs the web console unlocked (it spawns a CLI) + a CLI provider.
   // With app-auth the session is the unlock gate; no separate token is required.
   const canConsole = consoleAvailable && (appAuthEnabled || consoleToken.trim().length > 0);
@@ -1303,7 +1310,7 @@ export default function SessionView({
                     disabled={!detail}
                     title={detail?.confidential ? "Confidential: on — click to allow remote models" : "Make confidential — pin to a local model"}
                   />
-                  {detail && (
+                  {detail && execPolicyRelevant && (
                     <Select
                       value={detail.exec_policy}
                       onChange={(e) => handleSetExecPolicy(e.target.value as ExecPolicy)}

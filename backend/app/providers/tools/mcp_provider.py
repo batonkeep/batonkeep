@@ -38,6 +38,7 @@ tracked follow-up before any multi-tenant exposure.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 
 from mcp import ClientSession, StdioServerParameters
@@ -53,12 +54,23 @@ class McpStdioToolProvider(ToolProvider):
     """Connects to one MCP server (launched over stdio) and exposes its tools
     through the registry's `ToolProvider` interface."""
 
-    def __init__(self, name: str, command: list[str], *, sandboxed: bool = True) -> None:
+    def __init__(
+        self,
+        name: str,
+        command: list[str],
+        *,
+        sandboxed: bool = True,
+        extra_args: Callable[[], list[str]] | None = None,
+    ) -> None:
         if not command:
             raise ValueError("McpStdioToolProvider needs a non-empty launch command")
         self.name = name
         self._command = command
         self._sandboxed = sandboxed
+        # Resolved at each launch (not construction) so dynamic state — e.g. the
+        # SSRF-proxy URL, which isn't known until the proxy has started — can be
+        # appended to the server's argv.
+        self._extra_args = extra_args
         self._tools: list[McpTool] = []
 
     # ── lifecycle ────────────────────────────────────────────────────────────────
@@ -69,7 +81,8 @@ class McpStdioToolProvider(ToolProvider):
         Launches through `sandbox.wrap()` (D-0020 privilege drop; fails closed under
         REQUIRE_SANDBOX). Raises if the server can't be spawned — callers decide
         whether that's fatal (startup discovery) or a per-call tool error."""
-        argv = sandbox.wrap(self._command) if self._sandboxed else self._command
+        command = self._command + (self._extra_args() if self._extra_args else [])
+        argv = sandbox.wrap(command) if self._sandboxed else command
         params = StdioServerParameters(command=argv[0], args=list(argv[1:]), cwd=cwd)
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as session:

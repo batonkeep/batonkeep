@@ -20,10 +20,13 @@ Why a seam, not the `mcp` SDK runtime (yet)?
 from __future__ import annotations
 
 import json
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 from app.providers.tools import file_write, flights, web_fetch, web_search
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -189,13 +192,25 @@ def _build_fetch_provider():
     """The curated Tier-A `fetch` MCP server (P-0046 slice 4), launched over stdio
     from the backend venv. Non-sandboxed (its binary lives in the control-plane
     venv `sandbox` can't exec) — same batond posture as the in-process `web_fetch`
-    built-in (see mcp_provider.py)."""
+    built-in (see mcp_provider.py).
+
+    Egress is fenced by our SSRF forward proxy: the server is launched with
+    `--proxy-url` pointed at it (when started), so its outbound HTTP inherits the
+    same `_ssrf` allow/deny policy as `web_fetch` (no link-local/internal reach)."""
     import sys
 
+    from app.providers.tools import ssrf_proxy
     from app.providers.tools.mcp_provider import McpStdioToolProvider
 
+    def proxy_args() -> list[str]:
+        url = ssrf_proxy.current_url()
+        return ["--proxy-url", url] if url else []
+
     return McpStdioToolProvider(
-        "fetch", [sys.executable, "-m", "mcp_server_fetch"], sandboxed=False
+        "fetch",
+        [sys.executable, "-m", "mcp_server_fetch"],
+        sandboxed=False,
+        extra_args=proxy_args,
     )
 
 
@@ -221,6 +236,16 @@ async def discover_mcp_tools() -> None:
     app startup). The registry's `list_tools()` is sync but MCP is async, so the live
     discovery happens here; a server that won't start contributes no tools rather than
     breaking the registry."""
+    # Start the SSRF egress fence before any MCP server launches so the fetch
+    # server's `--proxy-url` resolves to it (curated servers fail closed to no-proxy
+    # only if the proxy can't start — logged below).
+    from app.providers.tools import ssrf_proxy
+
+    try:
+        await ssrf_proxy.ensure_started()
+    except Exception:
+        logger.exception("SSRF egress proxy failed to start")
+
     get_tool_registry()  # ensure providers are constructed
     for provider in _MCP_PROVIDERS:
         await provider.discover()

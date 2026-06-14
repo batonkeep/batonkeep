@@ -155,6 +155,20 @@ async def run_turn_background(
             return
         workspace = session.workspace_path
         exec_policy = session.exec_policy
+        # Load the immediate dialogue tail so conversational follow-ups keep their
+        # referent (the workspace stays the source of truth — D-0008). Prior
+        # completed turns only, most recent few, in chronological order.
+        prior = (await db.execute(
+            select(SessionTurn.prompt, SessionTurn.response)
+            .where(
+                SessionTurn.session_id == session_id,
+                SessionTurn.seq < seq,
+                SessionTurn.status == "succeeded",
+            )
+            .order_by(SessionTurn.seq.desc())
+            .limit(ws.RECENT_TURNS)
+        )).all()
+        recent_turns = [(p, r or "") for p, r in reversed(prior)]
 
     # Ledger pre-switch summary (best-effort, only if provider changed — we detect by
     # comparing to the previous turn's provider; approximate but good enough here).
@@ -178,8 +192,9 @@ async def run_turn_background(
         await _broadcast_turn(turn_id, session_id, seq, chosen, "failed")
         return
 
-    # Build context from the workspace, not a replayed transcript (D-0008).
-    prompt = ws.build_turn_context(workspace, message)
+    # Build context from the workspace + a short dialogue tail (D-0008): the
+    # workspace is the source of truth; the recent turns let follow-ups resolve.
+    prompt = ws.build_turn_context(workspace, message, recent_turns=recent_turns)
 
     final_result: ExecResult | None = None
     error_msg: str | None = None
@@ -250,6 +265,12 @@ async def run_turn_background(
             if final_result is not None:
                 turn.status = "succeeded"
                 turn.response = response_text
+                # Persist token/cost usage so build-session spend shows in Analytics
+                # (previously always $0 — the executor reports usage but it was dropped).
+                usage = final_result.usage
+                turn.tokens_in = usage.tokens_in
+                turn.tokens_out = usage.tokens_out
+                turn.cost_usd = usage.cost_usd
             else:
                 turn.status = "failed"
                 turn.error = error_msg or "no result produced"

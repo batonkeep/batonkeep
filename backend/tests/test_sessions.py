@@ -12,10 +12,8 @@ from __future__ import annotations
 import os
 
 import pytest
-from unittest.mock import AsyncMock
 
 from app.providers.mock import MockExecutor
-
 
 # ── Workspace unit tests ──────────────────────────────────────────────────────
 
@@ -102,15 +100,32 @@ class TestWorkspace:
         assert "SESSION.md" in ctx              # workspace file listing
         assert "make the hero bigger" in ctx    # the new user message
 
+    async def test_turn_context_includes_recent_dialogue(self, tmp_path, monkeypatch):
+        # A short follow-up keeps its referent via the replayed dialogue tail.
+        from app.sessions import workspace as ws
+        monkeypatch.setitem(ws._settings.__dict__, "sessions_dir", str(tmp_path))
+        root = await ws.create_workspace("sess3", title="T", goal="G")
+
+        ctx = ws.build_turn_context(
+            root, "yes do that",
+            recent_turns=[("count LOC", "Total LOC: 138. Want me to count all text files?")],
+        )
+        assert "Recent conversation" in ctx
+        assert "count all text files" in ctx   # the assistant's prior proposal
+        assert "yes do that" in ctx            # the follow-up
+        # Without recent_turns the tail is omitted (workspace stays primary).
+        assert "Recent conversation" not in ws.build_turn_context(root, "hi")
+
 
 # ── Session turn lifecycle (Verify gate) ──────────────────────────────────────
 
 @pytest.fixture
 async def session_env(tmp_path):
     """Fresh DB + patched session orchestrator/workspace pointing at tmp_path."""
-    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
-    from app.models import Owner, Session as SessionModel  # register metadata
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
     from app.db import Base
+    from app.models import Owner  # register metadata
 
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/test.db", echo=False)
     async with engine.begin() as conn:
@@ -197,8 +212,10 @@ class TestSessionTurns:
         # Turn 1 switches provider mid-conversation.
         await orch.run_turn("s1", "now switch agents", provider="grok-mock", owner_id="local")
 
-        from app.models import Session as SessionModel, SessionTurn
         from sqlalchemy import select
+
+        from app.models import Session as SessionModel
+        from app.models import SessionTurn
         async with Maker() as db:
             turns = (await db.execute(
                 select(SessionTurn).where(SessionTurn.session_id == "s1").order_by(SessionTurn.seq)
@@ -233,11 +250,14 @@ class TestSessionRename:
 
     def test_patch_renames_and_validates(self, tmp_path):
         import asyncio
+
         from fastapi.testclient import TestClient
-        from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
         from app.db import Base, get_db
-        from app.models import Owner, Session as SessionModel
-        from app.main import app, _owner_id
+        from app.main import _owner_id, app
+        from app.models import Owner
+        from app.models import Session as SessionModel
 
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/r.db", echo=False)
 
@@ -284,11 +304,14 @@ class TestSessionDelete:
     def test_delete_removes_row_and_workspace(self, tmp_path):
         import asyncio
         import os
+
         from fastapi.testclient import TestClient
-        from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
         from app.db import Base, get_db
-        from app.models import Owner, Session as SessionModel
-        from app.main import app, _owner_id
+        from app.main import _owner_id, app
+        from app.models import Owner
+        from app.models import Session as SessionModel
 
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/d.db", echo=False)
         ws_dir = tmp_path / "ws_s1"
@@ -339,11 +362,14 @@ class TestSessionListContentSignals:
 
     def test_list_reports_turn_count_and_published(self, tmp_path):
         import asyncio
+
         from fastapi.testclient import TestClient
-        from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
         from app.db import Base, get_db
-        from app.models import Owner, Session as SessionModel, SessionTurn, Artifact
-        from app.main import app, _owner_id
+        from app.main import _owner_id, app
+        from app.models import Artifact, Owner, SessionTurn
+        from app.models import Session as SessionModel
 
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/c.db", echo=False)
 
@@ -564,6 +590,7 @@ class TestTerminalCapture:
         assert turn_id is not None
 
         import json
+
         from app.models import SessionTurn
         async with Maker() as db:
             turn = await db.get(SessionTurn, turn_id)
@@ -616,7 +643,7 @@ class TestLedgerSummary:
         # Disabled + not forced → no-op.
         monkeypatch.setitem(ledger._settings.__dict__, "ledger_summary_enabled", False)
         assert await ledger.summarize_session("s1", force=False) is None
-        assert ws.read_summary((await _ws_root(Maker, "s1"))) == ""
+        assert ws.read_summary(await _ws_root(Maker, "s1")) == ""
 
         # Forced → summarizes via the (mock) model and writes the block.
         text = await ledger.summarize_session("s1", force=True)
@@ -652,11 +679,14 @@ class TestVersioningHTTP:
 
     def test_versions_diff_restore_and_owner_isolation(self, tmp_path):
         import asyncio
+
         from fastapi.testclient import TestClient
-        from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
         from app.db import Base, get_db
-        from app.models import Owner, Session as SessionModel
-        from app.main import app, _owner_id
+        from app.main import _owner_id, app
+        from app.models import Owner
+        from app.models import Session as SessionModel
         from app.sessions import workspace as ws
 
         ws._settings.__dict__["sessions_dir"] = str(tmp_path / "sessions")

@@ -7,18 +7,18 @@ test_cost.py — P-0009 #2: spend aggregation + budget gate.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.models import Owner, Run, Task
+from app.models import Owner, Run, Session, SessionTurn, Task
 
 
 @pytest.fixture
 async def fresh_db(tmp_path):
-    from app.db import Base
     import app.models  # noqa: F401 — register metadata
+    from app.db import Base
 
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/cost.db", echo=False)
     async with engine.begin() as conn:
@@ -37,7 +37,18 @@ async def _add_run(db, *, provider, cost, ago_hours=0):
     db.add(Run(
         owner_id="local", task_id=1, status="succeeded", provider=provider,
         cost_usd=cost,
-        created_at=datetime.now(timezone.utc) - timedelta(hours=ago_hours),
+        created_at=datetime.now(UTC) - timedelta(hours=ago_hours),
+    ))
+    await db.commit()
+
+
+async def _add_session_turn(db, *, provider, cost, ago_hours=0):
+    sid = f"sess-{provider}-{cost}"
+    db.add(Session(id=sid, owner_id="local", workspace_path="/tmp/x"))
+    db.add(SessionTurn(
+        session_id=sid, owner_id="local", seq=0, provider=provider,
+        status="succeeded", cost_usd=cost,
+        created_at=datetime.now(UTC) - timedelta(hours=ago_hours),
     ))
     await db.commit()
 
@@ -56,6 +67,17 @@ class TestAggregation:
         assert s["by_provider_today"]["claude"] == 0.0
 
     @pytest.mark.asyncio
+    async def test_build_session_spend_counts(self, fresh_db):
+        # Note 2: build-session turns are real metered spend and must be summed.
+        from app.cost import usage_summary
+        async with fresh_db() as db:
+            await _add_run(db, provider="openai-api", cost=0.10)
+            await _add_session_turn(db, provider="openai-api", cost=0.07)
+            s = await usage_summary(db, "local")
+        assert round(s["spend_today_usd"], 2) == 0.17           # run + session turn
+        assert s["by_provider_today"]["openai-api"] == 0.17     # merged by provider
+
+    @pytest.mark.asyncio
     async def test_7d_window_includes_recent_excludes_old(self, fresh_db):
         from app.cost import usage_summary
         async with fresh_db() as db:
@@ -68,8 +90,8 @@ class TestAggregation:
 class TestBudgetGate:
     @pytest.mark.asyncio
     async def test_unlimited_when_cap_zero(self, fresh_db):
-        from app.cost import over_daily_budget
         from app.config import get_settings
+        from app.cost import over_daily_budget
         settings = get_settings()
         settings.__dict__["daily_budget_usd"] = 0.0
         async with fresh_db() as db:
@@ -78,8 +100,8 @@ class TestBudgetGate:
 
     @pytest.mark.asyncio
     async def test_over_budget_when_spend_reaches_cap(self, fresh_db):
-        from app.cost import over_daily_budget, usage_summary
         from app.config import get_settings
+        from app.cost import over_daily_budget, usage_summary
         settings = get_settings()
         orig = settings.daily_budget_usd
         settings.__dict__["daily_budget_usd"] = 0.50

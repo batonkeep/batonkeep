@@ -311,18 +311,48 @@ def list_files_meta(workspace: str) -> list[dict]:
     return sorted(out, key=lambda e: e["path"])
 
 
-def build_turn_context(workspace: str, user_message: str) -> str:
+# How many prior turns to replay for conversational continuity (D-0008 keeps the
+# workspace as the source of truth; this just preserves the immediate dialogue so
+# short follow-ups like "yes, do that" resolve their referent instead of being
+# answered cold). Kept small so the workspace, not the transcript, stays primary.
+RECENT_TURNS = 4
+# Cap each replayed message so a huge prior turn can't dominate the prompt.
+_RECENT_MSG_CHARS = 1500
+
+
+def _clip(text: str, limit: int = _RECENT_MSG_CHARS) -> str:
+    text = (text or "").strip()
+    return text if len(text) <= limit else text[:limit] + " …"
+
+
+def build_turn_context(
+    workspace: str, user_message: str, recent_turns: list[tuple[str, str]] | None = None
+) -> str:
     """
     Assemble the prompt for a turn from the *workspace*, not a replayed transcript
     (D-0008). This is what lets a switched-in agent continue seamlessly: it sees
     the SESSION.md brief + the current file list + the new user message.
+
+    `recent_turns` is an ordered list of `(user_message, agent_response)` for the
+    last few exchanges, included so conversational follow-ups ("yes, do that")
+    keep their referent. The workspace remains the source of truth; this is a
+    bounded dialogue tail, not the full transcript.
     """
     brief = read_brief(workspace)
     files = list_files(workspace)
     file_list = "\n".join(f"- {f}" for f in files) if files else "- (empty)"
+    convo = ""
+    if recent_turns:
+        lines = []
+        for u, a in recent_turns[-RECENT_TURNS:]:
+            lines.append(f"User: {_clip(u)}")
+            if a:
+                lines.append(f"Assistant: {_clip(a)}")
+        convo = "## Recent conversation\n" + "\n".join(lines) + "\n\n"
     return (
         f"{brief}\n\n"
         f"## Workspace files\n{file_list}\n\n"
+        f"{convo}"
         f"{GITIGNORE_GUIDANCE}\n\n"
         f"## User message\n{user_message}\n"
     )

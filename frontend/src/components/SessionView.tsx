@@ -1603,9 +1603,9 @@ export default function SessionView({
               {/* P-0046 slice 3b: code-exec approval prompt (confirmation policy).
                   The agent's turn is blocked awaiting this decision. */}
               {pendingApproval && (
-                <div className="rounded-lg border border-amber-400/60 bg-amber-400/10 p-3 text-sm">
-                  <div className="mb-1.5 flex items-center gap-1.5 font-medium text-amber-300">
-                    <SquareTerminal size={14} />
+                <div className="rounded-lg border border-amber-500/50 bg-amber-500/5 p-3 text-sm">
+                  <div className="mb-1.5 flex items-center gap-1.5 font-semibold text-ink">
+                    <SquareTerminal size={14} className="shrink-0 text-amber-500" />
                     {pendingApproval.label || "Approve code execution?"}
                   </div>
                   <pre className="mb-2 max-h-48 overflow-auto rounded-md border border-edge/60 bg-base/70 p-2 font-mono text-[11px] leading-relaxed text-ink/90 whitespace-pre-wrap">

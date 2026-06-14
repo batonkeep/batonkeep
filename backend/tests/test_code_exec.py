@@ -59,6 +59,16 @@ async def test_off_is_refused(tmp_path):
     assert "disabled" in out
 
 
+async def test_fails_closed_when_sandbox_required_but_unavailable(tmp_path, monkeypatch):
+    # P-0046 non-sandbox bug: under REQUIRE_SANDBOX, code-exec must REFUSE rather
+    # than run agent code as the control-plane user when the spawner is missing.
+    monkeypatch.setattr(code_exec.sandbox, "required", lambda: True)
+    monkeypatch.setattr(code_exec.sandbox, "available", lambda: False)
+    out = await code_exec.run("print('should-not-run')", workdir=str(tmp_path), policy="auto")
+    assert "sandbox unavailable" in out
+    assert "should-not-run" not in out
+
+
 async def test_confirmation_refused_without_channel(tmp_path):
     out = await code_exec.run("print(1)", workdir=str(tmp_path), policy="confirmation")
     assert "requires operator approval" in out

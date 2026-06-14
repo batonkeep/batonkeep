@@ -168,6 +168,14 @@ class Settings(BaseSettings):
     # fences them off from /app and control-plane /data. When the spawner is
     # absent (local dev, tests) the executors fall back to a direct spawn.
     sandbox_spawn_path: str = "/usr/local/bin/sandbox-spawn"
+    # Fail-closed switch. When True, any sandboxed launch (agent CLIs, the web-TTY
+    # seam, API-path `code_exec`) REFUSES rather than degrading to a direct
+    # un-sandboxed spawn when the setuid spawner is unavailable. Set in the
+    # container image (`ENV REQUIRE_SANDBOX=1`) so a misbuilt/raced image can never
+    # silently run agent or untrusted code as the control-plane `batond` user
+    # (the P-0046 non-sandbox bug). Left False in local dev / tests, where no
+    # spawner exists and a direct spawn is the intended fallback.
+    require_sandbox: bool = False
     # Per-task isolated workspaces: /work/task_<id>/{current,history}. The agent
     # cwd's into current/ (writable); history/ holds prior runs' outputs read-only,
     # promoted by the orchestrator (never the agent) so it can't be poisoned.

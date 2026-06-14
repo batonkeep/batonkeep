@@ -5,12 +5,14 @@ The backend runs as the control-plane user `batond`; every agent CLI must run as
 the low-privilege `sandbox` user so kernel DAC fences it off from /app and
 control-plane /data. A non-root parent cannot `setuid`, so the drop goes through
 the setuid helper `sandbox-spawn` (built in Dockerfile.base, installed
-4750 root:batond). This module is the ONE place that wires it in — both the
-headless executor (`cli_executor`) and the web-TTY PTY seam (`pty_session`) call
-`wrap()` so the privilege drop cannot be bypassed.
+4750 root:batond). This module is the ONE place that wires it in — the headless
+executor (`cli_executor`), the web-TTY PTY seam (`pty_session`), and the API-path
+`code_exec` tool all call `wrap()` so the privilege drop cannot be bypassed.
 
 When the helper is absent (local dev, unit tests, non-container hosts) `wrap()`
-returns the command unchanged so the same code path runs un-sandboxed locally.
+returns the command unchanged so the same code path runs un-sandboxed locally —
+UNLESS `REQUIRE_SANDBOX` is set (the container image), in which case `wrap()` fails
+closed (`SandboxUnavailableError`) rather than degrading to an un-sandboxed spawn.
 """
 from __future__ import annotations
 
@@ -25,19 +27,42 @@ logger = logging.getLogger(__name__)
 _settings = get_settings()
 
 
+class SandboxUnavailableError(RuntimeError):
+    """A sandboxed launch was required but the spawner is unavailable.
+
+    Raised by `wrap()` under `REQUIRE_SANDBOX` so the privilege drop fails CLOSED:
+    we never silently run agent CLIs or API-path `code_exec` as the control-plane
+    `batond` user when isolation was promised (the P-0046 non-sandbox bug)."""
+
+
 def available() -> bool:
     """True when the setuid spawner is present and executable (i.e. in-container)."""
     path = _settings.sandbox_spawn_path
     return bool(path) and os.access(path, os.X_OK)
 
 
+def required() -> bool:
+    """Whether sandboxing is MANDATORY in this deployment (set in the container
+    image via `REQUIRE_SANDBOX`). When True, `wrap()` refuses rather than
+    degrading to a direct un-sandboxed spawn if the spawner is missing."""
+    return bool(_settings.require_sandbox)
+
+
 def wrap(cmd: list[str]) -> list[str]:
     """Prefix `cmd` so it runs as the `sandbox` user via the setuid helper.
 
-    No-op (returns `cmd` unchanged) when the helper is unavailable, so local/dev
-    runs work without the container's privilege split.
+    Fails CLOSED when `REQUIRE_SANDBOX` is set but the spawner is unavailable —
+    raises `SandboxUnavailableError` rather than running un-sandboxed. Otherwise
+    (local dev / tests, no spawner) it's a no-op and returns `cmd` unchanged so the
+    same code path runs without the container's privilege split.
     """
     if not available():
+        if required():
+            raise SandboxUnavailableError(
+                f"sandbox spawner {_settings.sandbox_spawn_path!r} is unavailable but "
+                "REQUIRE_SANDBOX is set — refusing to run un-sandboxed as the "
+                "control-plane user"
+            )
         logger.debug("[sandbox] spawner unavailable — running %s un-sandboxed", cmd[:1])
         return cmd
     return [_settings.sandbox_spawn_path, "--", *cmd]

@@ -74,7 +74,7 @@ FROM pyenv
 # doesn't abort the build. Manual `make auth` activates subscriptions.
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl git gnupg gosu \
+    curl git gnupg gosu ripgrep \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*

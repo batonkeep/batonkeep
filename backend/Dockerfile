@@ -94,6 +94,16 @@ RUN (export HOME=/usr/local; curl -fsSL https://chatgpt.com/codex/install.sh | s
     && ln -sf /usr/local/.local/bin/codex /usr/local/bin/codex \
     || true
 
+# ── exec-env: the guaranteed code-exec toolchain (P-0046, Option C) ────────────
+# A SEPARATE venv (/opt/exec-env/.venv), distinct from the backend's /app/.venv,
+# built from exec-env.toml (the single source of truth). The code-exec server runs
+# against it; app/exec_env.verify() re-checks it at boot (drift-guard). World-
+# readable/executable so the low-priv `sandbox` user can run it.
+COPY exec-env.toml ./exec-env.toml
+COPY scripts/install_exec_env.py scripts/install_exec_env.py
+RUN python scripts/install_exec_env.py \
+ && chmod -R a+rX /opt/exec-env
+
 # ── Application code ───────────────────────────────────────────────────────────
 # Owned by batond (control plane), unreadable to the sandbox user — P-0022/D-0020.
 COPY --chown=batond:batond app/ app/

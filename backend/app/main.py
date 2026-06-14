@@ -122,6 +122,15 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("startup run-reaper failed")
 
+    # P-0046: drift-guard the exec-env — confirm the built image's exec venv
+    # still matches the manifest (guaranteed code-exec toolchain). Non-strict:
+    # logs divergence (skipped on unbuilt images where the venv is absent).
+    try:
+        from app.exec_env import verify as verify_exec_env
+        verify_exec_env()
+    except Exception:
+        logger.exception("exec-env drift check failed")
+
     # D-0026: load operator-defined custom providers (local/Ollama/open-API) and
     # inject them into the registry so the executor factory can dispatch them.
     try:

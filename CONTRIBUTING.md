@@ -24,3 +24,10 @@ license. See https://developercertificate.org/ for the full text.
 
 See `README.md` for setup. Build on the `mock` provider first; wire real providers only
 at the designated phase.
+
+## Comments and references
+
+This is a public repository. Code comments, docstrings, commit messages, and docs must
+stand on their own for an outside reader. Don't reference private/internal repositories or
+tooling, and don't cite internal tracker IDs — explain the *rationale* inline (what the
+code does and why), not which internal ticket it traces to.

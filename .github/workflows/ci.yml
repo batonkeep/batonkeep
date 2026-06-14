@@ -1,7 +1,7 @@
 name: CI
 
-# Enforces the Verify discipline at the PR boundary (P-0025 #4): backend lint +
-# tests (including the alembic drift guard, D-0021) and the frontend type-check/build.
+# Enforces the Verify discipline at the PR boundary: backend lint +
+# tests (including the alembic drift guard) and the frontend type-check/build.
 # The lint gate is a clean baseline — `ruff check` must report zero findings.
 
 on:

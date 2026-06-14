@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# entrypoint.sh — one-shot volume migration, then drop to batond (P-0022/D-0020).
+# entrypoint.sh — one-shot volume migration, then drop to batond.
 #
 # The privilege split (single `agent` → `batond` + `sandbox`) re-owns data that
 # already exists on the persistent appdata/agent_home volumes: the former `agent`
@@ -13,7 +13,7 @@
 set -euo pipefail
 
 run_migration() {
-  echo "[entrypoint] P-0022 fs-isolation migration…"
+  echo "[entrypoint] fs-isolation migration…"
 
   # Control plane → batond, unreadable to sandbox.
   chown -R batond:batond /app 2>/dev/null || true

@@ -1,7 +1,6 @@
-# ── exec-env manifest — the guaranteed code-exec toolchain (P-0046, Option C) ──
+# ── exec-env manifest — the guaranteed code-exec toolchain ──
 #
-# SINGLE SOURCE OF TRUTH for the toolchain the code-exec server (P-0046 Tier A)
-# may rely on. Because Batonkeep owns and pins the Linux exec env, code-exec is a
+# SINGLE SOURCE OF TRUTH for the toolchain the code-exec server may rely on. Because Batonkeep owns and pins the Linux exec env, code-exec is a
 # *consistent, reliable* capability rather than probe-and-hope — but only if "what
 # is guaranteed present" is declared in exactly one place that the image build,
 # the runtime, and the agent's system prompt all read.
@@ -13,12 +12,12 @@
 #   2. the runtime      — `app/exec_env.py` renders the guaranteed/​on-demand
 #      toolchain into the agent system prompt and runs a boot drift-guard that
 #      asserts the built image actually matches this manifest (fails on
-#      divergence, mirroring the alembic schema drift-guard — D-0021);
+#      divergence, mirroring the alembic schema drift-guard);
 #   3. the code-exec server (later slice) — executes against `python_bin`.
 #
 # Stock the guaranteed set deliberately: a capable code-exec + the right libraries
 # subsumes whole tool categories (PDF/CSV/chart/scrape), so they never need
-# bespoke MCP servers. That is the actual CLI-parity lesson (P-0046 item 4).
+# bespoke MCP servers. That is the actual CLI-parity lesson.
 
 [meta]
 version = 1

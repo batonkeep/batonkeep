@@ -9,7 +9,7 @@ up:
 	docker compose up -d
 
 ## Pull the latest released images from GHCR (production upgrade path; pair with
-## the alembic migration that runs automatically at backend startup, D-0021).
+## the alembic migration that runs automatically at backend startup).
 ##   make pull TAG=v0.1.0 && make up
 pull:
 	docker compose pull
@@ -26,7 +26,7 @@ build:
 # ── Developer shortcuts ───────────────────────────────────────────────────────
 
 # Auth/login must run as the SAME identity the agent CLIs run as at runtime —
-# the low-privilege `sandbox` user with HOME=/home/agent (P-0022/D-0020). A plain
+# the low-privilege `sandbox` user with HOME=/home/agent. A plain
 # `docker compose exec` runs as root with HOME=/home/batond, so logins would write
 # root-owned token files (or to the wrong HOME entirely), leaving the sandbox agent
 # unable to read its own auth. Pin both here so credentials land where the agent

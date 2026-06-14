@@ -32,7 +32,10 @@ def test_lists_builtin_tools_as_mcp_descriptors():
 
 def test_function_schemas_match_executor_shape():
     schemas = get_tool_registry().function_schemas()
-    assert {s["name"] for s in schemas} == BUILTIN_NAMES
+    names = {s["name"] for s in schemas}
+    # Default registry carries the built-ins plus the P-0046 Tier-A filesystem tools.
+    assert BUILTIN_NAMES <= names
+    assert {"fs_read", "fs_list", "fs_glob", "fs_grep"} <= names
     for s in schemas:
         assert set(s.keys()) == {"name", "description", "parameters"}
 

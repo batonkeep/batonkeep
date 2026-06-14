@@ -137,9 +137,13 @@ _REGISTRY: ToolRegistry | None = None
 
 
 def get_tool_registry() -> ToolRegistry:
-    """The default registry — built-in tools only, until an external
-    MCP-server provider is enabled (P-0017 step 2, gated on P-0012)."""
+    """The default registry — the curated first-party providers (P-0017 step 1 +
+    P-0046 Tier A). Arbitrary external MCP servers (Tier B) stay gated on P-0012
+    and slot in here as a further provider when that trust model lands."""
     global _REGISTRY
     if _REGISTRY is None:
-        _REGISTRY = ToolRegistry([BuiltinToolProvider()])
+        # Imported here to avoid a module-load cycle (filesystem imports from us).
+        from app.providers.tools.filesystem import FilesystemToolProvider
+
+        _REGISTRY = ToolRegistry([BuiltinToolProvider(), FilesystemToolProvider()])
     return _REGISTRY

@@ -1,0 +1,61 @@
+# ── exec-env manifest — the guaranteed code-exec toolchain (P-0046, Option C) ──
+#
+# SINGLE SOURCE OF TRUTH for the toolchain the code-exec server (P-0046 Tier A)
+# may rely on. Because Batonkeep owns and pins the Linux exec env, code-exec is a
+# *consistent, reliable* capability rather than probe-and-hope — but only if "what
+# is guaranteed present" is declared in exactly one place that the image build,
+# the runtime, and the agent's system prompt all read.
+#
+# This file is that place. Three consumers read it:
+#   1. the image build  — `scripts/install_exec_env.py` builds the separate
+#      exec venv (`/opt/exec-env/.venv`) and installs the `[python].guaranteed`
+#      set into it (kept distinct from the backend's own app venv);
+#   2. the runtime      — `app/exec_env.py` renders the guaranteed/​on-demand
+#      toolchain into the agent system prompt and runs a boot drift-guard that
+#      asserts the built image actually matches this manifest (fails on
+#      divergence, mirroring the alembic schema drift-guard — D-0021);
+#   3. the code-exec server (later slice) — executes against `python_bin`.
+#
+# Stock the guaranteed set deliberately: a capable code-exec + the right libraries
+# subsumes whole tool categories (PDF/CSV/chart/scrape), so they never need
+# bespoke MCP servers. That is the actual CLI-parity lesson (P-0046 item 4).
+
+[meta]
+version = 1
+# The exec venv is built and owned at image-build time, separate from /app/.venv.
+venv_dir = "/opt/exec-env/.venv"
+
+[python]
+# Interpreter the exec venv is built against (matches the backend's 3.12).
+version = "3.12"
+
+# Guaranteed-present: installed into the exec venv at build time; the drift-guard
+# asserts every one imports. The agent may rely on these without probing.
+[python.guaranteed]
+httpx = "0.28.1"            # HTTP (shares the backend's pin)
+pandas = "2.2.3"            # tabular data
+numpy = "2.2.1"             # numerics (pandas/matplotlib base)
+pypdf = "5.1.0"             # PDF text extraction  — "upload & infer docs"
+python-docx = "1.1.2"       # .docx extraction
+openpyxl = "3.1.5"          # .xlsx read/write
+beautifulsoup4 = "4.12.3"   # HTML/XML parsing
+lxml = "5.3.0"              # fast parser backend for bs4
+matplotlib = "3.10.0"       # plotting — feeds the multimodal/preview path
+
+# Import names differ from the distribution name for a few packages; the
+# drift-guard imports these to verify presence.
+[python.import_names]
+python-docx = "docx"
+beautifulsoup4 = "bs4"
+
+# Advertised as installable on demand (pip is present in the exec venv); NOT
+# guaranteed, so the agent must install before use. The delivery surface tells
+# the operator "install python/js/ts deps + download data".
+[python.on_demand]
+note = "Additional PyPI packages install on demand via pip in the exec venv."
+
+[system]
+# OS tools guaranteed on PATH in the image (installed by the Dockerfile). The
+# code-exec server and the filesystem tools (fs_grep) rely on these.
+guaranteed = ["python3.12", "node", "npm", "git", "rg"]
+note = "Node/TS and data downloads (curl) are available; treat anything not listed as on-demand."

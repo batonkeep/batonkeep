@@ -24,7 +24,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.models import Run
+from app.models import Run, SessionTurn
 from app.providers.registry import ProviderDef
 
 
@@ -42,14 +42,25 @@ def _start_of_today() -> datetime:
 
 
 async def spend_since(db: AsyncSession, owner_id: str, since: datetime) -> float:
-    """Total metered USD spend for an owner since `since` (inclusive)."""
-    total = await db.scalar(
+    """Total metered USD spend for an owner since `since` (inclusive).
+
+    Sums both **task runs** (`Run`) and **build-session turns** (`SessionTurn`) —
+    build sessions on the API path are real metered spend and must count toward
+    the surface + the budget gate (previously only `Run` was summed → sessions
+    silently showed $0)."""
+    run_total = await db.scalar(
         select(func.coalesce(func.sum(Run.cost_usd), 0.0)).where(
             Run.owner_id == owner_id,
             Run.created_at >= since,
         )
     )
-    return float(total or 0.0)
+    session_total = await db.scalar(
+        select(func.coalesce(func.sum(SessionTurn.cost_usd), 0.0)).where(
+            SessionTurn.owner_id == owner_id,
+            SessionTurn.created_at >= since,
+        )
+    )
+    return float(run_total or 0.0) + float(session_total or 0.0)
 
 
 async def over_daily_budget(db: AsyncSession, owner_id: str) -> bool:
@@ -76,12 +87,20 @@ async def usage_summary(db: AsyncSession, owner_id: str) -> dict:
     spend_today = await spend_since(db, owner_id, today_start)
     spend_7d = await spend_since(db, owner_id, week_start)
 
-    rows = (await db.execute(
-        select(Run.provider, func.coalesce(func.sum(Run.cost_usd), 0.0))
-        .where(Run.owner_id == owner_id, Run.created_at >= today_start)
-        .group_by(Run.provider)
-    )).all()
-    by_provider = {(prov or "unknown"): round(float(c or 0.0), 6) for prov, c in rows}
+    by_provider: dict[str, float] = {}
+    for prov_col, cost_col, created_col, owner_col in (
+        (Run.provider, Run.cost_usd, Run.created_at, Run.owner_id),
+        (SessionTurn.provider, SessionTurn.cost_usd,
+         SessionTurn.created_at, SessionTurn.owner_id),
+    ):
+        rows = (await db.execute(
+            select(prov_col, func.coalesce(func.sum(cost_col), 0.0))
+            .where(owner_col == owner_id, created_col >= today_start)
+            .group_by(prov_col)
+        )).all()
+        for prov, c in rows:
+            key = prov or "unknown"
+            by_provider[key] = round(by_provider.get(key, 0.0) + float(c or 0.0), 6)
 
     over = cap > 0 and spend_today >= cap
     remaining = max(0.0, cap - spend_today) if cap > 0 else None

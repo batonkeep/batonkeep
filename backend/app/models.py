@@ -230,6 +230,11 @@ class SessionTurn(Base):
     # D-0017 thread 2: per-file artifact list (JSON) the turn produced — the result
     # surfaced to the user is the workspace files changed, not scraped agent text.
     changed_files: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Token/cost usage for this turn (API path). Build-session spend was previously
+    # not metered — these let it surface in Analytics + count toward the budget.
+    tokens_in: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    tokens_out: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

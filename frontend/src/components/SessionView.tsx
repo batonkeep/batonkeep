@@ -495,9 +495,14 @@ export default function SessionView({
     return () => window.removeEventListener("resize", check);
   }, []);
 
-  // Distinct provider instance ids for the switcher (grouped by what's healthy).
+  // Distinct provider instance ids for the switcher. Suspended providers
+  // (operator enabled=false) are skipped in routing, so they must not be
+  // selectable here either — exclude them from the switcher list.
   const providerIds = useMemo(
-    () => Array.from(new Set(providers.map((p) => p.name))),
+    () =>
+      Array.from(
+        new Set(providers.filter((p) => p.enabled !== false).map((p) => p.name))
+      ),
     [providers]
   );
   // Which instances are CLI-backed → can be driven as a live terminal (the `>_`

@@ -109,7 +109,13 @@ export default function TaskForm({ task, initial, providers, onSave, onClose }: 
   };
 
   const dragIndex = useRef<number | null>(null);
-  const providerNames = useMemo(() => providers.map((p) => p.name), [providers]);
+  // Suspended providers (operator enabled=false) are skipped in routing, so they
+  // must not be offered as candidates / overflow targets. Keep them out of the
+  // selectable list (existing routing.candidates still render from config).
+  const providerNames = useMemo(
+    () => providers.filter((p) => p.enabled !== false).map((p) => p.name),
+    [providers]
+  );
   const labelFor = useMemo(() => {
     const m: Record<string, string> = {};
     for (const p of providers) m[p.name] = p.label && p.label !== p.name ? p.label : p.name;

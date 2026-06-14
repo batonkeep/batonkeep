@@ -115,6 +115,13 @@ def _is_safe(code: str) -> bool:
     return _UNSAFE_RE.search(code) is None
 
 
+def _reset_umask() -> None:
+    """Child-process preexec: set umask 022 so installed files get conventional
+    perms (dirs/bins executable). Runs after fork, before exec — inherited across
+    the sandbox-spawn exec and any subprocess the snippet launches."""
+    os.umask(0o022)
+
+
 async def run(
     code: str, *, workdir: str, policy: str | None = None, label: str | None = None,
     approve: ApproveFn | None = None,
@@ -165,6 +172,11 @@ async def run(
             proc = await asyncio.create_subprocess_exec(
                 *cmd, cwd=workdir, env=env,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+                # Force a sane umask in the child (inherited through sandbox-spawn +
+                # any tool the snippet runs, e.g. `npm install`). Without this a stray
+                # ambient umask (e.g. 007) leaves freshly-installed binaries
+                # non-executable — node_modules/.bin/vite, esbuild → EACCES on build.
+                preexec_fn=_reset_umask,
             )
             out, _ = await asyncio.wait_for(proc.communicate(), timeout=_TIMEOUT_S)
         except TimeoutError:

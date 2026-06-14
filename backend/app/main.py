@@ -392,6 +392,7 @@ async def create_task(
         want_json=body.want_json,
         enabled=body.enabled,
         routing=body.routing.model_dump() if body.routing else None,
+        exec_policy=body.exec_policy,
     )
     db.add(task)
     await db.commit()
@@ -719,6 +720,8 @@ async def update_session(
         session.title = title[:256]
     if body.confidential is not None:
         session.confidential = body.confidential
+    if body.exec_policy is not None:
+        session.exec_policy = body.exec_policy
     await db.commit()
     await db.refresh(session)
     return SessionOut.model_validate(session)

@@ -66,6 +66,10 @@ class Task(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     # Routing policy JSON (§4.3)
     routing: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Code-exec execution policy (P-0046): off | confirmation | allow-safe | auto.
+    # Unattended tasks have no human to confirm, so a task must explicitly carry
+    # allow-safe/auto to use code-exec; the conservative default is confirmation.
+    exec_policy: Mapped[str] = mapped_column(String(16), nullable=False, default="confirmation")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -183,6 +187,10 @@ class Session(Base):
     # model — the workspace + prompt never leave the box, and a remote provider
     # selection is overridden to a local one (fail closed if none is available).
     confidential: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Code-exec execution policy (P-0046): off | confirmation | allow-safe | auto.
+    # Default confirmation — code-exec is offered only under allow-safe/auto until
+    # the interactive approval round-trip lands (slice 3b).
+    exec_policy: Mapped[str] = mapped_column(String(16), nullable=False, default="confirmation")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

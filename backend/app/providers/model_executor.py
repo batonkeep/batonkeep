@@ -35,6 +35,24 @@ logger = logging.getLogger(__name__)
 # ── Tool registry ─────────────────────────────────────────────────────────────
 TOOL_SCHEMAS = get_tool_registry().function_schemas()
 
+# `code_exec` (P-0046) is dispatchable through the registry but only *offered* to
+# the model when the run's execution policy permits it (allow-safe/auto); the base
+# set below excludes it, and `_active_tool_schemas` re-adds it per-run.
+_CODE_EXEC_NAME = "code_exec"
+_BASE_TOOL_SCHEMAS = [s for s in TOOL_SCHEMAS if s["name"] != _CODE_EXEC_NAME]
+_CODE_EXEC_SCHEMA = next((s for s in TOOL_SCHEMAS if s["name"] == _CODE_EXEC_NAME), None)
+
+
+def _active_tool_schemas(extra: dict | None) -> list[dict]:
+    """The tool schemas offered for a run: the base set plus `code_exec` when the
+    run's execution policy (in `extra`) permits it (P-0046)."""
+    from app.providers.tools.code_exec import policy_offers_tool
+
+    schemas = list(_BASE_TOOL_SCHEMAS)
+    if _CODE_EXEC_SCHEMA and policy_offers_tool((extra or {}).get("exec_policy")):
+        schemas.append(_CODE_EXEC_SCHEMA)
+    return schemas
+
 _SYSTEM_PROMPT = (
     "You are an autonomous research agent. "
     "Use available tools (web_search/web_fetch for research; flights for fare queries) "
@@ -45,6 +63,19 @@ _SYSTEM_PROMPT = (
     "Produce one polished **Markdown** report: `#` title, 2–3 sentence executive summary, "
     "then organised sections with inline source links."
 )
+
+
+def _base_system_prompt(extra: dict | None) -> str:
+    """The system prompt for a run — `_SYSTEM_PROMPT` plus the exec-env capability
+    blurb when code-exec is offered (P-0046), so the model knows the pinned
+    toolchain it can rely on rather than probing for it."""
+    from app.providers.tools.code_exec import policy_offers_tool
+
+    if not (extra and policy_offers_tool(extra.get("exec_policy"))):
+        return _SYSTEM_PROMPT
+    from app.exec_env import render_capabilities
+
+    return f"{_SYSTEM_PROMPT} You can also run Python via code_exec. {render_capabilities()}"
 
 # When the agent loop reaches its last permitted round (or trips the budget) the model
 # is given one final, tool-free turn so it MUST synthesise a complete answer from what it
@@ -125,6 +156,9 @@ class ModelExecutor(Executor):
         budget_usd: float = 1.0,
         extra: dict[str, Any] | None = None,
     ) -> AsyncIterator[ExecEvent]:
+        # Per-run dispatch context (e.g. the P-0046 code-exec execution policy);
+        # threaded into tool listing (`_active_tool_schemas`) and dispatch.
+        self._extra: dict[str, Any] = dict(extra or {})
         if self._def.kind == "anthropic":
             async for ev in self._run_anthropic(
                 prompt, workdir=workdir, tools_enabled=tools_enabled,
@@ -176,10 +210,10 @@ class ModelExecutor(Executor):
 
         client = AsyncOpenAI(api_key=api_key, base_url=base_url)
         messages = [
-            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "system", "content": _base_system_prompt(self._extra)},
             {"role": "user", "content": prompt},
         ]
-        tools = TOOL_SCHEMAS if tools_enabled else []
+        tools = _active_tool_schemas(self._extra) if tools_enabled else []
         total_usage = Usage()
         full_text = ""
 
@@ -198,7 +232,8 @@ class ModelExecutor(Executor):
                     kind=EventKind.log,
                     message=f"[{self.name}] budget ${budget_usd:.4f} reached — synthesizing",
                 )
-            round_system = _SYSTEM_PROMPT + (_SYNTHESIS_NUDGE if force_answer else "")
+            round_system = _base_system_prompt(self._extra) + (
+                _SYNTHESIS_NUDGE if force_answer else "")
             messages[0] = {"role": "system", "content": round_system}
             # Deliver the synthesis instruction as a user turn too — the system nudge
             # alone is unreliable mid-conversation (see _SYNTHESIS_USER_MSG).
@@ -322,7 +357,7 @@ class ModelExecutor(Executor):
         messages = [{"role": "user", "content": prompt}]
         anth_tools = [
             {"name": t["name"], "description": t["description"], "input_schema": t["parameters"]}
-            for t in TOOL_SCHEMAS
+            for t in _active_tool_schemas(self._extra)
         ] if tools_enabled else []
 
         total_usage = Usage()
@@ -354,7 +389,8 @@ class ModelExecutor(Executor):
             stream_kwargs: dict[str, Any] = dict(
                 model=self._model or "claude-opus-4-5",
                 max_tokens=8192,
-                system=_SYSTEM_PROMPT + (_SYNTHESIS_NUDGE if force_answer else ""),
+                system=_base_system_prompt(self._extra) + (
+                    _SYNTHESIS_NUDGE if force_answer else ""),
                 messages=messages,
             )
             if anth_tools and not force_answer:
@@ -462,7 +498,7 @@ class ModelExecutor(Executor):
                         description=t["description"],
                         parameters_json_schema=t["parameters"],
                     )
-                    for t in TOOL_SCHEMAS
+                    for t in _active_tool_schemas(self._extra)
                 ])
             ]
         contents: list[types.Content] = [
@@ -503,7 +539,8 @@ class ModelExecutor(Executor):
                     )
                 )
             config = types.GenerateContentConfig(
-                system_instruction=_SYSTEM_PROMPT + (_SYNTHESIS_NUDGE if force_answer else ""),
+                system_instruction=_base_system_prompt(self._extra) + (
+                    _SYNTHESIS_NUDGE if force_answer else ""),
                 tools=tools,
                 tool_config=tool_config,
             )
@@ -589,4 +626,6 @@ class ModelExecutor(Executor):
     # ── Tool dispatch ─────────────────────────────────────────────────────────
 
     async def _call_tool(self, name: str, args_json: str, *, workdir: str) -> str:
-        return await get_tool_registry().call(name, args_json, workdir=workdir)
+        return await get_tool_registry().call(
+            name, args_json, workdir=workdir, context=getattr(self, "_extra", None)
+        )

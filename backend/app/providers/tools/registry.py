@@ -53,10 +53,14 @@ class ToolProvider(ABC):
         ...
 
     @abstractmethod
-    async def call_tool(self, name: str, arguments: dict, *, workdir: str) -> str:
+    async def call_tool(
+        self, name: str, arguments: dict, *, workdir: str, context: dict | None = None
+    ) -> str:
         """Dispatch a tool call and return text content. `workdir` is the
         session sandbox dir — built-in `file_write` writes into it; external
-        providers will be launched with it as their cwd.
+        providers will be launched with it as their cwd. `context` carries
+        per-run dispatch state (e.g. the code-exec execution policy, P-0046);
+        providers that don't need it ignore it.
 
         External-MCP-provider contract (validated against the real SDK + the
         official `fetch` server, P-0017): the SDK returns a `CallToolResult`
@@ -90,11 +94,37 @@ class BuiltinToolProvider(ToolProvider):
             )
         return tools
 
-    async def call_tool(self, name: str, arguments: dict, *, workdir: str) -> str:
+    async def call_tool(
+        self, name: str, arguments: dict, *, workdir: str, context: dict | None = None
+    ) -> str:
         mod = self._modules[name]  # KeyError handled by the registry
         if name == "file_write":
             return await mod.run(**arguments, workdir=workdir)
         return await mod.run(**arguments)
+
+
+class CodeExecToolProvider(ToolProvider):
+    """Runs Python in the pinned exec env, gated by the execution policy (P-0046).
+
+    Listed/dispatched here for a single tool surface, but the executor only
+    *offers* `code_exec` to the model when the run's policy permits (see
+    `code_exec.policy_offers_tool`); on dispatch the policy is enforced again
+    (defense in depth) from `context['exec_policy']`.
+    """
+
+    def list_tools(self) -> list[McpTool]:
+        from app.providers.tools import code_exec
+
+        s = code_exec.TOOL_SCHEMA
+        return [McpTool(name=s["name"], description=s["description"], input_schema=s["parameters"])]
+
+    async def call_tool(
+        self, name: str, arguments: dict, *, workdir: str, context: dict | None = None
+    ) -> str:
+        from app.providers.tools import code_exec
+
+        policy = (context or {}).get("exec_policy")
+        return await code_exec.run(workdir=workdir, policy=policy, **arguments)
 
 
 class ToolRegistry:
@@ -122,13 +152,15 @@ class ToolRegistry:
         """Executor-facing tool schemas (OpenAI/Anthropic conversion input)."""
         return [t.as_function_schema() for t in self.list_tools()]
 
-    async def call(self, name: str, args_json: str, *, workdir: str) -> str:
+    async def call(
+        self, name: str, args_json: str, *, workdir: str, context: dict | None = None
+    ) -> str:
         provider = self._index.get(name)
         if provider is None:
             return f"[unknown tool: {name}]"
         try:
             arguments = json.loads(args_json) if args_json else {}
-            return await provider.call_tool(name, arguments, workdir=workdir)
+            return await provider.call_tool(name, arguments, workdir=workdir, context=context)
         except Exception as exc:
             return f"[{name} error] {exc}"
 
@@ -145,5 +177,7 @@ def get_tool_registry() -> ToolRegistry:
         # Imported here to avoid a module-load cycle (filesystem imports from us).
         from app.providers.tools.filesystem import FilesystemToolProvider
 
-        _REGISTRY = ToolRegistry([BuiltinToolProvider(), FilesystemToolProvider()])
+        _REGISTRY = ToolRegistry(
+            [BuiltinToolProvider(), FilesystemToolProvider(), CodeExecToolProvider()]
+        )
     return _REGISTRY

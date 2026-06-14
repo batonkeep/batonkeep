@@ -62,7 +62,7 @@ async def test_file_write_receives_workdir(tmp_path):
 
 async def test_first_provider_wins_on_name_collision():
     class Dummy(BuiltinToolProvider):
-        async def call_tool(self, name, arguments, *, workdir):
+        async def call_tool(self, name, arguments, *, workdir, context=None):
             return "from-dummy"
 
     reg = ToolRegistry([BuiltinToolProvider(), Dummy()])

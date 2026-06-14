@@ -255,6 +255,12 @@ async def _do_execute(run_id: int, task: Task) -> None:
                             tools_enabled=_settings.autonomous_tools,
                             max_rounds=10,
                             budget_usd=1.0,
+                            # P-0046: unattended task — no human to confirm, so
+                            # code-exec runs only if the task carries allow-safe/auto.
+                            extra={
+                                "task": True, "exec_policy": task.exec_policy,
+                                "human_in_loop": False,
+                            },
                         ):
                             # Persist non-token events
                             if ev.kind != EventKind.token:
@@ -358,9 +364,14 @@ async def _do_execute(run_id: int, task: Task) -> None:
                     )
                     async with _provider_sems[overflow_to]:
                         seq = await _next_seq(db, run_id)
-                        async for ev in executor.run_stream(prompt, workdir=workdir,
-                                                            tools_enabled=_settings.autonomous_tools,
-                                                            max_rounds=10, budget_usd=1.0):
+                        async for ev in executor.run_stream(
+                                prompt, workdir=workdir,
+                                tools_enabled=_settings.autonomous_tools,
+                                max_rounds=10, budget_usd=1.0,
+                                extra={
+                                    "task": True, "exec_policy": task.exec_policy,
+                                    "human_in_loop": False,
+                                }):
                             if ev.kind != EventKind.token:
                                 await _emit_event(db, run, ev.kind, ev.phase or ev.message,
                                                   data=ev.data, seq_override=seq)

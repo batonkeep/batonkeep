@@ -410,8 +410,13 @@ class CLIExecutor(Executor):
                          budget_usd=budget_usd, model=self._model)
         # Privilege drop: launch the CLI as the low-priv `sandbox` user via the
         # setuid helper so it cannot read /app or control-plane /data (P-0022/D-0020).
-        # No-op outside the container, where the helper is absent.
-        cmd = sandbox.wrap(cmd)
+        # No-op outside the container, where the helper is absent — but fails CLOSED
+        # under REQUIRE_SANDBOX rather than running the CLI as the control-plane user.
+        try:
+            cmd = sandbox.wrap(cmd)
+        except sandbox.SandboxUnavailableError as exc:
+            yield ExecEvent(kind=EventKind.error, message=f"[{self.name}] {exc}")
+            return
         timeout = _settings.run_timeout_seconds
 
         yield ExecEvent(kind=EventKind.log, message=f"[{self.name}] spawning: {' '.join(cmd[:4])}…")

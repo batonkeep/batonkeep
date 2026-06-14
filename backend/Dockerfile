@@ -48,6 +48,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
  && rm -f /tmp/sandbox-spawn.c \
  && apt-get purge -y gcc libc6-dev && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 
+# Fail closed: in the built image, isolation is mandatory. If the spawner is ever
+# missing/unexecutable at runtime, sandboxed launches REFUSE rather than silently
+# running agent / API-path code as the control-plane `batond` user (P-0046 bug).
+ENV REQUIRE_SANDBOX=1
+
 WORKDIR /app
 
 # ── Python venv (frozen from lockfile) ─────────────────────────────────────────

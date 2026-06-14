@@ -155,6 +155,20 @@ async def run(
     # Reaching here means: auto, allow-safe (passed the check), or confirmation
     # (approved). off / denied / unknown have already returned above.
 
+    # Fail closed: in a deployment that promises isolation (REQUIRE_SANDBOX), never
+    # run agent-authored code as the control-plane user just because the spawner is
+    # momentarily unavailable — that is exactly the P-0046 non-sandbox bug (an
+    # `npm install` that ran as `batond`). Refuse instead.
+    if sandbox.required() and not sandbox.available():
+        logger.critical(
+            "[code_exec] REQUIRE_SANDBOX set but sandbox spawner unavailable — "
+            "refusing to run un-sandboxed"
+        )
+        return (
+            "[code_exec error] sandbox unavailable — execution refused "
+            "(isolation is mandatory in this deployment)"
+        )
+
     python_bin = _python_bin()
     fd, script_path = tempfile.mkstemp(suffix=".py", prefix=".baton_exec_", dir=workdir)
     try:

@@ -31,7 +31,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.datastructures import Headers, MutableHeaders
 
-from app import approvals
+from app import approvals, sandbox
 from app.auth import SESSION_COOKIE, issue_session, password_matches, verify_session
 from app.config import get_settings
 from app.db import get_db, init_db
@@ -1973,7 +1973,12 @@ async def console_websocket(websocket: WebSocket):
             return default
 
     session = PtyAuthSession(target)
-    await session.start(rows=_dim("rows", 30, 4, 200), cols=_dim("cols", 100, 20, 400))
+    try:
+        await session.start(rows=_dim("rows", 30, 4, 200), cols=_dim("cols", 100, 20, 400))
+    except sandbox.SandboxUnavailableError as exc:
+        await websocket.send_json({"type": "error", "message": str(exc)})
+        await websocket.close()
+        return
     logger.info("Console auth session started for %s", target)
 
     async def _pump_output() -> None:
@@ -2055,7 +2060,12 @@ async def web_tty_websocket(websocket: WebSocket):
         except (TypeError, ValueError):
             return default
 
-    await session.start(rows=_dim("rows", 30, 4, 200), cols=_dim("cols", 100, 20, 400))
+    try:
+        await session.start(rows=_dim("rows", 30, 4, 200), cols=_dim("cols", 100, 20, 400))
+    except sandbox.SandboxUnavailableError as exc:
+        await websocket.send_json({"type": "error", "message": str(exc)})
+        await websocket.close()
+        return
 
     async def _pump_output() -> None:
         while True:

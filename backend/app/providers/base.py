@@ -24,6 +24,7 @@ class EventKind(str, Enum):
     result = "result"
     error = "error"
     route = "route"
+    approval = "approval"  # P-0046: code-exec confirmation request (awaiting operator)
 
 
 @dataclass

@@ -17,9 +17,13 @@ export type EventKind =
   | "subagent"
   | "result"
   | "error"
-  | "route";
+  | "route"
+  | "approval";
 
 export type RoutingStrategy = "capability" | "fixed" | "round_robin" | "cost_optimized";
+
+// P-0046 code-exec execution policy.
+export type ExecPolicy = "off" | "confirmation" | "allow-safe" | "auto";
 
 export interface RoutingPolicy {
   strategy: RoutingStrategy;
@@ -261,6 +265,8 @@ export interface Session {
   cf_project?: string | null;
   // P-0009 #1: pinned to a local model — prompt + workspace never leave the box.
   confidential: boolean;
+  // P-0046: code-exec execution policy.
+  exec_policy: ExecPolicy;
   // Content signals (from the list endpoint) used to scale delete confirmation.
   turn_count?: number;
   published?: boolean;
@@ -388,6 +394,7 @@ export interface TaskTemplate {
 export interface SessionUpdate {
   title?: string | null;
   confidential?: boolean;
+  exec_policy?: ExecPolicy;
 }
 
 // Payload accepted by POST /sessions/{id}/turns.

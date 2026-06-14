@@ -191,6 +191,11 @@ class SessionUpdate(BaseModel):
         return v
 
 
+class ApprovalDecision(BaseModel):
+    # P-0046 slice 3b: operator's verdict on a pending code-exec confirmation.
+    approved: bool
+
+
 class TurnCreate(BaseModel):
     message: str
     # optional provider switch for this and subsequent turns

@@ -4,7 +4,12 @@
 #
 #   curl -fsSLO https://raw.githubusercontent.com/batonkeep/batonkeep/main/docker-compose.yml
 #   curl -fsSL  https://raw.githubusercontent.com/batonkeep/batonkeep/main/.env.example -o .env  # then edit
+#   curl -fsSLO https://raw.githubusercontent.com/batonkeep/batonkeep/main/searxng-settings.yml
 #   docker compose up -d
+#
+# The searxng-settings.yml file (downloaded next to this one) enables the SearXNG
+# web-search backend. Skip it and web_search transparently falls back to the
+# DuckDuckGo scrape (lower recall).
 #
 # Then log in to your plan CLIs:  docker compose exec -u sandbox -e HOME=/home/agent backend bash /app/scripts/auth.sh
 #
@@ -28,6 +33,11 @@ services:
   backend:
     image: ghcr.io/batonkeep/batonkeep-backend:${TAG:-latest}
     env_file: .env
+    environment:
+      # Web-search backend (P-0046 slice 5): point the `web_search` tool at the
+      # internal SearXNG service. Override in .env to use an external instance, or
+      # set empty to disable SearXNG (DDG-scrape-only). DDG is the auto fallback.
+      - SEARXNG_URL=${SEARXNG_URL:-http://searxng:8080}
     # Note: HOME is intentionally NOT set here. A container-wide HOME would leak
     # into `docker exec -u sandbox` and agent subprocesses, masking sandbox's real
     # home (/home/agent). The backend gets HOME=/home/batond from entrypoint.sh;
@@ -63,6 +73,21 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+
+  # Self-hosted, key-free metasearch backing the `web_search` tool (P-0046 slice 5).
+  # Internal-only (not published); the backend reaches it at http://searxng:8080.
+  # Mounts the single ./searxng-settings.yml (alongside this file — no dir to create),
+  # which enables the JSON API web_search needs (the upstream default disables it). A
+  # curl-only install fetches it next to docker-compose.yml (see the header); if it's
+  # absent web_search transparently falls back to the DuckDuckGo scrape.
+  searxng:
+    image: searxng/searxng:latest
+    expose:
+      - "8080"
+    volumes:
+      - ./searxng-settings.yml:/etc/searxng/settings.yml:rw
+    restart: unless-stopped
+    mem_limit: 256m
 
   # Optional self-hosted open-weight inference — activate with: make selfhost
   # or: docker compose --profile selfhost up -d

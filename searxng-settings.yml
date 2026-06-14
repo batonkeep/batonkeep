@@ -1,0 +1,24 @@
+# SearXNG settings for Batonkeep's internal web_search backend (P-0046 slice 5).
+#
+# Lives next to docker-compose.yml and is bind-mounted to /etc/searxng/settings.yml
+# as a single file (no directory to create). The ONLY reason this file exists is to
+# enable the JSON output format the `web_search` tool consumes —
+# the upstream image ships with JSON disabled. Everything else inherits the upstream
+# defaults (`use_default_settings: true`).
+#
+# This instance is internal-only (never published to the host), single-consumer
+# (the backend), so `limiter: false` avoids the Redis dependency the rate limiter
+# would otherwise require. If you expose SearXNG, set a real secret via SEARXNG_SECRET
+# and re-enable the limiter with a Redis service.
+use_default_settings: true
+
+server:
+  secret_key: "batonkeep-internal-searxng"  # internal-only; override if exposed
+  limiter: false
+  image_proxy: false
+
+search:
+  # `json` is what web_search calls (?format=json); `html` kept for manual debugging.
+  formats:
+    - html
+    - json

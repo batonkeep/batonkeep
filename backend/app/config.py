@@ -195,6 +195,15 @@ class Settings(BaseSettings):
     upload_max_bytes: int = 10_485_760  # 10 MiB
     upload_allowed_ext: str = "png,jpg,jpeg,svg,webp,csv,pdf,txt,md"
 
+    # ── Web search (P-0046 slice 5) ───────────────────────────────────────────
+    # The `web_search` tool prefers a self-hosted SearXNG (key-free, multi-engine
+    # JSON API — better recall + robustness than the DDG HTML scrape, benchmarked
+    # 2026-06-13). Empty → SearXNG disabled, DDG-scraper-only. The DDG scrape stays
+    # the automatic fallback whenever SearXNG is unset/down/empty. Compose sets this
+    # to the internal service URL (http://searxng:8080).
+    searxng_url: str = ""
+    searxng_timeout_seconds: float = 6.0
+
     # ── Optional API keys (metered / BYO-key providers) ──────────────────────
     openai_api_key: str | None = None
     openai_base_url: str | None = None

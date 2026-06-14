@@ -34,7 +34,7 @@ services:
     image: ghcr.io/batonkeep/batonkeep-backend:${TAG:-latest}
     env_file: .env
     environment:
-      # Web-search backend (P-0046 slice 5): point the `web_search` tool at the
+      # Web-search backend: point the `web_search` tool at the
       # internal SearXNG service. Override in .env to use an external instance, or
       # set empty to disable SearXNG (DDG-scrape-only). DDG is the auto fallback.
       - SEARXNG_URL=${SEARXNG_URL:-http://searxng:8080}
@@ -74,7 +74,7 @@ services:
       timeout: 5s
       retries: 3
 
-  # Self-hosted, key-free metasearch backing the `web_search` tool (P-0046 slice 5).
+  # Self-hosted, key-free metasearch backing the `web_search` tool.
   # Internal-only (not published); the backend reaches it at http://searxng:8080.
   # Mounts the single ./searxng-settings.yml (alongside this file — no dir to create),
   # which enables the JSON API web_search needs (the upstream default disables it). A

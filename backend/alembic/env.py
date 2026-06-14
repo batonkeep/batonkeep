@@ -1,5 +1,5 @@
 """
-alembic/env.py — migration environment (D-0021).
+alembic/env.py — migration environment.
 
 The database URL is derived from the application settings (a *sync* driver form of
 DATABASE_URL) so the app and migrations share one source of truth. We deliberately do

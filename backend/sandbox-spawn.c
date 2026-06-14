@@ -1,5 +1,5 @@
 /*
- * sandbox-spawn.c — minimal setuid privilege-drop helper (P-0022 / D-0020).
+ * sandbox-spawn.c — minimal setuid privilege-drop helper for fs-isolation.
  *
  * The backend runs as the non-root control-plane user `batond` and must launch
  * agent CLIs as the low-privilege `sandbox` user so kernel DAC fences the agent

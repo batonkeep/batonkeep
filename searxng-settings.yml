@@ -1,4 +1,4 @@
-# SearXNG settings for Batonkeep's internal web_search backend (P-0046 slice 5).
+# SearXNG settings for Batonkeep's internal web_search backend.
 #
 # Lives next to docker-compose.yml and is bind-mounted to /etc/searxng/settings.yml
 # as a single file (no directory to create). It exists to (1) enable the JSON output

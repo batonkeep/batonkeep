@@ -155,10 +155,23 @@ class ToolRegistry:
         """Executor-facing tool schemas (OpenAI/Anthropic conversion input)."""
         return [t.as_function_schema() for t in self.list_tools()]
 
+    def _resolve(self, name: str) -> ToolProvider | None:
+        """Provider owning `name`. Falls back to a live scan when the name isn't in
+        the prebuilt index — SDK-backed providers populate their tools at startup
+        *after* construction, so their names aren't known when the index is built."""
+        provider = self._index.get(name)
+        if provider is not None:
+            return provider
+        for p in self._providers:
+            if any(t.name == name for t in p.list_tools()):
+                self._index.setdefault(name, p)
+                return p
+        return None
+
     async def call(
         self, name: str, args_json: str, *, workdir: str, context: dict | None = None
     ) -> str:
-        provider = self._index.get(name)
+        provider = self._resolve(name)
         if provider is None:
             return f"[unknown tool: {name}]"
         try:
@@ -169,6 +182,21 @@ class ToolRegistry:
 
 
 _REGISTRY: ToolRegistry | None = None
+_MCP_PROVIDERS: list = []  # SDK-backed providers needing async startup discovery
+
+
+def _build_fetch_provider():
+    """The curated Tier-A `fetch` MCP server (P-0046 slice 4), launched over stdio
+    from the backend venv. Non-sandboxed (its binary lives in the control-plane
+    venv `sandbox` can't exec) — same batond posture as the in-process `web_fetch`
+    built-in (see mcp_provider.py)."""
+    import sys
+
+    from app.providers.tools.mcp_provider import McpStdioToolProvider
+
+    return McpStdioToolProvider(
+        "fetch", [sys.executable, "-m", "mcp_server_fetch"], sandboxed=False
+    )
 
 
 def get_tool_registry() -> ToolRegistry:
@@ -180,7 +208,19 @@ def get_tool_registry() -> ToolRegistry:
         # Imported here to avoid a module-load cycle (filesystem imports from us).
         from app.providers.tools.filesystem import FilesystemToolProvider
 
+        fetch = _build_fetch_provider()
+        _MCP_PROVIDERS.append(fetch)
         _REGISTRY = ToolRegistry(
-            [BuiltinToolProvider(), FilesystemToolProvider(), CodeExecToolProvider()]
+            [BuiltinToolProvider(), FilesystemToolProvider(), CodeExecToolProvider(), fetch]
         )
     return _REGISTRY
+
+
+async def discover_mcp_tools() -> None:
+    """Connect to each SDK-backed MCP server once and cache its tool list (called at
+    app startup). The registry's `list_tools()` is sync but MCP is async, so the live
+    discovery happens here; a server that won't start contributes no tools rather than
+    breaking the registry."""
+    get_tool_registry()  # ensure providers are constructed
+    for provider in _MCP_PROVIDERS:
+        await provider.discover()

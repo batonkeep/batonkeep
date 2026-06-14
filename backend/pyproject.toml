@@ -14,7 +14,7 @@ dependencies = [
     "anthropic==0.40.0",
     "google-genai==2.8.0",
     "httpx==0.28.1",
-    "pydantic==2.10.3",
+    "pydantic==2.13.4",
     "pydantic-settings==2.7.0",
     "cryptography==44.0.0",
     "python-multipart==0.0.20",
@@ -22,6 +22,14 @@ dependencies = [
     "aiofiles==24.1.0",
     "greenlet==3.1.1",
     "pyte>=0.8.2",
+    # P-0046 slice 4 — SDK-backed MCP tool seam (curated Tier A `fetch` server).
+    # mcp 1.27 needs pydantic>=2.11 (hence the 2.10.3→2.13.4 bump); fastapi 0.115.6
+    # + starlette 0.41.3 pins are unchanged (the old D-0014 pin clash is stale).
+    "mcp==1.27.2",
+    # 2026.6.4 relaxes the old httpx<0.28 pin (modelcontextprotocol/servers#3287);
+    # under our fastapi pin it resolves with starlette 0.41.3 / uvicorn 0.32.1
+    # unchanged. Runs SSRF-fenced behind sandbox.wrap() (see mcp_provider.py).
+    "mcp-server-fetch==2026.6.4",
 ]
 
 [project.optional-dependencies]

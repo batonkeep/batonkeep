@@ -9,6 +9,9 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+# P-0046 code-exec execution policies (single source of truth: code_exec.POLICIES).
+from app.providers.tools.code_exec import POLICIES as EXEC_POLICIES
+
 # ── Routing policy (§4.3) ────────────────────────────────────────────────────
 
 class RoutingPolicy(BaseModel):
@@ -35,6 +38,16 @@ class TaskCreate(BaseModel):
     want_json: bool = False
     enabled: bool = True
     routing: RoutingPolicy | None = None
+    # P-0046 code-exec execution policy: off | confirmation | allow-safe | auto.
+    # Unattended tasks must set allow-safe/auto explicitly to use code-exec.
+    exec_policy: str = "confirmation"
+
+    @field_validator("exec_policy")
+    @classmethod
+    def _valid_policy(cls, v: str) -> str:
+        if v not in EXEC_POLICIES:
+            raise ValueError(f"exec_policy must be one of {sorted(EXEC_POLICIES)}")
+        return v
 
 
 class TaskUpdate(BaseModel):
@@ -50,6 +63,14 @@ class TaskUpdate(BaseModel):
     want_json: bool | None = None
     enabled: bool | None = None
     routing: RoutingPolicy | None = None
+    exec_policy: str | None = None  # P-0046; validated below
+
+    @field_validator("exec_policy")
+    @classmethod
+    def _valid_policy(cls, v: str | None) -> str | None:
+        if v is not None and v not in EXEC_POLICIES:
+            raise ValueError(f"exec_policy must be one of {sorted(EXEC_POLICIES)}")
+        return v
 
 
 class TaskOut(BaseModel):
@@ -69,6 +90,7 @@ class TaskOut(BaseModel):
     want_json: bool
     enabled: bool
     routing: dict[str, Any] | None
+    exec_policy: str = "confirmation"  # P-0046 code-exec execution policy
     created_at: datetime
     updated_at: datetime
 
@@ -158,6 +180,15 @@ class SessionUpdate(BaseModel):
     title: str | None = None
     # toggle the P-0009 #1 confidential (local-only) pin
     confidential: bool | None = None
+    # P-0046 code-exec execution policy: off | confirmation | allow-safe | auto
+    exec_policy: str | None = None
+
+    @field_validator("exec_policy")
+    @classmethod
+    def _valid_policy(cls, v: str | None) -> str | None:
+        if v is not None and v not in EXEC_POLICIES:
+            raise ValueError(f"exec_policy must be one of {sorted(EXEC_POLICIES)}")
+        return v
 
 
 class TurnCreate(BaseModel):
@@ -335,6 +366,7 @@ class SessionOut(BaseModel):
     status: str
     cf_project: str | None = None  # Cloudflare Pages project this session deploys to
     confidential: bool = False  # P-0009 #1: pinned to a local model
+    exec_policy: str = "confirmation"  # P-0046 code-exec execution policy
     # Content signals for the UI (e.g. delete-confirmation strength). Populated by
     # the list endpoint; default to empty/false elsewhere.
     turn_count: int = 0

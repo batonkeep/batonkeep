@@ -128,7 +128,9 @@ class FilesystemToolProvider(ToolProvider):
             for s in self._SCHEMAS.values()
         ]
 
-    async def call_tool(self, name: str, arguments: dict, *, workdir: str) -> str:
+    async def call_tool(
+        self, name: str, arguments: dict, *, workdir: str, context: dict | None = None
+    ) -> str:
         if name == "fs_read":
             return self._read(workdir, **arguments)
         if name == "fs_list":

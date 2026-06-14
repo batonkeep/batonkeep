@@ -154,6 +154,7 @@ async def run_turn_background(
             logger.error("[session] run_turn_background: session %s not found", session_id)
             return
         workspace = session.workspace_path
+        exec_policy = session.exec_policy
 
     # Ledger pre-switch summary (best-effort, only if provider changed — we detect by
     # comparing to the previous turn's provider; approximate but good enough here).
@@ -190,7 +191,12 @@ async def run_turn_background(
             tools_enabled=_settings.autonomous_tools,
             max_rounds=10,
             budget_usd=1.0,
-            extra={"session": True, "turn_seq": seq, "user_message": message},
+            extra={
+                "session": True, "turn_seq": seq, "user_message": message,
+                # P-0046: interactive build sessions have a human in the loop; the
+                # session's policy gates whether code-exec is offered/runnable.
+                "exec_policy": exec_policy, "human_in_loop": True,
+            },
         ):
             # Rewrite agent file:// links to the raw-file route so the result
             # renders with clickable artifacts in the live view (P-0016 b).

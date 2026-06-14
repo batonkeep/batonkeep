@@ -1,16 +1,25 @@
 # SearXNG settings for Batonkeep's internal web_search backend (P-0046 slice 5).
 #
 # Lives next to docker-compose.yml and is bind-mounted to /etc/searxng/settings.yml
-# as a single file (no directory to create). The ONLY reason this file exists is to
-# enable the JSON output format the `web_search` tool consumes —
-# the upstream image ships with JSON disabled. Everything else inherits the upstream
-# defaults (`use_default_settings: true`).
+# as a single file (no directory to create). It exists to (1) enable the JSON output
+# format the `web_search` tool consumes (the upstream image ships with JSON disabled)
+# and (2) drop the Tor-only engines from the default set. Everything else inherits the
+# upstream defaults.
 #
 # This instance is internal-only (never published to the host), single-consumer
 # (the backend), so `limiter: false` avoids the Redis dependency the rate limiter
 # would otherwise require. If you expose SearXNG, set a real secret via SEARXNG_SECRET
 # and re-enable the limiter with a Redis service.
-use_default_settings: true
+use_default_settings:
+  # ahmia / torch are .onion (Tor) search engines in the upstream default set; with
+  # no Tor proxy they fail to load on every boot ("set engine to inactive"). Drop them
+  # to keep the logs clean. (Other engines getting transiently rate-limited/CAPTCHA'd —
+  # brave, duckduckgo — is expected on an unauthenticated self-host IP; SearXNG just
+  # falls back to the engines that answer, which is the whole point of aggregating.)
+  engines:
+    remove:
+      - ahmia
+      - torch
 
 server:
   secret_key: "batonkeep-internal-searxng"  # internal-only; override if exposed

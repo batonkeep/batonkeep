@@ -298,6 +298,12 @@ export const api = {
       `/providers/${encodeURIComponent(providerName)}/tags`,
       { method: "POST", body: JSON.stringify({ capability_tags }) }
     ),
+  // Operator suspend/reactivate toggle — skip in routing without deleting auth.
+  setProviderEnabled: (instanceId: string, enabled: boolean) =>
+    req<{ status: string; provider: string; enabled: boolean }>(
+      `/providers/${encodeURIComponent(instanceId)}/enabled`,
+      { method: "POST", body: JSON.stringify({ enabled }) }
+    ),
 };
 
 export { ApiError };

@@ -122,6 +122,8 @@ export interface ProviderHealth {
   kind: string;
   tier: string;
   healthy: boolean;
+  enabled: boolean; // operator suspend toggle — false = suspended, skipped in routing
+
   cooldown_until: string | null;
   last_reset_seen: string | null;
   est_used_pct: number | null;

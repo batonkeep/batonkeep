@@ -25,6 +25,7 @@ from app.providers.registry import (
     ProviderDef,
     get_instance,
     get_provider_def,
+    is_provider_enabled,
     local_candidate_ids,
 )
 from app.quota import QuotaTracker
@@ -127,6 +128,9 @@ def resolve(
             continue
         if pdef.kind == "cli" and not plan_cli_allowed:
             logger.debug("[router] %s excluded (managed mode forbids plan-CLI)", cand)
+            continue
+        if not is_provider_enabled(inst.id):
+            logger.debug("[router] %s excluded (operator-disabled)", cand)
             continue
         available.append((inst.id, pdef))
 

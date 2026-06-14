@@ -4,7 +4,7 @@
 // D-track: composed from ui/ primitives (Button, Badge, Card, Input, StatusDot).
 // D-0026: custom provider cards + Add/Edit/Delete at bottom of the list.
 import { lazy, Suspense, useEffect, useState } from "react";
-import { Check, KeyRound, Pencil, Plus, RefreshCw, RotateCcw, ShieldCheck, Terminal, Trash2 } from "lucide-react";
+import { Check, KeyRound, Pencil, Plus, Power, RefreshCw, RotateCcw, ShieldCheck, Terminal, Trash2 } from "lucide-react";
 import type { CustomProvider, ProviderHealth } from "../types";
 import { api } from "../api";
 import { countdown, fmtRelative } from "../format";
@@ -76,6 +76,12 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
   };
 
   const handleReset = async (name: string) => { await api.resetProviderCooldown(name); onRefresh(); };
+
+  // Suspend / reactivate without deleting auth (operator toggle).
+  const handleToggleEnabled = async (instanceId: string, next: boolean) => {
+    try { await api.setProviderEnabled(instanceId, next); onRefresh(); }
+    catch { /* surfaced via the unchanged state on next refresh */ }
+  };
 
   const saveModel = async (instanceId: string) => {
     try { await api.setProviderModel(instanceId, modelDraft.trim() || null, consoleToken); setEditingModel(null); onRefresh(); }
@@ -218,9 +224,21 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
                         )}
                       </div>
                     </div>
-                    <Badge tone={healthTone}>
-                      {cooling ? "cooling" : p.healthy ? "healthy" : "offline"}
-                    </Badge>
+                    <div className="flex items-center gap-1.5">
+                      <Badge tone={!p.enabled ? "neutral" : healthTone}>
+                        {!p.enabled ? "suspended" : cooling ? "cooling" : p.healthy ? "healthy" : "offline"}
+                      </Badge>
+                      <Button
+                        variant={p.enabled ? "ghost" : "outline"}
+                        size="sm"
+                        className="px-1.5"
+                        icon={<Power size={12} />}
+                        onClick={() => handleToggleEnabled(p.name, !p.enabled)}
+                        title={p.enabled ? "Suspend — skip in routing without deleting auth" : "Reactivate this provider"}
+                      >
+                        <span className="text-[10px]">{p.enabled ? "Suspend" : "Enable"}</span>
+                      </Button>
+                    </div>
                   </div>
 
                   {/* Cooldown detail + reset — only when there's something actionable.

@@ -58,6 +58,7 @@ from app.schemas import (
     LoginRequest,
     ModelPricingOut,
     ModeOut,
+    ProviderEnabledUpdate,
     ProviderHealth,
     ProviderLimitsUpdate,
     ProviderModelUpdate,
@@ -1661,6 +1662,7 @@ async def list_providers():
         get_pricing_override,
         get_provider_def,
         is_instance_connected,
+        is_provider_enabled,
         list_instances,
     )
     from app.quota import quota_tracker
@@ -1671,6 +1673,7 @@ async def list_providers():
         if pdef is None:
             continue
         health = quota_tracker.get_health(inst.id)
+        enabled = is_provider_enabled(inst.id)
         connected = await is_instance_connected(inst)
         model = effective_model(inst, pdef)
         in_rate, out_rate = effective_pricing(pdef, inst.id, model)
@@ -1689,7 +1692,10 @@ async def list_providers():
             model=model,
             kind=pdef.kind,
             tier=pdef.tier,
-            healthy=connected and health.healthy,
+            enabled=enabled,
+            # A suspended provider reports unhealthy so the UI shows it offline and
+            # routing (which also checks is_provider_enabled) skips it.
+            healthy=enabled and connected and health.healthy,
             cooldown_until=health.cooldown_until,
             last_reset_seen=health.last_reset_seen,
             est_used_pct=health.est_used_pct,
@@ -1879,6 +1885,23 @@ async def set_provider_tags(
     set_tags_override(provider_name, tags or None)
     logger.info("Set tags for %s -> %s (owner=%s)", provider_name, tags, owner_id)
     return {"status": "ok", "provider": provider_name, "capability_tags": tags}
+
+
+@app.post("/api/providers/{instance_id}/enabled", tags=["providers"])
+async def set_provider_enabled_endpoint(
+    instance_id: str,
+    body: ProviderEnabledUpdate,
+    owner_id: str = Depends(_owner_id),
+):
+    """Suspend or reactivate a provider instance without deleting its auth (operator
+    toggle). A disabled provider stays listed but is skipped in routing and reported
+    unhealthy. Accepts any known instance id (built-in or custom)."""
+    from app.providers.registry import get_instance, set_provider_enabled
+    if get_instance(instance_id) is None:
+        raise HTTPException(status_code=404, detail="Unknown provider instance")
+    set_provider_enabled(instance_id, body.enabled)
+    logger.info("Set enabled for %s -> %s (owner=%s)", instance_id, body.enabled, owner_id)
+    return {"status": "ok", "provider": instance_id, "enabled": body.enabled}
 
 
 @app.post("/api/usage/subscription/{instance_id}", status_code=202, tags=["console"])

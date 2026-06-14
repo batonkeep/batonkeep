@@ -439,6 +439,42 @@ def effective_capability_tags(pdef: ProviderDef) -> list[str]:
     return get_tags_override(pdef.name) or pdef.capability_tags
 
 
+# ── Enable/disable override (operator suspend toggle) ──────────────────────────
+# A runtime, per-instance on/off the operator flips from Settings to suspend a
+# provider (skip it in routing + show it unavailable) WITHOUT deleting its auth —
+# distinct from the config-level `ProviderInstance.enabled` (which hard-hides an
+# instance). Disabled instances stay listed so the UI can re-enable them.
+_ENABLED_OVERRIDES_PATH = os.environ.get("ENABLED_OVERRIDES_PATH", "/data/provider-enabled.json")
+
+
+def _load_enabled_overrides() -> dict[str, bool]:
+    try:
+        with open(_ENABLED_OVERRIDES_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+        return {str(k): bool(v) for k, v in data.items()}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+_ENABLED_OVERRIDES: dict[str, bool] = _load_enabled_overrides()
+
+
+def is_provider_enabled(instance_id: str) -> bool:
+    """Whether the operator has this instance enabled (default True)."""
+    return _ENABLED_OVERRIDES.get(instance_id, True)
+
+
+def set_provider_enabled(instance_id: str, enabled: bool) -> None:
+    """Set + persist the operator suspend toggle. `True` (the default) is stored
+    explicitly so a re-enabled provider round-trips."""
+    _ENABLED_OVERRIDES[instance_id] = bool(enabled)
+    try:
+        with open(_ENABLED_OVERRIDES_PATH, "w", encoding="utf-8") as f:
+            json.dump(_ENABLED_OVERRIDES, f, indent=2)
+    except OSError as exc:
+        logger.error("[registry] failed to persist enabled overrides: %s", exc)
+
+
 # ── Headless capability (D-0016 / P-0019) ──────────────────────────────────────
 # Plan-CLI templates that do NOT ship a documented headless `-p` mode. Scheduled/
 # cron tasks ride the headless lane (sanctioned + provider-metered), so any such

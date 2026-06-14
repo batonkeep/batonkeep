@@ -134,6 +134,15 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("exec-env drift check failed")
 
+    # P-0046 slice 4: connect the curated SDK-backed MCP server(s) once and cache
+    # their tool lists (the registry's list_tools() is sync; MCP is async). A server
+    # that won't start just contributes no tools — never blocks startup.
+    try:
+        from app.providers.tools.registry import discover_mcp_tools
+        await discover_mcp_tools()
+    except Exception:
+        logger.exception("MCP tool discovery failed")
+
     # D-0026: load operator-defined custom providers (local/Ollama/open-API) and
     # inject them into the registry so the executor factory can dispatch them.
     try:

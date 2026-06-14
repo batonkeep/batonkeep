@@ -123,8 +123,11 @@ class CodeExecToolProvider(ToolProvider):
     ) -> str:
         from app.providers.tools import code_exec
 
-        policy = (context or {}).get("exec_policy")
-        return await code_exec.run(workdir=workdir, policy=policy, **arguments)
+        ctx = context or {}
+        return await code_exec.run(
+            workdir=workdir, policy=ctx.get("exec_policy"),
+            approve=ctx.get("approve"), **arguments,
+        )
 
 
 class ToolRegistry:

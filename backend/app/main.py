@@ -31,12 +31,14 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.datastructures import Headers, MutableHeaders
 
+from app import approvals
 from app.auth import SESSION_COOKIE, issue_session, password_matches, verify_session
 from app.config import get_settings
 from app.db import get_db, init_db
 from app.logging_config import configure_logging, owner_id_var, request_id_var
 from app.models import Artifact, Credential, Owner, Run, RunEvent, Session, SessionTurn, Task
 from app.schemas import (
+    ApprovalDecision,
     AuthStatus,
     CaptureRequest,
     CloudflareConfigIn,
@@ -725,6 +727,24 @@ async def update_session(
     await db.commit()
     await db.refresh(session)
     return SessionOut.model_validate(session)
+
+
+@app.post("/api/sessions/{session_id}/approvals/{request_id}", status_code=204, tags=["sessions"])
+async def resolve_approval(
+    session_id: str,
+    request_id: str,
+    body: ApprovalDecision,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """Resolve a pending code-exec approval (P-0046 slice 3b). The session's turn is
+    blocked awaiting this decision; approving lets the snippet run, denying feeds a
+    refusal back to the agent."""
+    session = await db.get(Session, session_id)
+    if session is None or session.owner_id != owner_id:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if not approvals.resolve(request_id, body.approved):
+        raise HTTPException(status_code=404, detail="No pending approval for that id")
 
 
 @app.delete("/api/sessions/{session_id}", status_code=204, tags=["sessions"])

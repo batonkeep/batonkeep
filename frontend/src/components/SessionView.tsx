@@ -8,7 +8,7 @@ import { marked } from "marked";
 import hljs from "highlight.js/lib/common";
 import "highlight.js/styles/github-dark.css";
 import { Activity, Archive, Check, ChevronDown, ChevronLeft, ChevronRight, Cloud, Copy, Download, FileCode, Folder, Globe, History, Link2, Loader2, Lock, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, Shield, SquareTerminal, Trash2, X } from "lucide-react";
-import type { CloudflareStatus, FileChange, FileEntry, ProviderHealth, Publish, Session, SessionTemplate, SessionTurn, Version } from "../types";
+import type { CloudflareStatus, ExecPolicy, FileChange, FileEntry, ProviderHealth, Publish, Session, SessionTemplate, SessionTurn, Version } from "../types";
 import { api } from "../api";
 import { useSessionEvents, type SessionEvent } from "../useLiveFeed";
 import { fmtTime } from "../format";
@@ -81,7 +81,7 @@ interface OpenFile {
 // carry internal scaffolding (the assembled turn-context prompt, CLI launch flags
 // like --dangerously-skip-permissions, raw end-of-stream markers) that would read
 // as unsafe/noisy to the user — those are only shown when "raw" is expanded.
-const CURATED_KINDS = new Set(["phase", "tool", "subagent", "result", "route", "error"]);
+const CURATED_KINDS = new Set(["phase", "tool", "subagent", "result", "route", "error", "approval"]);
 function isCurated(ev: SessionEvent): boolean {
   return CURATED_KINDS.has(ev.kind);
 }
@@ -377,7 +377,36 @@ const KIND_COLOR: Record<string, string> = {
   result: "text-ok",
   error: "text-bad",
   route: "text-live",
+  approval: "text-amber-400",
 };
+
+/** P-0046 slice 3b: a code-exec approval awaiting the operator's decision,
+ * derived from the session event stream (a request with no matching resolution). */
+export interface PendingApproval {
+  requestId: string;
+  code: string;
+  label: string | null;
+}
+
+function derivePendingApproval(events: SessionEvent[]): PendingApproval | null {
+  const resolved = new Set<string>();
+  for (const ev of events) {
+    if (ev.kind === "approval" && ev.data?.resolved) resolved.add(ev.data.request_id);
+  }
+  // Latest unresolved request wins.
+  for (let i = events.length - 1; i >= 0; i--) {
+    const ev = events[i];
+    if (
+      ev.kind === "approval" &&
+      ev.data?.request_id &&
+      !ev.data?.resolved &&
+      !resolved.has(ev.data.request_id)
+    ) {
+      return { requestId: ev.data.request_id, code: ev.data.code ?? "", label: ev.data.label ?? null };
+    }
+  }
+  return null;
+}
 
 export default function SessionView({
   sessions,
@@ -659,6 +688,13 @@ export default function SessionView({
     const updated = await api.updateSession(selectedId, { confidential: !detail.confidential });
     setDetail(updated);
     onSessionsChanged();
+  };
+
+  // P-0046 slice 3b: change the session's code-exec execution policy.
+  const handleSetExecPolicy = async (policy: ExecPolicy) => {
+    if (!selectedId || !detail || policy === detail.exec_policy) return;
+    const updated = await api.updateSession(selectedId, { exec_policy: policy });
+    setDetail(updated);
   };
 
   const handleRename = async () => {
@@ -1026,6 +1062,24 @@ export default function SessionView({
   const hiddenCount = events.length - curatedEvents.length;
   const shownEvents = rawOpen ? events : curatedEvents;
 
+  // P-0046 slice 3b: a pending code-exec approval (confirmation policy).
+  const pendingApproval = useMemo(() => derivePendingApproval(events), [events]);
+  const [approvalBusy, setApprovalBusy] = useState(false);
+  const resolveApproval = useCallback(
+    async (approved: boolean) => {
+      if (!selectedId || !pendingApproval || approvalBusy) return;
+      setApprovalBusy(true);
+      try {
+        await api.resolveApproval(selectedId, pendingApproval.requestId, approved);
+      } catch {
+        /* the turn's await will time out → denied, so a failed POST is non-fatal */
+      } finally {
+        setApprovalBusy(false);
+      }
+    },
+    [selectedId, pendingApproval, approvalBusy],
+  );
+
   // Mobile master→detail: an open session fills the screen (the App shell has
   // dropped the header chrome + bottom nav), so the pane flexes to fill instead
   // of a fixed 70vh, keeping the composer pinned above the screen bottom. On
@@ -1249,6 +1303,19 @@ export default function SessionView({
                     disabled={!detail}
                     title={detail?.confidential ? "Confidential: on — click to allow remote models" : "Make confidential — pin to a local model"}
                   />
+                  {detail && (
+                    <Select
+                      value={detail.exec_policy}
+                      onChange={(e) => handleSetExecPolicy(e.target.value as ExecPolicy)}
+                      className="h-8 w-auto py-0 text-[11px]"
+                      title="Code execution policy — when the agent may run code (P-0046)"
+                    >
+                      <option value="off">Code: off</option>
+                      <option value="confirmation">Code: confirm each</option>
+                      <option value="allow-safe">Code: allow safe</option>
+                      <option value="auto">Code: auto</option>
+                    </Select>
+                  )}
                   <Button
                     variant={historyOpen ? "outline" : "ghost"}
                     size="sm"
@@ -1530,6 +1597,40 @@ export default function SessionView({
               {sendError && (
                 <div className="rounded-lg border border-bad/40 bg-bad/10 px-3 py-2 text-sm text-bad">
                   {sendError}
+                </div>
+              )}
+
+              {/* P-0046 slice 3b: code-exec approval prompt (confirmation policy).
+                  The agent's turn is blocked awaiting this decision. */}
+              {pendingApproval && (
+                <div className="rounded-lg border border-amber-500/50 bg-amber-500/5 p-3 text-sm">
+                  <div className="mb-1.5 flex items-center gap-1.5 font-semibold text-ink">
+                    <SquareTerminal size={14} className="shrink-0 text-amber-500" />
+                    {pendingApproval.label || "Approve code execution?"}
+                  </div>
+                  <pre className="mb-2 max-h-48 overflow-auto rounded-md border border-edge/60 bg-base/70 p-2 font-mono text-[11px] leading-relaxed text-ink/90 whitespace-pre-wrap">
+                    {pendingApproval.code}
+                  </pre>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      icon={<Check size={13} />}
+                      disabled={approvalBusy}
+                      onClick={() => resolveApproval(true)}
+                    >
+                      Approve & run
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      icon={<X size={13} />}
+                      disabled={approvalBusy}
+                      onClick={() => resolveApproval(false)}
+                    >
+                      Deny
+                    </Button>
+                  </div>
                 </div>
               )}
 

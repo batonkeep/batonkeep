@@ -48,8 +48,11 @@ def _active_tool_schemas(extra: dict | None) -> list[dict]:
     run's execution policy (in `extra`) permits it (P-0046)."""
     from app.providers.tools.code_exec import policy_offers_tool
 
+    extra = extra or {}
     schemas = list(_BASE_TOOL_SCHEMAS)
-    if _CODE_EXEC_SCHEMA and policy_offers_tool((extra or {}).get("exec_policy")):
+    if _CODE_EXEC_SCHEMA and policy_offers_tool(
+        extra.get("exec_policy"), bool(extra.get("human_in_loop"))
+    ):
         schemas.append(_CODE_EXEC_SCHEMA)
     return schemas
 

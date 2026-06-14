@@ -24,6 +24,36 @@ def test_policy_offers_tool_only_runnable():
     assert policy_offers_tool(None) is False  # default confirmation
 
 
+def test_confirmation_offered_only_with_human_in_loop():
+    # Slice 3b: confirmation offers code-exec when a human can approve.
+    assert policy_offers_tool("confirmation", human_in_loop=True) is True
+    assert policy_offers_tool("confirmation", human_in_loop=False) is False
+    assert policy_offers_tool("off", human_in_loop=True) is False
+
+
+async def test_confirmation_approved_executes(tmp_path):
+    async def approve(code, label):
+        return True
+    out = await code_exec.run(
+        "print('approved-run')", workdir=str(tmp_path), policy="confirmation", approve=approve
+    )
+    assert "approved-run" in out
+
+
+async def test_confirmation_denied_refuses(tmp_path):
+    async def deny(code, label):
+        return False
+    out = await code_exec.run(
+        "print('nope')", workdir=str(tmp_path), policy="confirmation", approve=deny
+    )
+    assert "denied by operator" in out
+
+
+async def test_confirmation_without_callback_still_refuses(tmp_path):
+    out = await code_exec.run("print(1)", workdir=str(tmp_path), policy="confirmation")
+    assert "requires operator approval" in out
+
+
 async def test_off_is_refused(tmp_path):
     out = await code_exec.run("print(1)", workdir=str(tmp_path), policy="off")
     assert "disabled" in out
@@ -100,3 +130,11 @@ def test_executor_offers_code_exec_by_policy(policy, offered):
     assert ("code_exec" in names) is offered
     # the base tools are always present
     assert {"fs_read", "web_search"} <= names
+
+
+def test_executor_offers_confirmation_with_human_in_loop():
+    from app.providers.model_executor import _active_tool_schemas
+
+    names = {s["name"] for s in _active_tool_schemas(
+        {"exec_policy": "confirmation", "human_in_loop": True})}
+    assert "code_exec" in names

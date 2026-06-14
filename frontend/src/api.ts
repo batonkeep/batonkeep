@@ -118,6 +118,12 @@ export const api = {
   updateSession: (id: string, body: SessionUpdate) =>
     req<Session>(`/sessions/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteSession: (id: string) => req<void>(`/sessions/${id}`, { method: "DELETE" }),
+  // P-0046 slice 3b: resolve a pending code-exec approval.
+  resolveApproval: (id: string, requestId: string, approved: boolean) =>
+    req<void>(`/sessions/${id}/approvals/${requestId}`, {
+      method: "POST",
+      body: JSON.stringify({ approved }),
+    }),
   listTurns: (id: string) => req<SessionTurn[]>(`/sessions/${id}/turns`),
   createTurn: (id: string, body: TurnInput) =>
     req<SessionTurn>(`/sessions/${id}/turns`, { method: "POST", body: JSON.stringify(body) }),

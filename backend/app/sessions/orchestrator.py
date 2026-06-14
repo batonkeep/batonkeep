@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
 from sqlalchemy import select
 
+from app import approvals
 from app.config import get_settings
 from app.db import AsyncSessionLocal
 from app.logging_config import owner_id_var, session_id_var
@@ -184,6 +185,24 @@ async def run_turn_background(
     final_result: ExecResult | None = None
     error_msg: str | None = None
 
+    async def _approve(code: str, label: str | None) -> bool:
+        """P-0046 slice 3b: drive the code-exec `confirmation` round-trip — emit an
+        approval-request event to the live view, then await the operator's decision
+        (POST /api/sessions/{id}/approvals/{rid}; timeout → denied)."""
+        request_id, fut = approvals.request()
+        await _broadcast_event(
+            session_id, turn_id, seq, EventKind.approval,
+            message=label or "Approve code execution?",
+            data={"request_id": request_id, "code": code, "label": label, "tool": "code_exec"},
+        )
+        approved = await approvals.await_decision(request_id, fut)
+        await _broadcast_event(
+            session_id, turn_id, seq, EventKind.approval,
+            message="approved" if approved else "denied",
+            data={"request_id": request_id, "resolved": True, "approved": approved},
+        )
+        return approved
+
     try:
         async for ev in executor.run_stream(
             prompt,
@@ -194,8 +213,9 @@ async def run_turn_background(
             extra={
                 "session": True, "turn_seq": seq, "user_message": message,
                 # P-0046: interactive build sessions have a human in the loop; the
-                # session's policy gates whether code-exec is offered/runnable.
-                "exec_policy": exec_policy, "human_in_loop": True,
+                # session's policy gates whether code-exec is offered/runnable, and
+                # `confirmation` drives an approval round-trip via `_approve`.
+                "exec_policy": exec_policy, "human_in_loop": True, "approve": _approve,
             },
         ):
             # Rewrite agent file:// links to the raw-file route so the result

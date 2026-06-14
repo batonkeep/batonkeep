@@ -17,10 +17,10 @@ Execution bounds (V1, single-tenant — P-0046):
 
 Execution policy (per session/task; default **confirmation**):
   • `off`          — code-exec is not offered and refuses if called;
-  • `confirmation` — requires per-execution operator approval. The interactive
-    approval round-trip is a later slice (3b); until then code-exec is simply not
-    offered under this policy (the conservative default), matching the proposal:
-    "left on confirmation, code-exec is unavailable in unattended runs";
+  • `confirmation` — requires per-execution operator approval. Interactive sessions
+    supply an `approve` callback (slice 3b) that drives the round-trip; **unattended
+    tasks have no human, so code-exec stays unavailable there** under this default
+    ("left on confirmation, code-exec is unavailable in unattended runs");
   • `allow-safe`   — a non-destructive, no-network heuristic subset auto-runs;
   • `auto`         — runs without prompting (operator opted in).
 
@@ -36,11 +36,16 @@ import os
 import re
 import sys
 import tempfile
+from collections.abc import Awaitable, Callable
 
 from app import sandbox
 from app.exec_env import load as load_exec_env
 
 logger = logging.getLogger(__name__)
+
+# Async approval callback an interactive session injects to drive `confirmation`:
+# (code, label) -> approved?  (P-0046 slice 3b)
+ApproveFn = Callable[[str, "str | None"], Awaitable[bool]]
 
 POLICIES = ("off", "confirmation", "allow-safe", "auto")
 DEFAULT_POLICY = "confirmation"
@@ -84,9 +89,16 @@ TOOL_SCHEMA = {
 }
 
 
-def policy_offers_tool(policy: str | None) -> bool:
-    """Whether code-exec should be listed to the model under `policy` (3a)."""
-    return (policy or DEFAULT_POLICY) in _RUNNABLE_POLICIES
+def policy_offers_tool(policy: str | None, human_in_loop: bool = False) -> bool:
+    """Whether code-exec should be listed to the model.
+
+    `allow-safe`/`auto` always offer it. `confirmation` offers it only when a human
+    is in the loop to approve each run (interactive sessions, P-0046 slice 3b) —
+    unattended tasks left on `confirmation` still don't get it."""
+    policy = policy or DEFAULT_POLICY
+    if policy in _RUNNABLE_POLICIES:
+        return True
+    return policy == "confirmation" and human_in_loop
 
 
 def _python_bin() -> str:
@@ -104,25 +116,37 @@ def _is_safe(code: str) -> bool:
 
 
 async def run(
-    code: str, *, workdir: str, policy: str | None = None, label: str | None = None
+    code: str, *, workdir: str, policy: str | None = None, label: str | None = None,
+    approve: ApproveFn | None = None,
 ) -> str:
+    """Run `code` under `policy`. `approve` is an async callback
+    `(code, label) -> bool` supplied by interactive sessions to drive the
+    `confirmation` round-trip (P-0046 slice 3b); without it `confirmation`
+    refuses (unattended runs)."""
     policy = policy or DEFAULT_POLICY
     if policy == "off":
         return "[code_exec error] code execution is disabled (policy: off)"
     if policy == "confirmation":
-        # No interactive approval channel yet (slice 3b). Conservative refusal.
-        return (
-            "[code_exec error] code execution requires operator approval "
-            "(policy: confirmation); set the execution policy to allow-safe or auto "
-            "to run code in this session/task"
-        )
-    if policy == "allow-safe" and not _is_safe(code):
+        if approve is None:
+            # No human-in-the-loop channel (e.g. unattended task). Conservative refusal.
+            return (
+                "[code_exec error] code execution requires operator approval "
+                "(policy: confirmation); set the execution policy to allow-safe or auto "
+                "to run code in this session/task"
+            )
+        approved = await approve(code, label)
+        if not approved:
+            return "[code_exec] execution denied by operator"
+        # Approved → fall through and execute this one snippet.
+    elif policy == "allow-safe" and not _is_safe(code):
         return (
             "[code_exec error] snippet blocked by allow-safe policy (network/"
             "subprocess/destructive call detected); requires the auto policy"
         )
-    if policy not in _RUNNABLE_POLICIES:
+    if policy not in POLICIES:
         return f"[code_exec error] unknown execution policy: {policy}"
+    # Reaching here means: auto, allow-safe (passed the check), or confirmation
+    # (approved). off / denied / unknown have already returned above.
 
     python_bin = _python_bin()
     fd, script_path = tempfile.mkstemp(suffix=".py", prefix=".baton_exec_", dir=workdir)

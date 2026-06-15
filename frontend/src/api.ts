@@ -13,6 +13,7 @@ import type {
   CustomProviderInput,
   CustomProviderUpdate,
   FileEntry,
+  ImageModel,
   ImportResult,
   Mode,
   ModelPricing,
@@ -215,6 +216,7 @@ export const api = {
 
   // ── Providers ──────────────────────────────────────────────────────────
   listProviders: () => req<ProviderHealth[]>("/providers"),
+  listImageModels: () => req<ImageModel[]>("/image-models"),
   setProviderLimits: (name: string, body: ProviderLimitsUpdate) =>
     req<{ status: string }>(`/providers/${name}/limits`, {
       method: "POST",

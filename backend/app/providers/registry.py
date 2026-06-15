@@ -54,16 +54,12 @@ class ProviderDef:
     # text models can't generate images even though the provider exists). V1 wires
     # xAI/Grok's OpenAI-shaped images endpoint; other capable models flip the flag.
     supports_image_gen: bool = False
-    image_model: str | None = None        # the images-endpoint model id
-    # Per-asset cost. Two billing shapes seen in the wild: flat per-image (xAI/Grok)
-    # and per-token (OpenAI `gpt-image-*`, which returns a `usage` block). The tool
-    # meters from token usage × `image_cost_per_mtok` when both are present, else the
-    # flat `image_cost_per_image`.
-    image_cost_per_image: float = 0.0
-    image_cost_per_mtok: float = 0.0
-    # `response_format` handling differs: xAI/Grok accepts `b64_json`; OpenAI's
-    # `gpt-image-*` **rejects** the param (it always returns b64). None = omit it.
-    image_response_format: str | None = "b64_json"
+    # The image model a session inherits *by default* when this is its text provider —
+    # a catalog id (`app/providers/image_models.py`). Sessions can override to any
+    # catalog entry, including a cross-provider one (`Session.image_model_id`). The
+    # catalog is the SSOT for the model string, home provider, billing, and
+    # response_format handling — so those no longer live on `ProviderDef`.
+    default_image_model_id: str | None = None
 
 
 # ── Static registry ────────────────────────────────────────────────────────────
@@ -132,14 +128,10 @@ _ALL_PROVIDERS: list[ProviderDef] = [
         cost_out_per_mtok=10.0,
         env_key="OPENAI_API_KEY",
         mode="api",
-        # P-0046 slice 6 / P-0037: OpenAI's images endpoint. V1 uses the cheap
-        # `gpt-image-1-mini` ($8/Mtok image output); gpt-image bills per-token and
-        # rejects `response_format`, so we omit it and meter from the response usage.
+        # P-0046 slice 6 / P-0037: image generation. Default to the cheap
+        # gpt-image-1-mini; sessions can override to any catalog entry (incl. Grok).
         supports_image_gen=True,
-        image_model="gpt-image-1-mini",
-        image_cost_per_mtok=8.0,
-        image_cost_per_image=0.01,  # fallback estimate if usage tokens are absent
-        image_response_format=None,
+        default_image_model_id="openai:gpt-image-1-mini",
     ),
     # xAI Grok via its OpenAI-compatible API (base_url set so it doesn't inherit OPENAI_BASE_URL).
     ProviderDef(
@@ -153,14 +145,10 @@ _ALL_PROVIDERS: list[ProviderDef] = [
         cost_out_per_mtok=15.0,
         env_key="XAI_API_KEY",
         mode="api",
-        # P-0046 slice 6 / P-0037: xAI exposes an OpenAI-shaped images endpoint
-        # (`/v1/images/generations`), flat per-image billing, accepts `b64_json`.
-        # V1 = the quality tier (best output for the multimodal-parity demo); the
-        # cheaper `grok-imagine-image` is $0.02/image.
+        # P-0046 slice 6 / P-0037: image generation via xAI's images endpoint.
+        # Default to the quality tier; sessions can override (incl. to OpenAI).
         supports_image_gen=True,
-        image_model="grok-imagine-image-quality",
-        image_cost_per_image=0.05,
-        image_response_format="b64_json",
+        default_image_model_id="grok:grok-imagine-image-quality",
     ),
     # Google Gemini via the native google-genai SDK (Developer API).
     ProviderDef(

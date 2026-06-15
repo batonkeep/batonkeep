@@ -168,27 +168,42 @@ class ModelExecutor(Executor):
         return sum(getattr(self, "_aux_costs", []))
 
     async def _configure_image_gen(self) -> None:
-        """Resolve the credential + endpoint for the active image-capable provider and
-        stash the per-run image config (plus the cost accumulator) in `self._extra`.
-        Presence of `extra['image_gen']` is what offers the `image_generate` tool.
-        Skips silently if no credential is available — the tool just isn't offered."""
+        """Resolve the image model for this run and stash the per-run image config
+        (plus the cost accumulator) in `self._extra`. The model is the session
+        override (`extra['image_model_id']`) if set, else this text provider's catalog
+        default — so image gen is **decoupled from the text provider** and can run
+        cross-provider. The credential/base_url come from the chosen model's **home
+        provider**, not the text provider. Presence of `extra['image_gen']` is what
+        offers the `image_generate` tool; skips silently when the model is unknown or
+        its home provider has no usable credential (the tool just isn't offered)."""
         import os
 
         from app.credentials import resolve_api_key
+        from app.providers.image_models import get_image_model
+        from app.providers.registry import get_provider_def
 
+        imdef = get_image_model(self._extra.get("image_model_id"))
+        if imdef is None and self._def.supports_image_gen:
+            imdef = get_image_model(self._def.default_image_model_id)
+        if imdef is None:
+            return
+
+        home = get_provider_def(imdef.provider)
+        if home is None:
+            return
         api_key = (
-            "no-key" if self._def.auth_type == "none"
-            else await resolve_api_key(self._cred_provider, self._def.env_key)
+            "no-key" if home.auth_type == "none"
+            else await resolve_api_key(home.name, home.env_key)
         )
         if not api_key:
             return
         self._extra["image_gen"] = {
             "api_key": api_key,
-            "base_url": self._def.base_url or os.environ.get("OPENAI_BASE_URL") or None,
-            "model": self._def.image_model,
-            "cost_per_image": self._def.image_cost_per_image,
-            "cost_per_mtok": self._def.image_cost_per_mtok,
-            "response_format": self._def.image_response_format,
+            "base_url": home.base_url or os.environ.get("OPENAI_BASE_URL") or None,
+            "model": imdef.model,
+            "cost_per_image": imdef.cost_per_image,
+            "cost_per_mtok": imdef.cost_per_mtok,
+            "response_format": imdef.response_format,
             "cost_accumulator": self._aux_costs,
         }
 
@@ -208,7 +223,12 @@ class ModelExecutor(Executor):
         # Per-asset cost from non-token tools (image_generate); accumulated by the
         # tool via the shared list and folded into the run cost / budget gate.
         self._aux_costs: list[float] = []
-        if tools_enabled and self._def.supports_image_gen and self._def.image_model:
+        # Offer image generation when the run resolves to an image model: either the
+        # session's explicit override (`image_model_id`, possibly cross-provider) or
+        # this text provider's catalog default.
+        if tools_enabled and (
+            self._extra.get("image_model_id") or self._def.supports_image_gen
+        ):
             await self._configure_image_gen()
         if self._def.kind == "anthropic":
             async for ev in self._run_anthropic(

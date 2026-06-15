@@ -191,6 +191,12 @@ class Session(Base):
     # Default confirmation — code-exec is offered only under allow-safe/auto until
     # the interactive approval round-trip lands (slice 3b).
     exec_policy: Mapped[str] = mapped_column(String(16), nullable=False, default="confirmation")
+    # Image-generation model override (P-0046 slice 6 follow-up). NULL = inherit the
+    # text provider's catalog default; otherwise a catalog id from
+    # `app/providers/image_models.py`, which may be cross-provider (e.g. a Grok image
+    # model on an OpenAI-text session). The chosen model's home provider must have a
+    # credential for image gen to be offered.
+    image_model_id: Mapped[str | None] = mapped_column(String(96), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

@@ -54,6 +54,7 @@ from app.schemas import (
     CustomProviderUpdate,
     FileEntryOut,
     GitImportIn,
+    ImageModelOut,
     ImportOut,
     LoginRequest,
     ModelPricingOut,
@@ -657,6 +658,7 @@ async def create_session(
         preview_token=secrets.token_urlsafe(24),
         status="active",
         confidential=body.confidential,
+        image_model_id=body.image_model_id,
     )
     db.add(session)
     await db.commit()
@@ -734,6 +736,9 @@ async def update_session(
         session.confidential = body.confidential
     if body.exec_policy is not None:
         session.exec_policy = body.exec_policy
+    if body.image_model_id is not None:
+        # "" sentinel clears the override back to the provider default.
+        session.image_model_id = body.image_model_id or None
     await db.commit()
     await db.refresh(session)
     return SessionOut.model_validate(session)
@@ -1656,6 +1661,36 @@ async def delete_custom_provider_route(cp_id: str):
 
 
 # ── /api/providers ────────────────────────────────────────────────────────────
+
+@app.get("/api/image-models", response_model=list[ImageModelOut], tags=["providers"])
+async def list_image_models_route():
+    """The selectable image-generation models (P-0046 slice 6). `available` reflects
+    whether the model's home provider currently has a usable credential — the UI
+    offers cross-provider models but disables the ones whose provider isn't connected."""
+    from app.credentials import resolve_api_key
+    from app.providers.image_models import list_image_models
+    from app.providers.registry import get_provider_def
+
+    out: list[ImageModelOut] = []
+    cred_cache: dict[str, bool] = {}
+    for m in list_image_models():
+        if m.provider not in cred_cache:
+            home = get_provider_def(m.provider)
+            if home is None:
+                cred_cache[m.provider] = False
+            elif home.auth_type == "none":
+                cred_cache[m.provider] = True
+            else:
+                cred_cache[m.provider] = bool(
+                    await resolve_api_key(home.name, home.env_key)
+                )
+        out.append(ImageModelOut(
+            id=m.id, label=m.label, provider=m.provider, model=m.model,
+            cost_per_image=m.cost_per_image, cost_per_mtok=m.cost_per_mtok,
+            available=cred_cache[m.provider],
+        ))
+    return out
+
 
 @app.get("/api/providers", response_model=list[ProviderHealth], tags=["providers"])
 async def list_providers():

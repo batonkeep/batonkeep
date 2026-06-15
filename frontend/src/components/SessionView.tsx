@@ -8,7 +8,7 @@ import { marked } from "marked";
 import hljs from "highlight.js/lib/common";
 import "highlight.js/styles/github-dark.css";
 import { Activity, Archive, Check, ChevronDown, ChevronLeft, ChevronRight, Cloud, Copy, Download, FileCode, Folder, Globe, History, Link2, Loader2, Lock, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, Shield, SquareTerminal, Trash2, X } from "lucide-react";
-import type { CloudflareStatus, ExecPolicy, FileChange, FileEntry, ProviderHealth, Publish, Session, SessionTemplate, SessionTurn, Version } from "../types";
+import type { CloudflareStatus, ExecPolicy, FileChange, FileEntry, ImageModel, ProviderHealth, Publish, Session, SessionTemplate, SessionTurn, Version } from "../types";
 import { api } from "../api";
 import { useSessionEvents, type SessionEvent } from "../useLiveFeed";
 import { fmtTime } from "../format";
@@ -459,6 +459,7 @@ export default function SessionView({
   const [uploaded, setUploaded] = useState<string[]>([]); // paths dropped this session, for chips
   const [sessionQuery, setSessionQuery] = useState(""); // filter the session list
   const [templates, setTemplates] = useState<SessionTemplate[]>([]); // task-type starters
+  const [imageModels, setImageModels] = useState<ImageModel[]>([]); // P-0046 slice 6: image-gen catalog
   const [activeTemplate, setActiveTemplate] = useState<string | null>(null); // template used to create the current session
   // Mobile only: the 3-pane grid can't fit a phone, so a selected session is a
   // master→detail view with a Chat/Preview tab switch. Desktop ignores this.
@@ -640,6 +641,7 @@ export default function SessionView({
   // empty state. A blank session is always available via the header + button.
   useEffect(() => {
     api.listSessionTemplates().then(setTemplates).catch(() => { });
+    api.listImageModels().then(setImageModels).catch(() => { });
   }, []);
 
   const handleCreate = async (template?: string) => {
@@ -706,6 +708,15 @@ export default function SessionView({
   const handleSetExecPolicy = async (policy: ExecPolicy) => {
     if (!selectedId || !detail || policy === detail.exec_policy) return;
     const updated = await api.updateSession(selectedId, { exec_policy: policy });
+    setDetail(updated);
+  };
+
+  // P-0046 slice 6: change the session's image-gen model ("" → provider default).
+  const handleSetImageModel = async (value: string) => {
+    if (!selectedId || !detail) return;
+    const next = value || null;
+    if (next === (detail.image_model_id ?? null)) return;
+    const updated = await api.updateSession(selectedId, { image_model_id: value });
     setDetail(updated);
   };
 
@@ -1326,6 +1337,21 @@ export default function SessionView({
                       <option value="confirmation">Code: confirm each</option>
                       <option value="allow-safe">Code: allow safe</option>
                       <option value="auto">Code: auto</option>
+                    </Select>
+                  )}
+                  {detail && execPolicyRelevant && imageModels.length > 0 && (
+                    <Select
+                      value={detail.image_model_id ?? ""}
+                      onChange={(e) => handleSetImageModel(e.target.value)}
+                      className="h-8 w-auto py-0 text-[11px]"
+                      title="Image model — which model the agent uses to generate images. Default follows the provider; you can pick any connected model, including cross-provider (P-0046)."
+                    >
+                      <option value="">Image: default</option>
+                      {imageModels.map((m) => (
+                        <option key={m.id} value={m.id} disabled={!m.available}>
+                          {`Image: ${m.label}${m.available ? "" : " (no key)"}`}
+                        </option>
+                      ))}
                     </Select>
                   )}
                   <Button

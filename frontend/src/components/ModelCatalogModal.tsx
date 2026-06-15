@@ -198,13 +198,15 @@ export default function ModelCatalogModal({
             </div>
           </section>
 
-          {/* Preferred per capability */}
+          {/* Per-capability routing preferences (not the active model — that's the ★
+              above, which owns `default`). These are inert until automated cost-aware
+              routing (P-0048 lever 4) ships; they pick a model *per task type* then. */}
           <section>
             <h3 className="mb-1.5 font-mono text-[11px] uppercase tracking-wider text-muted">
-              Preferred model per capability
+              Routing preferences <span className="normal-case text-muted/70">· not yet active</span>
             </h3>
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-              {catalog.capabilities_vocab.map((cap) => (
+              {catalog.capabilities_vocab.filter((cap) => cap !== "default").map((cap) => (
                 <label key={cap} className="flex flex-col gap-1">
                   <span className="font-mono text-[10px] text-muted">{cap}</span>
                   <Select
@@ -213,14 +215,15 @@ export default function ModelCatalogModal({
                     onChange={(e) => run(() => api.setCatalogPreferred(template, cap, e.target.value || null))}
                     className="h-7 text-[11px]"
                   >
-                    <option value="">— inherit default —</option>
+                    <option value="">— use active model —</option>
                     {enabled.map((m) => <option key={m.id} value={m.id}>{m.id}</option>)}
                   </Select>
                 </label>
               ))}
             </div>
             <p className="mt-1 font-mono text-[10px] text-muted">
-              <code>default</code> drives model selection now; the rest are the substrate for cost-aware routing.
+              The ★ above sets the model that runs now. These per-task-type hints are the
+              substrate for future cost-aware routing.
             </p>
           </section>
         </div>

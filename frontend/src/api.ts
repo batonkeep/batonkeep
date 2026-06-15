@@ -17,6 +17,7 @@ import type {
   ImportResult,
   Mode,
   ModelPricing,
+  ProviderCatalog,
   ProviderHealth,
   ProviderLimitsUpdate,
   Run,
@@ -255,6 +256,26 @@ export const api = {
   // Known-model price lookup so the UI can pre-populate $/Mtok or ask for input.
   getModelPricing: (model: string) =>
     req<ModelPricing>(`/model-pricing?model=${encodeURIComponent(model)}`),
+  // P-0049 structured model catalog (per provider template): enabled models +
+  // capabilities + pricing + usage, sorted most/recently-used. Powers the picker.
+  getProviderCatalog: (template: string) =>
+    req<ProviderCatalog>(`/providers/${encodeURIComponent(template)}/catalog`),
+  updateCatalogModel: (
+    template: string,
+    body: {
+      id: string; enabled?: boolean; capabilities?: string[];
+      cost_in_per_mtok?: number; cost_out_per_mtok?: number; clear_pricing?: boolean;
+    },
+  ) =>
+    req<{ status: string; template: string; model: string }>(
+      `/providers/${encodeURIComponent(template)}/catalog/model`,
+      { method: "PUT", body: JSON.stringify(body) }
+    ),
+  setCatalogPreferred: (template: string, capability: string, model: string | null) =>
+    req<{ status: string }>(
+      `/providers/${encodeURIComponent(template)}/catalog/preferred`,
+      { method: "PUT", body: JSON.stringify({ capability, model }) }
+    ),
   // Kicks off a background capture (202); the result lands on the providers list.
   captureSubscriptionUsage: (instanceId: string, token: string) =>
     req<{ status: string; instance: string }>(

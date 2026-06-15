@@ -8,7 +8,7 @@ import { marked } from "marked";
 import hljs from "highlight.js/lib/common";
 import "highlight.js/styles/github-dark.css";
 import { Activity, Archive, Check, ChevronDown, ChevronLeft, ChevronRight, Cloud, Copy, Download, FileCode, Folder, Globe, History, Link2, Loader2, Lock, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, Shield, SquareTerminal, Trash2, X } from "lucide-react";
-import type { CloudflareStatus, ExecPolicy, FileChange, FileEntry, ImageModel, ProviderHealth, Publish, Session, SessionTemplate, SessionTurn, Version } from "../types";
+import type { CloudflareStatus, ExecPolicy, FileChange, FileEntry, ImageModel, ProviderCatalog, ProviderHealth, Publish, Session, SessionTemplate, SessionTurn, Version } from "../types";
 import { api } from "../api";
 import { useSessionEvents, type SessionEvent } from "../useLiveFeed";
 import { fmtTime } from "../format";
@@ -425,6 +425,10 @@ export default function SessionView({
   const [turns, setTurns] = useState<SessionTurn[]>([]);
   const [message, setMessage] = useState("");
   const [providerSwitch, setProviderSwitch] = useState("");
+  // P-0049: per-session model override for the active API provider ("" = the
+  // provider's catalog default). Backed by the provider's catalog of enabled models.
+  const [modelSwitch, setModelSwitch] = useState("");
+  const [sessionCatalog, setSessionCatalog] = useState<ProviderCatalog | null>(null);
   const [sending, setSending] = useState(false);
   const [creating, setCreating] = useState(false);
   const [confidentialDraft, setConfidentialDraft] = useState(false); // new-session local-only pin
@@ -524,6 +528,21 @@ export default function SessionView({
   const activeKind = providerKind[activeInstance];
   const execPolicyRelevant =
     activeKind != null && activeKind !== "cli" && activeKind !== "mock";
+
+  // P-0049: load the active API provider's catalog so the composer can pick a model.
+  // Keyed by template (== instance id for built-in API providers); 404 (custom/CLI)
+  // → no picker, falls back to the provider default.
+  useEffect(() => {
+    if (!execPolicyRelevant || !activeInstance) { setSessionCatalog(null); return; }
+    let live = true;
+    api.getProviderCatalog(activeInstance)
+      .then((c) => { if (live) setSessionCatalog(c); })
+      .catch(() => { if (live) setSessionCatalog(null); });
+    return () => { live = false; };
+  }, [activeInstance, execPolicyRelevant]);
+
+  // Reflect the session's persisted model override in the picker on load/switch.
+  useEffect(() => { setModelSwitch(detail?.model ?? ""); }, [detail?.model, activeInstance]);
   // Terminal mode needs the web console unlocked (it spawns a CLI) + a CLI provider.
   // With app-auth the session is the unlock gate; no separate token is required.
   const canConsole = consoleAvailable && (appAuthEnabled || consoleToken.trim().length > 0);
@@ -768,8 +787,11 @@ export default function SessionView({
       await api.createTurn(selectedId, {
         message: text,
         provider: providerSwitch || undefined,
+        // P-0049: pin the model for this and subsequent turns on the API path. Only
+        // send when a catalog is in play (API provider); "" clears to the default.
+        model: sessionCatalog ? modelSwitch : undefined,
       });
-      onSessionsChanged(); // session.provider may have switched
+      onSessionsChanged(); // session.provider/model may have switched
     } catch (err) {
       // Only genuine pre-dispatch errors (session not found, no provider selected)
       // reach here. Restore the message so the user can retry.
@@ -1819,6 +1841,24 @@ export default function SessionView({
                     </option>
                   ))}
                 </Select>
+                {sessionCatalog && (
+                  <>
+                    <span className="font-mono text-[11px] text-muted">model</span>
+                    <Select
+                      value={modelSwitch}
+                      onChange={(e) => setModelSwitch(e.target.value)}
+                      className="h-7 text-xs"
+                      title="Model for this API provider (P-0049). Default uses the provider's preferred model."
+                    >
+                      <option value="">
+                        default ({sessionCatalog.preferred.default ?? sessionCatalog.effective_model ?? "—"})
+                      </option>
+                      {sessionCatalog.models.filter((m) => m.enabled).map((m) => (
+                        <option key={m.id} value={m.id}>{m.id}</option>
+                      ))}
+                    </Select>
+                  </>
+                )}
                 <div className="ml-auto flex items-center gap-0.5">
                   <Button
                     variant="ghost"

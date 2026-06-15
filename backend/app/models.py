@@ -176,6 +176,11 @@ class Session(Base):
     title: Mapped[str] = mapped_column(String(256), nullable=False, default="Untitled session")
     # currently-selected provider instance id (e.g. "grok", "agy", "mock")
     provider: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    # Per-session model override for the chosen API provider (P-0049). NULL = use the
+    # provider's catalog `preferred.default`. Applies to API-path providers only (CLI
+    # plans own their model via their own config dir). Threaded into the executor as
+    # extra['model'] for the turn.
+    model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     # absolute path to the sandboxed workspace directory
     workspace_path: Mapped[str] = mapped_column(String(512), nullable=False)
     # unguessable token gating the live preview (M1.2). Required on every preview
@@ -233,6 +238,9 @@ class SessionTurn(Base):
     seq: Mapped[int] = mapped_column(Integer, nullable=False)
     # the provider instance id that handled this turn (records the agent switch)
     provider: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    # the effective model id this turn ran (P-0049) — feeds per-model usage metrics
+    # for the catalog picker's most/recently-used sort, alongside Run.model for tasks.
+    model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")
     response: Mapped[str | None] = mapped_column(Text, nullable=True)
     # "running" | "succeeded" | "failed"

@@ -4,12 +4,13 @@
 // D-track: composed from ui/ primitives (Button, Badge, Card, Input, StatusDot).
 // D-0026: custom provider cards + Add/Edit/Delete at bottom of the list.
 import { lazy, Suspense, useEffect, useState } from "react";
-import { Check, KeyRound, Pencil, Plus, Power, RefreshCw, RotateCcw, ShieldCheck, Terminal, Trash2 } from "lucide-react";
+import { Check, KeyRound, Pencil, Plus, Power, RefreshCw, RotateCcw, ShieldCheck, Sliders, Terminal, Trash2 } from "lucide-react";
 import type { CustomProvider, ProviderHealth } from "../types";
 import { api } from "../api";
 import { countdown, fmtRelative } from "../format";
 import { Badge, Button, Card, Input, StatusDot } from "../ui";
 import CustomProviderForm from "./CustomProviderForm";
+import ModelCatalogModal from "./ModelCatalogModal";
 import TagEditor from "./TagEditor";
 
 const AuthConsole = lazy(() => import("./AuthConsole"));
@@ -41,8 +42,8 @@ const TIER_LABEL: Record<string, string> = {
 };
 
 export default function ProvidersPanel({ providers, now, onRefresh, consoleAvailable, consoleToken, onSetConsoleToken, appAuthEnabled }: Props) {
-  const [editingModel, setEditingModel] = useState<string | null>(null);
-  const [modelDraft, setModelDraft] = useState("");
+  // P-0049: the provider template whose model catalog is open in the modal.
+  const [manageTemplate, setManageTemplate] = useState<string | null>(null);
   const [editingTags, setEditingTags] = useState<string | null>(null);
   const [tagsDraft, setTagsDraft] = useState<string[]>([]);
   const [authTarget, setAuthTarget] = useState<string | null>(null);
@@ -83,10 +84,6 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
     catch { /* surfaced via the unchanged state on next refresh */ }
   };
 
-  const saveModel = async (instanceId: string) => {
-    try { await api.setProviderModel(instanceId, modelDraft.trim() || null, consoleToken); setEditingModel(null); onRefresh(); }
-    catch { /* surfaced via disabled state */ }
-  };
 
   const saveTags = async (providerName: string) => {
     try { await api.setProviderTags(providerName, tagsDraft); setEditingTags(null); onRefresh(); }
@@ -194,33 +191,17 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
                             <Badge tone="neutral">{p.model || "CLI default"}</Badge>
                             <Badge tone="neutral">headless</Badge>
                           </>
-                        ) : editingModel === p.name ? (
-                          <span className="flex items-center gap-1">
-                            <input autoFocus value={modelDraft} onChange={(e) => setModelDraft(e.target.value)}
-                              onKeyDown={(e) => e.key === "Enter" && saveModel(p.name)}
-                              placeholder={p.model || "model id"}
-                              className="w-32 rounded border border-brand/50 bg-base px-1.5 py-0.5 font-mono text-[10px] text-ink outline-none"
-                            />
-                            <button onClick={() => saveModel(p.name)} className="text-ok hover:text-ink"><Check size={12} /></button>
-                          </span>
                         ) : (
-                          <Badge tone="neutral">
+                          // Model selection + catalog management (P-0049) — a clear
+                          // button, not a muted tag. Pricing/enable/add live in the modal.
+                          <button
+                            onClick={() => setManageTemplate(p.template)}
+                            title="Manage models (select, add, enable/disable, pricing)"
+                            className="inline-flex items-center gap-1 rounded border border-brand/40 bg-brand/5 px-1.5 py-0.5 font-mono text-[11px] text-brand hover:bg-brand/10"
+                          >
+                            <Sliders size={11} />
                             {p.model || "default model"}
-                            {canConsole && p.kind !== "cli" && (
-                              <button onClick={() => { setEditingModel(p.name); setModelDraft(p.model || ""); }}
-                                className="ml-1 text-muted hover:text-brand"><Pencil size={10} /></button>
-                            )}
-                          </Badge>
-                        )}
-                        {/* Effective $/Mtok the run meters at, with where it came from:
-                            override (operator-set) · registry (known-model book) · est. (template fallback). */}
-                        {p.kind !== "cli" && (p.cost_in_per_mtok > 0 || p.cost_out_per_mtok > 0) && (
-                          <Badge tone={p.pricing_source === "template" ? "warn" : "neutral"}>
-                            ${p.cost_in_per_mtok}/${p.cost_out_per_mtok} per Mtok
-                            <span className="ml-1 text-muted">
-                              · {p.pricing_source === "override" ? "set" : p.pricing_source === "registry" ? "registry" : "est."}
-                            </span>
-                          </Badge>
+                          </button>
                         )}
                       </div>
                     </div>
@@ -419,6 +400,14 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
           <AuthConsole target={authTarget} token={consoleToken} onClose={() => { setAuthTarget(null); onRefresh(); }} />
         </Suspense>
       )}
+
+      {/* P-0049: model catalog editor for the selected provider template. */}
+      <ModelCatalogModal
+        template={manageTemplate ?? ""}
+        open={manageTemplate != null}
+        onClose={() => setManageTemplate(null)}
+        onSaved={onRefresh}
+      />
     </div>
   );
 }

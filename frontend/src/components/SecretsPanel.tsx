@@ -1,8 +1,9 @@
-// SecretsPanel.tsx — the named secrets-management surface (P-0009 #3) + key/model
-// entry (P-0035). For every key-backed provider it reports where its credential
-// resolves from (encrypted store / deployment env / missing), a masked last-4 hint,
-// the effective model, and lets the operator paste a BYO key and set the model id.
-// Never shows or returns any plaintext key.
+// SecretsPanel.tsx — the named secrets-management surface (P-0009 #3) + key entry
+// (P-0035). For every key-backed provider it reports where its credential resolves
+// from (encrypted store / deployment env / missing) and a masked last-4 hint, and
+// lets the operator paste a BYO key. Never shows or returns any plaintext key.
+// Model selection + catalog management live on the provider card (P-0049), not here —
+// this panel stays focused on credentials.
 // D-track: composed from ui/ primitives (Badge, Button, Card, Input, StatusDot).
 import { useCallback, useEffect, useState } from "react";
 import { Check, KeyRound, Pencil, RefreshCw, ShieldCheck, Trash2, X } from "lucide-react";
@@ -32,7 +33,6 @@ export default function SecretsPanel() {
   const [rows, setRows] = useState<SecretStatus[]>([]);
   const [editing, setEditing] = useState<string | null>(null);
   const [keyDraft, setKeyDraft] = useState("");
-  const [modelDraft, setModelDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -42,22 +42,16 @@ export default function SecretsPanel() {
   const openEditor = (r: SecretStatus) => {
     setEditing(r.provider);
     setKeyDraft("");
-    setModelDraft(r.model ?? "");
     setError(null);
   };
-  const closeEditor = () => { setEditing(null); setKeyDraft(""); setModelDraft(""); setError(null); };
+  const closeEditor = () => { setEditing(null); setKeyDraft(""); setError(null); };
 
-  // Save whatever changed: a non-empty key is stored; a model that differs is set.
   const save = async (r: SecretStatus) => {
     setBusy(true);
     setError(null);
     try {
       if (keyDraft.trim()) {
         await api.createCredential(r.provider, keyDraft.trim());
-      }
-      const nextModel = modelDraft.trim();
-      if (nextModel !== (r.model ?? "")) {
-        await api.setProviderModel(r.provider, nextModel || null);
       }
       await load();
       closeEditor();
@@ -94,8 +88,9 @@ export default function SecretsPanel() {
         </Button>
       </div>
       <p className="mt-1 text-xs text-muted">
-        Add an API key and pick the model for each provider. BYO keys are encrypted at rest
-        and never displayed; <span className="text-brand">local</span> providers need no remote key.
+        Add a BYO API key for each provider — encrypted at rest, never displayed;
+        <span className="text-brand"> local</span> providers need no remote key. Model
+        selection lives on each provider card.
       </p>
 
       <div className="mt-3 divide-y divide-edge">
@@ -111,7 +106,6 @@ export default function SecretsPanel() {
                   <StatusDot tone={r.source === "missing" ? "bad" : "ok"} />
                   <span className="truncate font-mono text-sm text-ink">{r.provider}</span>
                   {r.local && <Badge tone="ok">local</Badge>}
-                  {r.model && <Badge tone="neutral">{r.model}</Badge>}
                   {r.key_hint && <span className="font-mono text-[11px] text-muted">{r.key_hint}</span>}
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
@@ -120,7 +114,7 @@ export default function SecretsPanel() {
                   <button
                     onClick={() => (isEditing ? closeEditor() : openEditor(r))}
                     className="text-muted hover:text-brand"
-                    title={isEditing ? "Close" : "Add key / set model"}
+                    title={isEditing ? "Close" : "Add / rotate key"}
                   >
                     {isEditing ? <X size={13} /> : <Pencil size={13} />}
                   </button>
@@ -136,17 +130,8 @@ export default function SecretsPanel() {
                       autoFocus
                       value={keyDraft}
                       onChange={(e) => setKeyDraft(e.target.value)}
-                      placeholder={r.source === "stored" ? "paste a new key to rotate" : "paste API key"}
-                      className="w-full py-1 font-mono text-xs"
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-muted">Model id</span>
-                    <Input
-                      value={modelDraft}
-                      onChange={(e) => setModelDraft(e.target.value)}
                       onKeyDown={(e) => e.key === "Enter" && !busy && save(r)}
-                      placeholder="e.g. gpt-4o, grok-4, gemini-2.5-flash"
+                      placeholder={r.source === "stored" ? "paste a new key to rotate" : "paste API key"}
                       className="w-full py-1 font-mono text-xs"
                     />
                   </label>
@@ -164,7 +149,7 @@ export default function SecretsPanel() {
                     <Button
                       size="sm" icon={<Check size={12} />}
                       onClick={() => save(r)}
-                      disabled={busy || (!keyDraft.trim() && modelDraft.trim() === (r.model ?? ""))}
+                      disabled={busy || !keyDraft.trim()}
                     >
                       {busy ? "Saving…" : "Save"}
                     </Button>

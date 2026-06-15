@@ -41,6 +41,8 @@ from app.schemas import (
     ApprovalDecision,
     AuthStatus,
     CaptureRequest,
+    CatalogModelUpdate,
+    CatalogPreferredUpdate,
     CloudflareConfigIn,
     CloudflareDeployIn,
     CloudflareDeployOut,
@@ -59,6 +61,7 @@ from app.schemas import (
     LoginRequest,
     ModelPricingOut,
     ModeOut,
+    ProviderCatalogOut,
     ProviderEnabledUpdate,
     ProviderHealth,
     ProviderLimitsUpdate,
@@ -662,6 +665,7 @@ async def create_session(
         preview_token=secrets.token_urlsafe(24),
         status="active",
         confidential=body.confidential,
+        model=body.model,
         image_model_id=body.image_model_id,
     )
     db.add(session)
@@ -762,6 +766,9 @@ async def update_session(
     if body.image_model_id is not None:
         # "" sentinel clears the override back to the provider default.
         session.image_model_id = body.image_model_id or None
+    if body.model is not None:
+        # P-0049: "" sentinel clears back to the provider's catalog default.
+        session.model = body.model.strip() or None
     if body.budget_usd is not None:
         # 0 clears the cap (no session budget); a positive value sets/raises it.
         session.budget_usd = body.budget_usd or None
@@ -877,7 +884,8 @@ async def create_session_turn(
     from app.sessions.orchestrator import SessionError, create_turn_record, run_turn_background
     try:
         turn_id, turn_out = await create_turn_record(
-            session_id, body.message, provider=body.provider, owner_id=owner_id,
+            session_id, body.message, provider=body.provider, model=body.model,
+            owner_id=owner_id,
         )
     except SessionError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -1942,6 +1950,117 @@ async def get_model_pricing(model: str):
         model=model, known=True, cost_in_per_mtok=rates[0], cost_out_per_mtok=rates[1],
         cache_read_per_mtok=cache_read, cache_write_per_mtok=cache_write,
     )
+
+
+@app.get(
+    "/api/providers/{template}/catalog",
+    response_model=ProviderCatalogOut, tags=["providers"],
+)
+async def get_provider_catalog(
+    template: str,
+    owner_id: str = Depends(_owner_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """A provider's structured model catalog (P-0049): enabled models + capabilities +
+    resolved pricing + this owner's usage, sorted most-used then most-recently-used.
+    Powers the model picker and the catalog editor. Owner-scoped operator config."""
+    from app.providers import model_catalog, model_pricing
+    from app.providers.registry import effective_model, get_instance, get_provider_def
+    from app.schemas import CatalogModelOut
+
+    pdef = get_provider_def(template)
+    if pdef is None:
+        raise HTTPException(status_code=404, detail="Unknown provider")
+
+    # Owner usage per model id (task Runs + build-session turns): count + most-recent.
+    usage: dict[str, tuple] = {}
+    for model_col, id_col, ts_col, table in (
+        (Run.model, Run.id, Run.created_at, Run),
+        (SessionTurn.model, SessionTurn.id, SessionTurn.created_at, SessionTurn),
+    ):
+        rows = (await db.execute(
+            select(model_col, func.count(id_col), func.max(ts_col))
+            .where(table.owner_id == owner_id, model_col.is_not(None))
+            .group_by(model_col)
+        )).all()
+        for m, cnt, ts in rows:
+            pc, pts = usage.get(m, (0, None))
+            usage[m] = (pc + cnt, max(filter(None, [pts, ts])) if (pts or ts) else None)
+
+    models = []
+    for entry in model_catalog.provider_models(template):
+        rates = model_pricing.lookup(entry.id)
+        cnt, ts = usage.get(entry.id, (0, None))
+        models.append(CatalogModelOut(
+            id=entry.id, enabled=entry.enabled, capabilities=entry.capabilities,
+            known=rates is not None,
+            cost_in_per_mtok=rates[0] if rates else None,
+            cost_out_per_mtok=rates[1] if rates else None,
+            use_count=cnt, last_used=ts.isoformat() if ts else None,
+        ))
+    models.sort(key=lambda m: (m.use_count, m.last_used or ""), reverse=True)
+
+    inst = get_instance(template)
+    eff = effective_model(inst, pdef) if inst is not None else pdef.model
+    return ProviderCatalogOut(
+        template=template, models=models,
+        preferred=model_catalog.provider_catalog(template).preferred,
+        effective_model=eff,
+        capabilities_vocab=list(model_catalog.PREFERRED_CAPABILITIES),
+    )
+
+
+@app.put("/api/providers/{template}/catalog/model", tags=["providers"])
+async def update_catalog_model(
+    template: str,
+    body: CatalogModelUpdate,
+    owner_id: str = Depends(_owner_id),
+):
+    """Add/update one catalog model: enabled/capabilities (structure overlay) and
+    optional $/Mtok pricing (write-through to the flat price overlay). Owner-scoped."""
+    from app.providers import model_catalog, model_pricing
+    from app.providers.registry import get_provider_def
+
+    if get_provider_def(template) is None:
+        raise HTTPException(status_code=404, detail="Unknown provider")
+    model_id = (body.id or "").strip()
+    if not model_id:
+        raise HTTPException(status_code=400, detail="model id required")
+    model_catalog.set_model(
+        template, model_id, enabled=body.enabled, capabilities=body.capabilities,
+    )
+    if body.clear_pricing:
+        model_pricing.set_overlay_price(model_id, None)
+    elif body.cost_in_per_mtok is not None and body.cost_out_per_mtok is not None:
+        if body.cost_in_per_mtok < 0 or body.cost_out_per_mtok < 0:
+            raise HTTPException(status_code=400, detail="cost per Mtok cannot be negative")
+        model_pricing.set_overlay_price(
+            model_id, (body.cost_in_per_mtok, body.cost_out_per_mtok))
+    logger.info("Catalog model %s/%s updated (owner=%s)", template, model_id, owner_id)
+    return {"status": "ok", "template": template, "model": model_id}
+
+
+@app.put("/api/providers/{template}/catalog/preferred", tags=["providers"])
+async def update_catalog_preferred(
+    template: str,
+    body: CatalogPreferredUpdate,
+    owner_id: str = Depends(_owner_id),
+):
+    """Set/clear a provider's preferred model for a capability (P-0049). `default`
+    drives model resolution today; the others are the substrate cost-aware routing
+    (P-0048 lever 4, deferred) will consume. Owner-scoped."""
+    from app.providers import model_catalog
+    from app.providers.registry import get_provider_def
+
+    if get_provider_def(template) is None:
+        raise HTTPException(status_code=404, detail="Unknown provider")
+    cap = (body.capability or "").strip()
+    if cap not in model_catalog.PREFERRED_CAPABILITIES:
+        raise HTTPException(status_code=400, detail=f"unknown capability {cap!r}")
+    model_catalog.set_preferred(template, cap, (body.model or "").strip() or None)
+    logger.info("Catalog preferred %s/%s -> %s (owner=%s)",
+                template, cap, body.model, owner_id)
+    return {"status": "ok", "template": template, "capability": cap, "model": body.model}
 
 
 @app.post("/api/providers/{provider_name}/tags", tags=["providers"])

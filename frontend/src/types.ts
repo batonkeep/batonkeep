@@ -146,6 +146,26 @@ export interface ModelPricing {
   cost_out_per_mtok: number | null;
 }
 
+// P-0049 structured API model catalog (GET /api/providers/{template}/catalog).
+export interface CatalogModel {
+  id: string;
+  enabled: boolean;
+  capabilities: string[];
+  known: boolean;
+  cost_in_per_mtok: number | null;
+  cost_out_per_mtok: number | null;
+  use_count: number;
+  last_used: string | null;
+}
+
+export interface ProviderCatalog {
+  template: string;
+  models: CatalogModel[];
+  preferred: Record<string, string>;
+  effective_model: string | null;
+  capabilities_vocab: string[];
+}
+
 export interface ProviderLimitsUpdate {
   window_seconds: number;
   window_limit: number;
@@ -273,6 +293,8 @@ export interface Session {
   confidential: boolean;
   // P-0046: code-exec execution policy.
   exec_policy: ExecPolicy;
+  // P-0049: per-session model override for the API provider (null = catalog default).
+  model?: string | null;
   // P-0046 slice 6: image-gen model override (catalog id; null = provider default).
   image_model_id?: string | null;
   // Optional per-session spend cap (USD, API path); null = no cap (opt-in).
@@ -293,6 +315,7 @@ export interface SessionInput {
   provider?: string | null;
   template?: string | null;
   confidential?: boolean;
+  model?: string | null;
   image_model_id?: string | null;
 }
 
@@ -426,6 +449,8 @@ export interface SessionUpdate {
   title?: string | null;
   confidential?: boolean;
   exec_policy?: ExecPolicy;
+  // P-0049: per-session model override (API path). "" clears to the provider default.
+  model?: string | null;
   // P-0046 slice 6: image-gen model override. "" clears back to provider default.
   image_model_id?: string | null;
   // Per-session spend cap (USD). Positive sets/raises the cap; 0 clears it.
@@ -437,6 +462,8 @@ export interface TurnInput {
   message: string;
   // optional provider switch for this and subsequent turns
   provider?: string | null;
+  // P-0049: optional model switch (API path). "" clears back to the provider default.
+  model?: string | null;
 }
 
 // ── WebSocket frames (ws.py / §10) ──────────────────────────────────────────

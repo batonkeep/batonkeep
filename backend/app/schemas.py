@@ -484,6 +484,11 @@ class ProviderHealth(BaseModel):
     # Effective $/Mtok the instance meters at (override > known-model book > template).
     cost_in_per_mtok: float = 0.0
     cost_out_per_mtok: float = 0.0
+    # Prompt-cache $/Mtok (cache-read cheap, cache-write a premium). Explicit per-model
+    # rate if known, else derived from the input rate. Surfaced so the UI shows the
+    # full cost picture once caching is on.
+    cache_read_per_mtok: float = 0.0
+    cache_write_per_mtok: float = 0.0
     pricing_source: str = "template"  # "override" | "registry" | "template"
 
 
@@ -520,6 +525,9 @@ class ModelPricingOut(BaseModel):
     known: bool
     cost_in_per_mtok: float | None = None
     cost_out_per_mtok: float | None = None
+    # Prompt-cache rates for the model (explicit if pinned, else derived from input).
+    cache_read_per_mtok: float | None = None
+    cache_write_per_mtok: float | None = None
 
 
 class ConsoleConfig(BaseModel):

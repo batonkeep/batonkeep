@@ -100,6 +100,65 @@ _DEFAULT_PRICES: dict[str, tuple[float, float]] = {
     "llama-3.3-70b": (0.18, 0.18),
 }
 
+# Explicit baked-in cache rates `(cache_read_per_mtok, cache_write_per_mtok)` for
+# models whose values we know authoritatively. Anthropic ephemeral caching bills
+# cache-read at 0.1× input and cache-write (first store of a breakpoint) at 1.25×
+# input (5-minute TTL) — these are exact, not the generic derivation. Models absent
+# here fall back to derive-from-input-rate in cache_rates(); an overlay 4-tuple
+# overrides either. OpenAI/Gemini cached-input ratios differ and are intentionally
+# left to derivation until we pin verified numbers (operators can override).
+_DEFAULT_CACHE_PRICES: dict[str, tuple[float, float]] = {
+    # Anthropic (Claude) — 0.1× / 1.25× of the input rate above.
+    "claude-fable-5": (1.0, 12.5),
+    "claude-opus-4-8": (0.5, 6.25),
+    "claude-opus-4-7": (0.5, 6.25),
+    "claude-opus-4-6": (0.5, 6.25),
+    "claude-opus-4-5": (0.5, 6.25),
+    "claude-opus-4-1": (1.5, 18.75),
+    "claude-opus-4": (1.5, 18.75),
+    "claude-sonnet-4-6": (0.3, 3.75),
+    "claude-sonnet-4-5": (0.3, 3.75),
+    "claude-sonnet-4": (0.3, 3.75),
+    "claude-haiku-4-5": (0.1, 1.25),
+    "claude-3-5-haiku": (0.08, 1.0),
+}
+
+# Minimum cacheable prefix length (input tokens) per model. A `cache_control`
+# breakpoint over a prefix shorter than this is **silently ignored** by the
+# provider — no error, just `cache_creation_input_tokens: 0`. Model-dependent;
+# values per Anthropic's prompt-caching docs. Used by min_cacheable_tokens() so the
+# executor can warn when a prefix is too small to ever cache.
+_DEFAULT_MIN_CACHEABLE = 1024
+_MIN_CACHEABLE_TOKENS: dict[str, int] = {
+    "claude-opus-4-8": 4096,
+    "claude-opus-4-7": 4096,
+    "claude-opus-4-6": 4096,
+    "claude-opus-4-5": 4096,
+    "claude-haiku-4-5": 4096,
+    "claude-fable-5": 2048,
+    "claude-sonnet-4-6": 2048,
+    "claude-3-5-haiku": 2048,
+    # Sonnet 4.5 / 4.1 / 4 / 3.7 use the 1024 default.
+}
+
+
+def min_cacheable_tokens(model: str | None) -> int:
+    """The smallest prefix (input tokens) that will actually cache for a model.
+
+    Lenient match like lookup() (normalised + longest-prefix); unknown models get
+    the conservative 1024 default. A breakpoint below this silently no-ops."""
+    m = _normalise(model) if model else ""
+    if not m:
+        return _DEFAULT_MIN_CACHEABLE
+    exact = _MIN_CACHEABLE_TOKENS.get(m)
+    if exact is not None:
+        return exact
+    best: tuple[str, int] | None = None
+    for key, n in _MIN_CACHEABLE_TOKENS.items():
+        if m.startswith(key) and (best is None or len(key) > len(best[0])):
+            best = (key, n)
+    return best[1] if best else _DEFAULT_MIN_CACHEABLE
+
 
 def _load_overlay() -> tuple[dict[str, tuple[float, float]], dict[str, tuple[float, float]]]:
     """Read the optional Docker-mapped overlay file. Missing/corrupt → ({}, {}).
@@ -149,6 +208,7 @@ def reload() -> None:
     _PRICES.clear()
     _CACHE_PRICES.clear()
     _PRICES.update(_DEFAULT_PRICES)
+    _CACHE_PRICES.update(_DEFAULT_CACHE_PRICES)
     base, cache = _load_overlay()
     _PRICES.update(base)
     _CACHE_PRICES.update(cache)

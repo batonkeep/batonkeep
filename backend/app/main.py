@@ -1728,6 +1728,7 @@ async def list_providers():
     """
     from app.providers import model_pricing
     from app.providers.registry import (
+        effective_cache_pricing,
         effective_capability_tags,
         effective_model,
         effective_pricing,
@@ -1749,6 +1750,7 @@ async def list_providers():
         connected = await is_instance_connected(inst)
         model = effective_model(inst, pdef)
         in_rate, out_rate = effective_pricing(pdef, inst.id, model)
+        cache_read, cache_write = effective_cache_pricing(pdef, inst.id, model)
         if get_pricing_override(inst.id) is not None:
             pricing_source = "override"
         elif model_pricing.lookup(model) is not None:
@@ -1776,6 +1778,8 @@ async def list_providers():
             capability_tags=effective_capability_tags(pdef),
             cost_in_per_mtok=in_rate,
             cost_out_per_mtok=out_rate,
+            cache_read_per_mtok=cache_read,
+            cache_write_per_mtok=cache_write,
             pricing_source=pricing_source,
         ))
     return result
@@ -1933,8 +1937,10 @@ async def get_model_pricing(model: str):
     rates = model_pricing.lookup(model)
     if rates is None:
         return ModelPricingOut(model=model, known=False)
+    cache_read, cache_write = model_pricing.cache_rates(model, rates[0])
     return ModelPricingOut(
-        model=model, known=True, cost_in_per_mtok=rates[0], cost_out_per_mtok=rates[1]
+        model=model, known=True, cost_in_per_mtok=rates[0], cost_out_per_mtok=rates[1],
+        cache_read_per_mtok=cache_read, cache_write_per_mtok=cache_write,
     )
 
 

@@ -530,6 +530,47 @@ class ModelPricingOut(BaseModel):
     cache_write_per_mtok: float | None = None
 
 
+class CatalogModelOut(BaseModel):
+    """One model in a provider's catalog (P-0049), with resolved pricing + usage."""
+    id: str
+    enabled: bool
+    capabilities: list[str] = []
+    known: bool                       # recognised by the price book
+    cost_in_per_mtok: float | None = None
+    cost_out_per_mtok: float | None = None
+    use_count: int = 0                # owner's runs on this model id
+    last_used: str | None = None      # ISO8601 of the most recent run
+
+
+class ProviderCatalogOut(BaseModel):
+    """A provider's model catalog (GET /api/providers/{template}/catalog). Models are
+    sorted most-used then most-recently-used; `effective_model` is what a run resolves
+    to today, `preferred` is the per-capability preferred map."""
+    template: str
+    models: list[CatalogModelOut]
+    preferred: dict[str, str] = {}
+    effective_model: str | None = None
+    capabilities_vocab: list[str] = []
+
+
+class CatalogModelUpdate(BaseModel):
+    """Add/update one catalog model's structure + optional pricing (write-through to
+    the flat overlay). Omit a field to leave it unchanged."""
+    id: str
+    enabled: bool | None = None
+    capabilities: list[str] | None = None
+    cost_in_per_mtok: float | None = None
+    cost_out_per_mtok: float | None = None
+    clear_pricing: bool = False
+
+
+class CatalogPreferredUpdate(BaseModel):
+    """Set (or clear, when model is null/empty) a provider's preferred model for a
+    capability (`default`/`coding`/`synthesis`/`longcontext`/`image`/`vision`/`realtime`)."""
+    capability: str
+    model: str | None = None
+
+
 class ConsoleConfig(BaseModel):
     """Whether the scoped in-UI console is available (does not reveal the token)."""
     available: bool

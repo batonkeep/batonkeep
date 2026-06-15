@@ -316,6 +316,8 @@ async def run_turn_background(
             if final_result is not None:
                 turn.status = "succeeded"
                 turn.response = response_text
+                # The model that ran this turn (P-0049) — feeds catalog usage metrics.
+                turn.model = final_result.model
                 # Persist token/cost usage so build-session spend shows in Analytics
                 # (previously always $0 — the executor reports usage but it was dropped).
                 usage = final_result.usage

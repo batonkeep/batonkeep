@@ -233,6 +233,9 @@ class SessionTurn(Base):
     seq: Mapped[int] = mapped_column(Integer, nullable=False)
     # the provider instance id that handled this turn (records the agent switch)
     provider: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    # the effective model id this turn ran (P-0049) — feeds per-model usage metrics
+    # for the catalog picker's most/recently-used sort, alongside Run.model for tasks.
+    model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")
     response: Mapped[str | None] = mapped_column(Text, nullable=True)
     # "running" | "succeeded" | "failed"

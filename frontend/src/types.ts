@@ -146,6 +146,26 @@ export interface ModelPricing {
   cost_out_per_mtok: number | null;
 }
 
+// P-0049 structured API model catalog (GET /api/providers/{template}/catalog).
+export interface CatalogModel {
+  id: string;
+  enabled: boolean;
+  capabilities: string[];
+  known: boolean;
+  cost_in_per_mtok: number | null;
+  cost_out_per_mtok: number | null;
+  use_count: number;
+  last_used: string | null;
+}
+
+export interface ProviderCatalog {
+  template: string;
+  models: CatalogModel[];
+  preferred: Record<string, string>;
+  effective_model: string | null;
+  capabilities_vocab: string[];
+}
+
 export interface ProviderLimitsUpdate {
   window_seconds: number;
   window_limit: number;

@@ -270,5 +270,40 @@ def cache_rates(model: str | None, in_rate: float) -> tuple[float, float]:
     return (in_rate * _CACHE_READ_MULT, in_rate * _CACHE_WRITE_MULT)
 
 
+def set_overlay_price(
+    model_id: str,
+    rates: tuple[float, float] | tuple[float, float, float, float] | None,
+) -> None:
+    """Write a model's $/Mtok rates into the flat overlay file and reload (P-0049).
+
+    The catalog UI's pricing edits route here — one pricing store (the existing
+    Docker-mapped overlay), so edits flow through `lookup()` → `effective_pricing`.
+    `rates` is a 2-tuple `(in, out)` or 4-tuple `(in, out, cache_read, cache_write)`;
+    None removes the entry (falls back to the baked-in book)."""
+    try:
+        with open(_PRICING_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            data = {}
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        data = {}
+    key = _normalise(model_id)
+    if rates is None:
+        data.pop(key, None)
+        data.pop(model_id, None)
+    else:
+        data[key] = [float(x) for x in rates]
+    try:
+        with open(_PRICING_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except OSError as exc:
+        logger.error("[model_pricing] failed to persist %s: %s", _PRICING_PATH, exc)
+        return
+    reload()
+    # Keep the structured catalog's derived view in sync (a new id should appear).
+    from app.providers import model_catalog
+    model_catalog.reload()
+
+
 # Build the effective price book at import (defaults + optional overlay file).
 reload()

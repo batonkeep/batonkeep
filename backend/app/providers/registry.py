@@ -561,7 +561,15 @@ def effective_model(inst: ProviderInstance, pdef: ProviderDef) -> str | None:
     """
     if pdef.kind == "cli":
         return cli_configured_model(inst, pdef)
-    return get_model_override(inst.id) or inst.model_override or pdef.model
+    # API resolution: runtime override > instance override > catalog preferred
+    # (P-0049 — the provider's default preferred model) > template default.
+    from app.providers import model_catalog
+    return (
+        get_model_override(inst.id)
+        or inst.model_override
+        or model_catalog.preferred(inst.template, "default")
+        or pdef.model
+    )
 
 
 # Where each plan-CLI persists its selected model inside its config dir.

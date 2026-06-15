@@ -12,6 +12,33 @@ from pydantic import BaseModel, ConfigDict, field_validator
 # P-0046 code-exec execution policies (single source of truth: code_exec.POLICIES).
 from app.providers.tools.code_exec import POLICIES as EXEC_POLICIES
 
+
+def _validate_image_model_id(v: str | None, *, allow_empty: bool = False) -> str | None:
+    """Validate an image-gen model override against the catalog (P-0046 slice 6).
+    `allow_empty` permits the "" sentinel (PATCH: clear back to provider default)."""
+    if v is None:
+        return None
+    if allow_empty and v == "":
+        return v
+    from app.providers.image_models import get_image_model
+
+    if get_image_model(v) is None:
+        raise ValueError(f"unknown image_model_id: {v!r}")
+    return v
+
+
+class ImageModelOut(BaseModel):
+    """A selectable image-generation model (P-0046 slice 6). `available` reflects
+    whether the model's home provider currently has a usable credential."""
+
+    id: str
+    label: str
+    provider: str
+    model: str
+    cost_per_image: float
+    cost_per_mtok: float
+    available: bool
+
 # ── Routing policy (§4.3) ────────────────────────────────────────────────────
 
 class RoutingPolicy(BaseModel):
@@ -41,6 +68,9 @@ class TaskCreate(BaseModel):
     # P-0046 code-exec execution policy: off | confirmation | allow-safe | auto.
     # Unattended tasks must set allow-safe/auto explicitly to use code-exec.
     exec_policy: str = "confirmation"
+    # P-0046 slice 6 follow-up: image-gen model override (catalog id; cross-provider
+    # allowed). None = inherit the text provider's default image model.
+    image_model_id: str | None = None
 
     @field_validator("exec_policy")
     @classmethod
@@ -48,6 +78,11 @@ class TaskCreate(BaseModel):
         if v not in EXEC_POLICIES:
             raise ValueError(f"exec_policy must be one of {sorted(EXEC_POLICIES)}")
         return v
+
+    @field_validator("image_model_id")
+    @classmethod
+    def _valid_image_model(cls, v: str | None) -> str | None:
+        return _validate_image_model_id(v)
 
 
 class TaskUpdate(BaseModel):
@@ -64,6 +99,8 @@ class TaskUpdate(BaseModel):
     enabled: bool | None = None
     routing: RoutingPolicy | None = None
     exec_policy: str | None = None  # P-0046; validated below
+    # P-0046 slice 6 follow-up: image-gen model override. "" clears to default.
+    image_model_id: str | None = None
 
     @field_validator("exec_policy")
     @classmethod
@@ -71,6 +108,11 @@ class TaskUpdate(BaseModel):
         if v is not None and v not in EXEC_POLICIES:
             raise ValueError(f"exec_policy must be one of {sorted(EXEC_POLICIES)}")
         return v
+
+    @field_validator("image_model_id")
+    @classmethod
+    def _valid_image_model(cls, v: str | None) -> str | None:
+        return _validate_image_model_id(v, allow_empty=True)
 
 
 class TaskOut(BaseModel):
@@ -91,6 +133,7 @@ class TaskOut(BaseModel):
     enabled: bool
     routing: dict[str, Any] | None
     exec_policy: str = "confirmation"  # P-0046 code-exec execution policy
+    image_model_id: str | None = None  # P-0046 slice 6: image-gen model override
     created_at: datetime
     updated_at: datetime
 
@@ -152,6 +195,14 @@ class SessionCreate(BaseModel):
     template: str | None = None
     # P-0009 #1: pin this session to a local model (confidential — never off-box).
     confidential: bool = False
+    # P-0046 slice 6 follow-up: image-gen model override (catalog id; cross-provider
+    # allowed). None = inherit the text provider's default image model.
+    image_model_id: str | None = None
+
+    @field_validator("image_model_id")
+    @classmethod
+    def _valid_image_model(cls, v: str | None) -> str | None:
+        return _validate_image_model_id(v)
 
 
 class SessionTemplateOut(BaseModel):
@@ -182,6 +233,9 @@ class SessionUpdate(BaseModel):
     confidential: bool | None = None
     # P-0046 code-exec execution policy: off | confirmation | allow-safe | auto
     exec_policy: str | None = None
+    # P-0046 slice 6 follow-up: image-gen model override. Sentinel "" clears it back
+    # to the provider default; a catalog id sets it; None leaves it unchanged.
+    image_model_id: str | None = None
 
     @field_validator("exec_policy")
     @classmethod
@@ -189,6 +243,11 @@ class SessionUpdate(BaseModel):
         if v is not None and v not in EXEC_POLICIES:
             raise ValueError(f"exec_policy must be one of {sorted(EXEC_POLICIES)}")
         return v
+
+    @field_validator("image_model_id")
+    @classmethod
+    def _valid_image_model(cls, v: str | None) -> str | None:
+        return _validate_image_model_id(v, allow_empty=True)
 
 
 class ApprovalDecision(BaseModel):
@@ -372,6 +431,7 @@ class SessionOut(BaseModel):
     cf_project: str | None = None  # Cloudflare Pages project this session deploys to
     confidential: bool = False  # P-0009 #1: pinned to a local model
     exec_policy: str = "confirmation"  # P-0046 code-exec execution policy
+    image_model_id: str | None = None  # P-0046 slice 6: image-gen model override
     # Content signals for the UI (e.g. delete-confirmation strength). Populated by
     # the list endpoint; default to empty/false elsewhere.
     turn_count: int = 0

@@ -156,6 +156,7 @@ async def run_turn_background(
             return
         workspace = session.workspace_path
         exec_policy = session.exec_policy
+        image_model_id = session.image_model_id  # P-0046 slice 6: image-gen override
         # Load the immediate dialogue tail so conversational follow-ups keep their
         # referent (the workspace stays the source of truth — D-0008). Prior
         # completed turns only, most recent few, in chronological order.
@@ -231,6 +232,8 @@ async def run_turn_background(
                 # session's policy gates whether code-exec is offered/runnable, and
                 # `confirmation` drives an approval round-trip via `_approve`.
                 "exec_policy": exec_policy, "human_in_loop": True, "approve": _approve,
+                # P-0046 slice 6: image-gen model override (None → provider default).
+                "image_model_id": image_model_id,
             },
         ):
             # Rewrite agent file:// links to the raw-file route so the result

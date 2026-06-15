@@ -5,9 +5,10 @@
 // collapsible Advanced section (Params, Output toggles, Routing). AI prompt builder
 // elevated to a primary teal CTA above the prompt field.
 // D-track: composed from ui/ primitives (Modal, Field, Input, Select, Button, Badge, Card).
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronDown, ChevronRight, GripVertical, Plus, Wand2, X } from "lucide-react";
-import type { ProviderHealth, RoutingPolicy, RoutingStrategy, Task, TaskInput } from "../types";
+import type { ImageModel, ProviderHealth, RoutingPolicy, RoutingStrategy, Task, TaskInput } from "../types";
+import { api } from "../api";
 import { isValidCron } from "../format";
 import { Badge, Button, Card, Field, Input, Modal, Select } from "../ui";
 import CronPicker from "./CronPicker";
@@ -87,6 +88,8 @@ export default function TaskForm({ task, initial, providers, onSave, onClose }: 
       : [{ key: "topic", value: "" }, { key: "timeframe", value: "the last 48 hours" }]
   );
   const [tagInput, setTagInput] = useState("");
+  const [imageModelId, setImageModelId] = useState<string>(src?.image_model_id ?? "");
+  const [imageModels, setImageModels] = useState<ImageModel[]>([]); // P-0046 slice 6 catalog
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copiedBuilder, setCopiedBuilder] = useState(false);
@@ -98,6 +101,10 @@ export default function TaskForm({ task, initial, providers, onSave, onClose }: 
     (src.routing && JSON.stringify(src.routing) !== JSON.stringify(DEFAULT_ROUTING))
   );
   const [showAdvanced, setShowAdvanced] = useState(hasAdvanced);
+
+  useEffect(() => {
+    api.listImageModels().then(setImageModels).catch(() => { });
+  }, []);
 
   const copyPromptBuilder = async () => {
     const hint = [name, description].filter(Boolean).join(" — ");
@@ -159,6 +166,7 @@ export default function TaskForm({ task, initial, providers, onSave, onClose }: 
       schedule_kind: scheduleKind, schedule_expr: scheduleKind === "none" ? null : scheduleExpr,
       timezone: scheduleKind === "cron" ? timezone : "UTC",
       want_markdown: wantMarkdown, want_json: wantJson, enabled, routing,
+      image_model_id: imageModelId || null,
     };
     setSaving(true);
     try { await onSave(input, task?.id); onClose(); }
@@ -330,6 +338,20 @@ export default function TaskForm({ task, initial, providers, onSave, onClose }: 
                   JSON output
                 </label>
               </div>
+
+              {/* Image-gen model (P-0046 slice 6) */}
+              {imageModels.length > 0 && (
+                <Field label="Image model" hint="Which model generates images for this task. Default follows the routed provider; you can pick any connected model, including cross-provider.">
+                  <Select value={imageModelId} onChange={(e) => setImageModelId(e.target.value)}>
+                    <option value="">Default (provider's image model)</option>
+                    {imageModels.map((m) => (
+                      <option key={m.id} value={m.id} disabled={!m.available}>
+                        {`${m.label}${m.available ? "" : " (no key)"}`}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+              )}
 
               {/* Routing editor */}
               <Card className="p-3">

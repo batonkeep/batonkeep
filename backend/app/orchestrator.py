@@ -260,6 +260,8 @@ async def _do_execute(run_id: int, task: Task) -> None:
                             extra={
                                 "task": True, "exec_policy": task.exec_policy,
                                 "human_in_loop": False,
+                                # P-0046 slice 6: image-gen model override (None → default).
+                                "image_model_id": task.image_model_id,
                             },
                         ):
                             # Persist non-token events
@@ -371,6 +373,7 @@ async def _do_execute(run_id: int, task: Task) -> None:
                                 extra={
                                     "task": True, "exec_policy": task.exec_policy,
                                     "human_in_loop": False,
+                                    "image_model_id": task.image_model_id,
                                 }):
                             if ev.kind != EventKind.token:
                                 await _emit_event(db, run, ev.kind, ev.phase or ev.message,

@@ -49,6 +49,8 @@ export interface Task {
   want_json: boolean;
   enabled: boolean;
   routing: RoutingPolicy | null;
+  // P-0046 slice 6: image-gen model override (catalog id; null = provider default).
+  image_model_id?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -67,6 +69,8 @@ export interface TaskInput {
   want_json: boolean;
   enabled: boolean;
   routing?: RoutingPolicy | null;
+  // P-0046 slice 6: image-gen model override. "" clears back to provider default.
+  image_model_id?: string | null;
 }
 
 export interface RunAttempt {
@@ -269,6 +273,8 @@ export interface Session {
   confidential: boolean;
   // P-0046: code-exec execution policy.
   exec_policy: ExecPolicy;
+  // P-0046 slice 6: image-gen model override (catalog id; null = provider default).
+  image_model_id?: string | null;
   // Content signals (from the list endpoint) used to scale delete confirmation.
   turn_count?: number;
   published?: boolean;
@@ -283,6 +289,19 @@ export interface SessionInput {
   provider?: string | null;
   template?: string | null;
   confidential?: boolean;
+  image_model_id?: string | null;
+}
+
+// A selectable image-generation model (P-0046 slice 6). `available` is false when
+// the model's home provider has no usable credential.
+export interface ImageModel {
+  id: string;
+  label: string;
+  provider: string;
+  model: string;
+  cost_per_image: number;
+  cost_per_mtok: number;
+  available: boolean;
 }
 
 // One file a turn produced (D-0017 thread 2). status ∈ added/changed/removed;
@@ -397,6 +416,8 @@ export interface SessionUpdate {
   title?: string | null;
   confidential?: boolean;
   exec_policy?: ExecPolicy;
+  // P-0046 slice 6: image-gen model override. "" clears back to provider default.
+  image_model_id?: string | null;
 }
 
 // Payload accepted by POST /sessions/{id}/turns.

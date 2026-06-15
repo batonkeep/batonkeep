@@ -159,21 +159,20 @@ def test_executor_offers_image_gen_only_when_configured():
     assert "image_generate" in gated
 
 
-def test_grok_provider_declares_image_capability():
+def test_providers_declare_image_capability_via_catalog_default():
+    from app.providers.image_models import get_image_model
     from app.providers.registry import get_provider_def
 
     grok = get_provider_def("grok-api")
     assert grok.supports_image_gen is True
-    assert grok.image_model
-    assert grok.image_cost_per_image > 0
-    assert grok.image_response_format == "b64_json"
-
-
-def test_openai_provider_declares_image_capability():
-    from app.providers.registry import get_provider_def
+    grok_default = get_image_model(grok.default_image_model_id)
+    assert grok_default and grok_default.provider == "grok-api"
+    assert grok_default.cost_per_image > 0
+    assert grok_default.response_format == "b64_json"
 
     oai = get_provider_def("openai-api")
     assert oai.supports_image_gen is True
-    assert oai.image_model == "gpt-image-1-mini"
-    assert oai.image_cost_per_mtok > 0
-    assert oai.image_response_format is None  # gpt-image rejects the param
+    oai_default = get_image_model(oai.default_image_model_id)
+    assert oai_default and oai_default.model == "gpt-image-1-mini"
+    assert oai_default.cost_per_mtok > 0
+    assert oai_default.response_format is None  # gpt-image rejects the param

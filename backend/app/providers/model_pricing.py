@@ -30,6 +30,15 @@ default `/data/model-pricing.json`) on top of it, so a Docker install can map a
 newer price book over the volume to add or correct models with **no code change**.
 The file is a flat object: `{"<model-id>": [in_per_mtok, out_per_mtok], ...}`.
 File entries win over the baked-in defaults; malformed entries are skipped.
+
+Prompt-cache rates: replayed input billed against a provider cache reads cheap
+(≈0.1× base input) and the first write of a cache breakpoint a premium (≈1.25×).
+Most entries don't carry explicit cache rates, so `cache_rates()` derives them
+from the input rate by the Anthropic-typical multipliers below; an overlay entry
+may instead give a **4-tuple** `[in, out, cache_read, cache_write]` to pin exact
+rates (e.g. for OpenAI/Gemini, whose cached-input ratios differ). `lookup()` keeps
+returning the `(in, out)` pair so existing callers are unaffected.
+
 Call `reload()` after writing the file at runtime. OSS boundary: no import of
 batonkeep_cloud.
 """
@@ -42,6 +51,13 @@ import os
 logger = logging.getLogger(__name__)
 
 _PRICING_PATH = os.environ.get("MODEL_PRICING_PATH", "/data/model-pricing.json")
+
+# Default cache-rate multipliers off the base input rate, used when an entry has
+# no explicit 4-tuple. Anthropic-typical: cache-read ≈0.1× input, cache-write
+# (first store of a breakpoint) ≈1.25× input. Operators can pin exact per-model
+# rates (incl. OpenAI/Gemini's different ratios) via a 4-tuple overlay entry.
+_CACHE_READ_MULT = 0.1
+_CACHE_WRITE_MULT = 1.25
 
 # (input_per_mtok, output_per_mtok) in USD per 1M tokens.
 # Keep ids in the same normalised form lookup() produces (lowercased, vendor
@@ -85,43 +101,57 @@ _DEFAULT_PRICES: dict[str, tuple[float, float]] = {
 }
 
 
-def _load_overlay() -> dict[str, tuple[float, float]]:
-    """Read the optional Docker-mapped overlay file. Missing/corrupt → {}."""
+def _load_overlay() -> tuple[dict[str, tuple[float, float]], dict[str, tuple[float, float]]]:
+    """Read the optional Docker-mapped overlay file. Missing/corrupt → ({}, {}).
+
+    Returns `(base_prices, cache_prices)`: a 2-tuple entry sets only `(in, out)`;
+    a 4-tuple entry additionally pins `(cache_read, cache_write)`.
+    """
     try:
         with open(_PRICING_PATH, encoding="utf-8") as f:
             data = json.load(f)
     except FileNotFoundError:
-        return {}
+        return {}, {}
     except (OSError, json.JSONDecodeError) as exc:
         logger.error("[model_pricing] failed to load %s: %s", _PRICING_PATH, exc)
-        return {}
+        return {}, {}
     if not isinstance(data, dict):
         logger.error("[model_pricing] %s must be a JSON object", _PRICING_PATH)
-        return {}
+        return {}, {}
     out: dict[str, tuple[float, float]] = {}
+    cache: dict[str, tuple[float, float]] = {}
     for k, v in data.items():
-        if isinstance(v, list | tuple) and len(v) == 2:
+        if isinstance(v, list | tuple) and len(v) in (2, 4):
             try:
-                out[_normalise(str(k))] = (float(v[0]), float(v[1]))
+                key = _normalise(str(k))
+                out[key] = (float(v[0]), float(v[1]))
+                if len(v) == 4:
+                    cache[key] = (float(v[2]), float(v[3]))
             except (TypeError, ValueError):
                 logger.warning("[model_pricing] skipping malformed entry %r", k)
         else:
             logger.warning("[model_pricing] skipping malformed entry %r", k)
     if out:
         logger.info("[model_pricing] overlaid %d model(s) from %s", len(out), _PRICING_PATH)
-    return out
+    return out, cache
 
 
 # Effective price book: baked-in defaults with the overlay file layered on top.
 _PRICES: dict[str, tuple[float, float]] = {}
+# Explicit cache rates `(cache_read, cache_write)` for models that pin them via a
+# 4-tuple overlay; models absent here get derived rates (see cache_rates()).
+_CACHE_PRICES: dict[str, tuple[float, float]] = {}
 
 
 def reload() -> None:
     """Rebuild the effective price book (defaults + overlay file). Call after a
     runtime write to the overlay; also run once at import."""
     _PRICES.clear()
+    _CACHE_PRICES.clear()
     _PRICES.update(_DEFAULT_PRICES)
-    _PRICES.update(_load_overlay())
+    base, cache = _load_overlay()
+    _PRICES.update(base)
+    _CACHE_PRICES.update(cache)
 
 
 def _normalise(model: str) -> str:
@@ -157,6 +187,27 @@ def lookup(model: str | None) -> tuple[float, float] | None:
         if m.startswith(key) and (best is None or len(key) > len(best[0])):
             best = (key, rates)
     return best[1] if best else None
+
+
+def cache_rates(model: str | None, in_rate: float) -> tuple[float, float]:
+    """The `(cache_read, cache_write)` $/Mtok rates for a model.
+
+    Explicit per-model rates (pinned via a 4-tuple overlay) win, matched leniently
+    like `lookup()`; otherwise derive from `in_rate` by the default multipliers.
+    `in_rate` is the already-resolved effective input rate (override/book/template),
+    so a custom or operator-overridden model still gets coherent cache rates.
+    """
+    m = _normalise(model) if model else ""
+    explicit = _CACHE_PRICES.get(m)
+    if explicit is None and m:
+        best: tuple[str, tuple[float, float]] | None = None
+        for key, rates in _CACHE_PRICES.items():
+            if m.startswith(key) and (best is None or len(key) > len(best[0])):
+                best = (key, rates)
+        explicit = best[1] if best else None
+    if explicit is not None:
+        return explicit
+    return (in_rate * _CACHE_READ_MULT, in_rate * _CACHE_WRITE_MULT)
 
 
 # Build the effective price book at import (defaults + optional overlay file).

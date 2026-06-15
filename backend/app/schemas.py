@@ -236,6 +236,17 @@ class SessionUpdate(BaseModel):
     # P-0046 slice 6 follow-up: image-gen model override. Sentinel "" clears it back
     # to the provider default; a catalog id sets it; None leaves it unchanged.
     image_model_id: str | None = None
+    # Optional per-session spend cap (USD, API path). A positive value sets the cap;
+    # 0 clears it back to no cap (also the "raise budget" action's path); None leaves
+    # it unchanged. Negative is rejected.
+    budget_usd: float | None = None
+
+    @field_validator("budget_usd")
+    @classmethod
+    def _valid_budget(cls, v: float | None) -> float | None:
+        if v is not None and v < 0:
+            raise ValueError("budget_usd must be >= 0 (0 clears the cap)")
+        return v
 
     @field_validator("exec_policy")
     @classmethod
@@ -302,6 +313,12 @@ class SessionTurnOut(BaseModel):
     # D-0017 thread 2: the per-file artifacts this turn produced (the headline
     # result). Stored as a JSON string on the model; parsed to a list here.
     changed_files: list[FileChangeOut] | None = None
+    # Per-turn token/cost usage (API path) so the UI can show + sum session spend.
+    tokens_in: int = 0
+    tokens_out: int = 0
+    cost_usd: float = 0.0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
     created_at: datetime
     finished_at: datetime | None
 
@@ -432,6 +449,11 @@ class SessionOut(BaseModel):
     confidential: bool = False  # P-0009 #1: pinned to a local model
     exec_policy: str = "confirmation"  # P-0046 code-exec execution policy
     image_model_id: str | None = None  # P-0046 slice 6: image-gen model override
+    # Optional per-session spend cap (USD, API path). None = no cap (opt-in).
+    budget_usd: float | None = None
+    # Cumulative session spend (sum of succeeded turns), for the live cost surface.
+    # Populated by the detail/list endpoints; defaults to 0 elsewhere.
+    cost_usd: float = 0.0
     # Content signals for the UI (e.g. delete-confirmation strength). Populated by
     # the list endpoint; default to empty/false elsewhere.
     turn_count: int = 0

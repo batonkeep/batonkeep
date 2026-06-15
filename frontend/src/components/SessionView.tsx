@@ -613,12 +613,14 @@ export default function SessionView({
       // Turn completed (succeeded or failed).
       loadTurns();
       loadVersions();
+      // Refresh the session detail so the live cost counter reflects this turn's spend.
+      if (selectedId) api.getSession(selectedId).then(setDetail).catch(() => { });
       onSessionsChanged(); // session.updated_at + provider may have changed
       setPreviewNonce((n) => n + 1);
       if (mode === "files") loadFiles(); // keep the Files tab current after a turn
       setPendingMessage(null); // clear now that the real completed card is available
     }
-  }, [lastTurn, loadTurns, loadVersions, onSessionsChanged, mode, loadFiles]);
+  }, [lastTurn, loadTurns, loadVersions, onSessionsChanged, mode, loadFiles, selectedId]);
 
   // Load the workspace file listing whenever the Files tab opens (P-0034).
   useEffect(() => {
@@ -717,6 +719,24 @@ export default function SessionView({
     const next = value || null;
     if (next === (detail.image_model_id ?? null)) return;
     const updated = await api.updateSession(selectedId, { image_model_id: value });
+    setDetail(updated);
+  };
+
+  // Set / raise / clear the per-session spend cap. Prompt for a USD figure;
+  // empty or 0 clears the cap (no session budget). The cap is enforced
+  // cumulatively across turns, stopping at the next step that would exceed it.
+  const handleSetBudget = async () => {
+    if (!selectedId || !detail) return;
+    const current = detail.budget_usd != null ? String(detail.budget_usd) : "";
+    const raw = window.prompt(
+      "Session budget in USD (blank or 0 = no cap). Enforced cumulatively; " +
+      "a turn stops at the next step that would exceed it.",
+      current,
+    );
+    if (raw === null) return; // cancelled
+    const value = Number.parseFloat(raw.trim());
+    const budget_usd = Number.isFinite(value) && value > 0 ? value : 0;
+    const updated = await api.updateSession(selectedId, { budget_usd });
     setDetail(updated);
   };
 
@@ -1419,35 +1439,77 @@ export default function SessionView({
                     <Folder size={11} /> Files
                   </button>
                 </div>
-                {mode === "files" && (
-                  <button
-                    type="button"
-                    onClick={() => loadFiles()}
-                    disabled={filesLoading}
-                    title="Refresh the file listing"
-                    className="ml-auto inline-flex items-center gap-1 rounded border border-edge px-2 py-0.5 font-mono text-[11px] text-muted hover:text-ink disabled:opacity-40"
-                  >
-                    {filesLoading ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
-                    Refresh
-                  </button>
-                )}
                 {mode === "terminal" && (
-                  <>
-                    <span className="font-mono text-[11px] text-muted">{activeInstance} · live · you drive every turn</span>
-                    {/* Capture the session's workspace edits as an artifact turn
-                        (D-0017 thread 2). Also runs automatically on stop. */}
+                  <span className="font-mono text-[11px] text-muted">{activeInstance} · live · you drive every turn</span>
+                )}
+                {/* Right side: mode-specific action + the live session cost / budget chip. */}
+                <div className="ml-auto flex items-center gap-2">
+                  {mode === "files" && (
+                    <button
+                      type="button"
+                      onClick={() => loadFiles()}
+                      disabled={filesLoading}
+                      title="Refresh the file listing"
+                      className="inline-flex items-center gap-1 rounded border border-edge px-2 py-0.5 font-mono text-[11px] text-muted hover:text-ink disabled:opacity-40"
+                    >
+                      {filesLoading ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
+                      Refresh
+                    </button>
+                  )}
+                  {mode === "terminal" && (
+                    // Capture the session's workspace edits as an artifact turn
+                    // (D-0017 thread 2). Also runs automatically on stop.
                     <button
                       type="button"
                       onClick={() => void captureTerminal()}
                       disabled={capturing}
                       title="Capture the files this terminal session changed as a result"
-                      className="ml-auto inline-flex items-center gap-1 rounded border border-edge px-2 py-0.5 font-mono text-[11px] text-muted hover:text-ink disabled:opacity-40"
+                      className="inline-flex items-center gap-1 rounded border border-edge px-2 py-0.5 font-mono text-[11px] text-muted hover:text-ink disabled:opacity-40"
                     >
                       {capturing ? <Loader2 size={11} className="animate-spin" /> : <FileCode size={11} />}
                       Capture
                     </button>
-                  </>
-                )}
+                  )}
+                  {detail && (() => {
+                    const spent = detail.cost_usd ?? 0;
+                    const cap = detail.budget_usd ?? null;
+                    const frac = cap && cap > 0 ? Math.min(spent / cap, 1) : 0;
+                    const reached = cap != null && cap > 0 && spent >= cap;
+                    return (
+                      <button
+                        type="button"
+                        onClick={handleSetBudget}
+                        className={`flex items-center gap-1.5 rounded border px-2 py-0.5 font-mono text-[11px] ${
+                          reached
+                            ? "border-bad/50 bg-bad/10 text-bad"
+                            : "border-edge text-muted hover:bg-edge/40"
+                        }`}
+                        title={
+                          cap != null
+                            ? `Session spend $${spent.toFixed(4)} of $${cap.toFixed(2)} cap. ` +
+                              "Enforced cumulatively — a turn stops at the next step that " +
+                              "would exceed the cap. Click to raise or clear."
+                            : `Session spend $${spent.toFixed(4)}. Click to set a budget cap.`
+                        }
+                      >
+                        <span>${spent.toFixed(spent < 1 ? 4 : 2)}</span>
+                        {cap != null && (
+                          <>
+                            <span className="text-edge">/</span>
+                            <span>${cap.toFixed(2)}</span>
+                            <span className="relative inline-block h-1 w-8 overflow-hidden rounded bg-edge/60">
+                              <span
+                                className={`absolute inset-y-0 left-0 ${reached ? "bg-bad" : "bg-brand"}`}
+                                style={{ width: `${frac * 100}%` }}
+                              />
+                            </span>
+                          </>
+                        )}
+                        {reached && <span className="uppercase tracking-wide">raise</span>}
+                      </button>
+                    );
+                  })()}
+                </div>
               </div>
             )}
 

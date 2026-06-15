@@ -201,6 +201,11 @@ class Session(Base):
     # model on an OpenAI-text session). The chosen model's home provider must have a
     # credential for image gen to be offered.
     image_model_id: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    # Optional per-session spend cap (USD, API path). NULL = no session cap (opt-in).
+    # Enforced cumulatively across turns at round boundaries by the executor budget
+    # gate; composes with the owner daily cap (whichever is lower wins). Stop-at-
+    # next-step semantics — bounded overshoot ≤ one round (you can't halt mid-call).
+    budget_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -245,6 +250,11 @@ class SessionTurn(Base):
     tokens_in: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     tokens_out: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # Prompt-cache token split (API path). cache_read = replayed input billed at the
+    # cache-read rate; cache_write = first store of a cache breakpoint (a premium).
+    # Both 0 when caching is off; cost_usd already reflects their rates.
+    cache_read_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cache_write_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

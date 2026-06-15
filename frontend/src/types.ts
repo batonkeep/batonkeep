@@ -275,6 +275,10 @@ export interface Session {
   exec_policy: ExecPolicy;
   // P-0046 slice 6: image-gen model override (catalog id; null = provider default).
   image_model_id?: string | null;
+  // Optional per-session spend cap (USD, API path); null = no cap (opt-in).
+  budget_usd?: number | null;
+  // Cumulative session spend (sum of succeeded turns), for the live cost surface.
+  cost_usd?: number;
   // Content signals (from the list endpoint) used to scale delete confirmation.
   turn_count?: number;
   published?: boolean;
@@ -328,6 +332,12 @@ export interface SessionTurn {
   // D-0017 thread 2: the per-file artifacts this turn produced (the headline
   // result surfaced to the user, above any scraped agent text).
   changed_files: FileChange[] | null;
+  // Per-turn token/cost usage (API path).
+  tokens_in?: number;
+  tokens_out?: number;
+  cost_usd?: number;
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
   created_at: string;
   finished_at: string | null;
 }
@@ -418,6 +428,8 @@ export interface SessionUpdate {
   exec_policy?: ExecPolicy;
   // P-0046 slice 6: image-gen model override. "" clears back to provider default.
   image_model_id?: string | null;
+  // Per-session spend cap (USD). Positive sets/raises the cap; 0 clears it.
+  budget_usd?: number;
 }
 
 // Payload accepted by POST /sessions/{id}/turns.

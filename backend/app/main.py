@@ -406,6 +406,7 @@ async def create_task(
         enabled=body.enabled,
         routing=body.routing.model_dump() if body.routing else None,
         exec_policy=body.exec_policy,
+        image_model_id=body.image_model_id,
     )
     db.add(task)
     await db.commit()
@@ -449,6 +450,9 @@ async def update_task(
     update_data = body.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         setattr(task, field, value)
+    # "" sentinel clears the image-gen override back to the provider default.
+    if task.image_model_id == "":
+        task.image_model_id = None
 
     await db.commit()
     await db.refresh(task)

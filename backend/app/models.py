@@ -70,6 +70,10 @@ class Task(Base):
     # Unattended tasks have no human to confirm, so a task must explicitly carry
     # allow-safe/auto to use code-exec; the conservative default is confirmation.
     exec_policy: Mapped[str] = mapped_column(String(16), nullable=False, default="confirmation")
+    # Image-generation model override (P-0046 slice 6 follow-up), same semantics as
+    # Session.image_model_id: NULL = inherit the text provider's catalog default;
+    # otherwise a catalog id (possibly cross-provider) from image_models.py.
+    image_model_id: Mapped[str | None] = mapped_column(String(96), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

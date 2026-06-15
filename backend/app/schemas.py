@@ -68,6 +68,9 @@ class TaskCreate(BaseModel):
     # P-0046 code-exec execution policy: off | confirmation | allow-safe | auto.
     # Unattended tasks must set allow-safe/auto explicitly to use code-exec.
     exec_policy: str = "confirmation"
+    # P-0046 slice 6 follow-up: image-gen model override (catalog id; cross-provider
+    # allowed). None = inherit the text provider's default image model.
+    image_model_id: str | None = None
 
     @field_validator("exec_policy")
     @classmethod
@@ -75,6 +78,11 @@ class TaskCreate(BaseModel):
         if v not in EXEC_POLICIES:
             raise ValueError(f"exec_policy must be one of {sorted(EXEC_POLICIES)}")
         return v
+
+    @field_validator("image_model_id")
+    @classmethod
+    def _valid_image_model(cls, v: str | None) -> str | None:
+        return _validate_image_model_id(v)
 
 
 class TaskUpdate(BaseModel):
@@ -91,6 +99,8 @@ class TaskUpdate(BaseModel):
     enabled: bool | None = None
     routing: RoutingPolicy | None = None
     exec_policy: str | None = None  # P-0046; validated below
+    # P-0046 slice 6 follow-up: image-gen model override. "" clears to default.
+    image_model_id: str | None = None
 
     @field_validator("exec_policy")
     @classmethod
@@ -98,6 +108,11 @@ class TaskUpdate(BaseModel):
         if v is not None and v not in EXEC_POLICIES:
             raise ValueError(f"exec_policy must be one of {sorted(EXEC_POLICIES)}")
         return v
+
+    @field_validator("image_model_id")
+    @classmethod
+    def _valid_image_model(cls, v: str | None) -> str | None:
+        return _validate_image_model_id(v, allow_empty=True)
 
 
 class TaskOut(BaseModel):
@@ -118,6 +133,7 @@ class TaskOut(BaseModel):
     enabled: bool
     routing: dict[str, Any] | None
     exec_policy: str = "confirmation"  # P-0046 code-exec execution policy
+    image_model_id: str | None = None  # P-0046 slice 6: image-gen model override
     created_at: datetime
     updated_at: datetime
 

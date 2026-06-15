@@ -79,3 +79,18 @@ async def test_unknown_override_falls_back_to_provider_default():
     cfg = await _configure("grok-api", override="bogus:model", key="xai-key")
     # Unknown override is ignored; the grok text provider's default applies.
     assert cfg and cfg["model"] == "grok-imagine-image-quality"
+
+
+def test_task_and_session_schemas_validate_image_model_id():
+    from pydantic import ValidationError
+
+    from app.schemas import SessionCreate, TaskCreate
+
+    # Valid catalog id accepted on both surfaces.
+    assert TaskCreate(name="t", image_model_id="grok:grok-imagine-image").image_model_id
+    assert SessionCreate(image_model_id="openai:gpt-image-2").image_model_id
+    # Unknown id rejected.
+    for ctor in (lambda: TaskCreate(name="t", image_model_id="nope"),
+                 lambda: SessionCreate(image_model_id="nope")):
+        with pytest.raises(ValidationError):
+            ctor()

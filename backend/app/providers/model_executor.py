@@ -458,6 +458,12 @@ class ModelExecutor(Executor):
 
         total_usage = Usage()
         full_text = ""
+        # Moving cache breakpoint over settled history: each round we mark the last
+        # tool_result block of the most-recent turn, so the *growing* conversation
+        # prefix (not just system+tools) replays at the cache-read rate. We carry the
+        # previous round's marked block to unmark it first — system + tools + this one
+        # keeps us at ≤3 of Anthropic's 4-breakpoint cap as history grows.
+        prev_history_bp: dict | None = None
 
         yield ExecEvent(kind=EventKind.log, message=f"[{self.name}] starting (anthropic)")
         yield ExecEvent(kind=EventKind.phase, phase="running")
@@ -521,6 +527,19 @@ class ModelExecutor(Executor):
                     delta.cost_usd = self._compute_cost(delta)
                     total_usage = total_usage + delta
 
+                    # Caching silently no-ops when the marked prefix is below the
+                    # model's minimum cacheable length (≈4096 tok on Opus). If the
+                    # first round wrote/read nothing despite a marked prefix, the
+                    # prefix is likely too small — log it once so it's diagnosable.
+                    if round_num == 0 and anth_tools and not cache_read and not cache_write:
+                        from app.providers import model_pricing
+                        logger.debug(
+                            "[%s] no cache activity on round 0 (in=%d); system+tools "
+                            "prefix may be below the %d-token cache minimum for %s",
+                            self.name, in_tok,
+                            model_pricing.min_cacheable_tokens(self._model), self._model,
+                        )
+
                     tool_uses = [b for b in final_msg.content if b.type == "tool_use"]
                     # Authoritative text for this turn (may be multiple text blocks);
                     # the latest turn's text is the result we keep.
@@ -552,6 +571,14 @@ class ModelExecutor(Executor):
                             {"type": "tool_result", "tool_use_id": tu.id, "content": result}
                         )
                     messages.append({"role": "user", "content": tool_results})
+                    # Advance the moving history breakpoint to this turn's last
+                    # tool_result, releasing the prior one so we never exceed the
+                    # 4-breakpoint cap. Next round's request reads the cached prefix
+                    # up through here instead of re-billing the whole transcript.
+                    if prev_history_bp is not None:
+                        prev_history_bp.pop("cache_control", None)
+                    tool_results[-1]["cache_control"] = {"type": "ephemeral"}
+                    prev_history_bp = tool_results[-1]
 
             except Exception as exc:
                 err = str(exc)

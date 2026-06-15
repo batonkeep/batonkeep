@@ -85,7 +85,7 @@ def test_compute_cost_prices_cache_tokens():
 
     pdef = get_provider_def("claude-api")
     ex = ModelExecutor(pdef)
-    ex._model = "claude-opus-4-8"  # in/out = 5/25, derived cache = 0.5/6.25
+    ex._model = "claude-opus-4-8"  # in/out = 5/25, explicit cache = 0.5/6.25
     # No caching: identical to the legacy in/out formula.
     base = ex._compute_cost(Usage(tokens_in=1_000_000, tokens_out=1_000_000))
     assert base == pytest.approx(5.0 + 25.0)
@@ -97,11 +97,38 @@ def test_compute_cost_prices_cache_tokens():
     assert full == pytest.approx(5.0 + 25.0 + 0.5 + 6.25)
 
 
-def test_cache_rates_derived_from_input_rate():
-    # No explicit cache rates → derived by the default multipliers (0.1× / 1.25×).
+def test_cache_rates_baked_explicit_for_anthropic():
+    # Anthropic models carry explicit baked-in cache rates (authoritative 0.1×/1.25×).
     assert model_pricing.cache_rates("claude-opus-4-8", 5.0) == (0.5, 6.25)
-    # Unknown model still derives off the supplied effective input rate.
+    assert model_pricing.cache_rates("claude-haiku-4-5", 1.0) == (0.1, 1.25)
+    # Dated/suffixed id resolves to the explicit base via longest-prefix match.
+    assert model_pricing.cache_rates("claude-opus-4-8-20260101", 5.0) == (0.5, 6.25)
+
+
+def test_cache_rates_derived_when_no_explicit_entry():
+    # Models without an explicit cache entry (OpenAI/Gemini, unknown) derive off the
+    # supplied effective input rate by the default multipliers (0.1× / 1.25×).
+    assert model_pricing.cache_rates("gpt-5.4", 2.5) == pytest.approx((0.25, 3.125))
     assert model_pricing.cache_rates("made-up", 10.0) == (1.0, 12.5)
+
+
+def test_min_cacheable_tokens():
+    # Opus needs 4096; Sonnet 4.6 needs 2048; Sonnet 4.5 + unknown fall to 1024.
+    assert model_pricing.min_cacheable_tokens("claude-opus-4-8") == 4096
+    assert model_pricing.min_cacheable_tokens("claude-opus-4-8-20260101") == 4096
+    assert model_pricing.min_cacheable_tokens("claude-sonnet-4-6") == 2048
+    assert model_pricing.min_cacheable_tokens("claude-sonnet-4-5") == 1024
+    assert model_pricing.min_cacheable_tokens("totally-unknown") == 1024
+
+
+def test_effective_cache_pricing_resolves_off_input_rate():
+    from app.providers.registry import effective_cache_pricing, get_provider_def
+    pdef = get_provider_def("claude-api")
+    # Explicit baked Anthropic rate for the resolved model.
+    assert effective_cache_pricing(pdef, "claude-api", "claude-opus-4-8") == (0.5, 6.25)
+    # Unknown model → derived off the template/default input rate.
+    cr, cw = effective_cache_pricing(pdef, "claude-api", "some-unknown-model")
+    assert cr == pytest.approx(cw / 12.5)
 
 
 def test_cache_rates_explicit_4tuple_overlay(tmp_path, monkeypatch):
@@ -117,7 +144,7 @@ def test_cache_rates_explicit_4tuple_overlay(tmp_path, monkeypatch):
         assert model_pricing.cache_rates("gpt-5.4", 2.5) == (0.625, 2.5)
         # dated/suffixed id resolves to the pinned base via longest-prefix match
         assert model_pricing.cache_rates("gpt-5.4-2026", 2.5) == (0.625, 2.5)
-        # 2-tuple entry → still derived
+        # 2-tuple overlay entry doesn't pin cache → baked explicit Anthropic rate stands
         assert model_pricing.cache_rates("claude-opus-4-8", 5.0) == (0.5, 6.25)
     finally:
         monkeypatch.undo()

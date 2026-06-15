@@ -411,6 +411,21 @@ def effective_pricing(
     return (pdef.cost_in_per_mtok, pdef.cost_out_per_mtok)
 
 
+def effective_cache_pricing(
+    pdef: ProviderDef, instance_id: str | None, model: str | None
+) -> tuple[float, float]:
+    """The prompt-cache `(cache_read, cache_write)` $/Mtok rates for a run's model.
+
+    Resolved off the same effective **input** rate as `effective_pricing` (so an
+    operator override or custom model still gets coherent cache rates): explicit
+    per-model cache rates win, else they derive from the input rate. See
+    `model_pricing.cache_rates`."""
+    from app.providers import model_pricing
+
+    in_rate, _out_rate = effective_pricing(pdef, instance_id, model)
+    return model_pricing.cache_rates(model, in_rate)
+
+
 # ── Runtime capability-tag overrides (P-0044) ────────────────────────────────
 # Same pattern as model overrides: operators set a built-in provider's routing
 # tags from the UI so they can align a provider to what their tasks require.

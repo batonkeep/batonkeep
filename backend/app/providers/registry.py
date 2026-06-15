@@ -48,6 +48,14 @@ class ProviderDef:
     # All non-"none" values go through the same resolve_api_key path; the distinction
     # is only needed to skip the check for unauthenticated local endpoints.
     auth_type: str = "required"
+    # Multimodal image generation (P-0046 slice 6 / P-0037). The API path only
+    # *offers* the `image_generate` tool when the active provider declares support
+    # here; gating keys on the model's capability, not the provider kind (Anthropic
+    # text models can't generate images even though the provider exists). V1 wires
+    # xAI/Grok's OpenAI-shaped images endpoint; other capable models flip the flag.
+    supports_image_gen: bool = False
+    image_model: str | None = None        # the images-endpoint model id
+    image_cost_per_image: float = 0.0     # per-asset cost (images bill per-image, not per-token)
 
 
 # ── Static registry ────────────────────────────────────────────────────────────
@@ -129,6 +137,11 @@ _ALL_PROVIDERS: list[ProviderDef] = [
         cost_out_per_mtok=15.0,
         env_key="XAI_API_KEY",
         mode="api",
+        # P-0046 slice 6 / P-0037: xAI exposes an OpenAI-shaped images endpoint
+        # (`/v1/images/generations`). $0.07/image per xAI's published rate.
+        supports_image_gen=True,
+        image_model="grok-2-image-1212",
+        image_cost_per_image=0.07,
     ),
     # Google Gemini via the native google-genai SDK (Developer API).
     ProviderDef(

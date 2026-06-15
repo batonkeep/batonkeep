@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import os
 
+from app.sessions.workspace import group_writable
+
 TOOL_SCHEMA = {
     "name": "file_write",
     "description": "Write content to a file in the task's working directory.",
@@ -28,7 +30,13 @@ async def run(filename: str, content: str, *, workdir: str = "/tmp") -> str:
     if ".." in safe:
         return "[file_write error] path traversal rejected"
     target = os.path.join(workdir, safe)
-    os.makedirs(os.path.dirname(target), exist_ok=True)
-    with open(target, "w", encoding="utf-8") as f:
-        f.write(content)
+    # Group-write umask so agent-authored files land co-writable by the
+    # sandbox-user agent (build/code_exec) as well as batond — the shared session
+    # tree is setgid `agents` (P-0022/D-0020). Without this, default-umask 0644
+    # files are group read-only and the sandbox lane hits EACCES editing them.
+    # No await inside the block (umask is process-global — see group_writable).
+    with group_writable():
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "w", encoding="utf-8") as f:
+            f.write(content)
     return f"[file_write] wrote {len(content)} chars to {target}"

@@ -133,6 +133,32 @@ class CodeExecToolProvider(ToolProvider):
         )
 
 
+class ImageGenToolProvider(ToolProvider):
+    """Capability-gated image generation (P-0046 slice 6 / P-0037).
+
+    Dispatchable through the registry, but the executor only *offers*
+    `image_generate` to the model when the active provider declares
+    `supports_image_gen` (see `_active_tool_schemas`). On dispatch the per-run
+    image config (credential / base_url / model / cost) arrives via `context`.
+    """
+
+    def list_tools(self) -> list[McpTool]:
+        from app.providers.tools import image_gen
+
+        s = image_gen.TOOL_SCHEMA
+        return [McpTool(name=s["name"], description=s["description"], input_schema=s["parameters"])]
+
+    async def call_tool(
+        self, name: str, arguments: dict, *, workdir: str, context: dict | None = None
+    ) -> str:
+        from app.providers.tools import image_gen
+
+        ctx = context or {}
+        return await image_gen.run(
+            workdir=workdir, config=ctx.get("image_gen"), **arguments,
+        )
+
+
 class ToolRegistry:
     """Aggregates tool providers and presents a single dispatch surface to the
     executor. Tool names are unique; the first provider to claim a name wins."""
@@ -226,7 +252,8 @@ def get_tool_registry() -> ToolRegistry:
         fetch = _build_fetch_provider()
         _MCP_PROVIDERS.append(fetch)
         _REGISTRY = ToolRegistry(
-            [BuiltinToolProvider(), FilesystemToolProvider(), CodeExecToolProvider(), fetch]
+            [BuiltinToolProvider(), FilesystemToolProvider(), CodeExecToolProvider(),
+             ImageGenToolProvider(), fetch]
         )
     return _REGISTRY
 

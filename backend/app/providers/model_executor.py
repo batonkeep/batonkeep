@@ -35,17 +35,22 @@ logger = logging.getLogger(__name__)
 # ── Tool registry ─────────────────────────────────────────────────────────────
 TOOL_SCHEMAS = get_tool_registry().function_schemas()
 
-# `code_exec` (P-0046) is dispatchable through the registry but only *offered* to
-# the model when the run's execution policy permits it (allow-safe/auto); the base
-# set below excludes it, and `_active_tool_schemas` re-adds it per-run.
+# Some tools are dispatchable through the registry but only *offered* to the model
+# under per-run conditions: `code_exec` (P-0046) when the execution policy permits;
+# `image_generate` (slice 6 / P-0037) when the active provider is image-capable. The
+# base set excludes both; `_active_tool_schemas` re-adds each per-run.
 _CODE_EXEC_NAME = "code_exec"
-_BASE_TOOL_SCHEMAS = [s for s in TOOL_SCHEMAS if s["name"] != _CODE_EXEC_NAME]
+_IMAGE_GEN_NAME = "image_generate"
+_GATED_TOOL_NAMES = {_CODE_EXEC_NAME, _IMAGE_GEN_NAME}
+_BASE_TOOL_SCHEMAS = [s for s in TOOL_SCHEMAS if s["name"] not in _GATED_TOOL_NAMES]
 _CODE_EXEC_SCHEMA = next((s for s in TOOL_SCHEMAS if s["name"] == _CODE_EXEC_NAME), None)
+_IMAGE_GEN_SCHEMA = next((s for s in TOOL_SCHEMAS if s["name"] == _IMAGE_GEN_NAME), None)
 
 
 def _active_tool_schemas(extra: dict | None) -> list[dict]:
     """The tool schemas offered for a run: the base set plus `code_exec` when the
-    run's execution policy (in `extra`) permits it (P-0046)."""
+    run's execution policy permits (P-0046), plus `image_generate` when the active
+    provider is image-capable (slice 6 / P-0037)."""
     from app.providers.tools.code_exec import policy_offers_tool
 
     extra = extra or {}
@@ -54,6 +59,8 @@ def _active_tool_schemas(extra: dict | None) -> list[dict]:
         extra.get("exec_policy"), bool(extra.get("human_in_loop"))
     ):
         schemas.append(_CODE_EXEC_SCHEMA)
+    if _IMAGE_GEN_SCHEMA and extra.get("image_gen"):
+        schemas.append(_IMAGE_GEN_SCHEMA)
     return schemas
 
 _SYSTEM_PROMPT = (
@@ -74,11 +81,17 @@ def _base_system_prompt(extra: dict | None) -> str:
     toolchain it can rely on rather than probing for it."""
     from app.providers.tools.code_exec import policy_offers_tool
 
+    prompt = _SYSTEM_PROMPT
+    if extra and extra.get("image_gen"):
+        prompt += (
+            " You can generate images with the image_generate tool; saved images "
+            "render in the preview pane, so create visuals directly when asked."
+        )
     if not (extra and policy_offers_tool(extra.get("exec_policy"))):
-        return _SYSTEM_PROMPT
+        return prompt
     from app.exec_env import render_capabilities
 
-    return f"{_SYSTEM_PROMPT} You can also run Python via code_exec. {render_capabilities()}"
+    return f"{prompt} You can also run Python via code_exec. {render_capabilities()}"
 
 # When the agent loop reaches its last permitted round (or trips the budget) the model
 # is given one final, tool-free turn so it MUST synthesise a complete answer from what it
@@ -149,6 +162,36 @@ class ModelExecutor(Executor):
             + usage.tokens_out * out_rate / 1_000_000
         )
 
+    def _aux_cost(self) -> float:
+        """Per-asset (non-token) spend accumulated this run — image generation
+        (slice 6). Added on top of the token cost for the budget gate + final usage."""
+        return sum(getattr(self, "_aux_costs", []))
+
+    async def _configure_image_gen(self) -> None:
+        """Resolve the credential + endpoint for the active image-capable provider and
+        stash the per-run image config (plus the cost accumulator) in `self._extra`.
+        Presence of `extra['image_gen']` is what offers the `image_generate` tool.
+        Skips silently if no credential is available — the tool just isn't offered."""
+        import os
+
+        from app.credentials import resolve_api_key
+
+        api_key = (
+            "no-key" if self._def.auth_type == "none"
+            else await resolve_api_key(self._cred_provider, self._def.env_key)
+        )
+        if not api_key:
+            return
+        self._extra["image_gen"] = {
+            "api_key": api_key,
+            "base_url": self._def.base_url or os.environ.get("OPENAI_BASE_URL") or None,
+            "model": self._def.image_model,
+            "cost_per_image": self._def.image_cost_per_image,
+            "cost_per_mtok": self._def.image_cost_per_mtok,
+            "response_format": self._def.image_response_format,
+            "cost_accumulator": self._aux_costs,
+        }
+
     async def run_stream(
         self,
         prompt: str,
@@ -162,6 +205,11 @@ class ModelExecutor(Executor):
         # Per-run dispatch context (e.g. the P-0046 code-exec execution policy);
         # threaded into tool listing (`_active_tool_schemas`) and dispatch.
         self._extra: dict[str, Any] = dict(extra or {})
+        # Per-asset cost from non-token tools (image_generate); accumulated by the
+        # tool via the shared list and folded into the run cost / budget gate.
+        self._aux_costs: list[float] = []
+        if tools_enabled and self._def.supports_image_gen and self._def.image_model:
+            await self._configure_image_gen()
         if self._def.kind == "anthropic":
             async for ev in self._run_anthropic(
                 prompt, workdir=workdir, tools_enabled=tools_enabled,
@@ -225,7 +273,7 @@ class ModelExecutor(Executor):
 
         pending_synthesis = False
         for round_num in range(max_rounds):
-            over_budget = total_usage.cost_usd > budget_usd
+            over_budget = total_usage.cost_usd + self._aux_cost() > budget_usd
             # Force a tool-free synthesis turn on the last round, when over budget, or
             # after a degenerate empty turn — so the loop always returns a complete
             # answer rather than exhausting mid-research or accepting an empty turn.
@@ -326,7 +374,7 @@ class ModelExecutor(Executor):
                                 data={"tool": v["name"], "result_chars": len(result)})
                 messages.append({"role": "tool", "content": result, "tool_call_id": v["id"]})
 
-        total_usage.cost_usd = self._compute_cost(total_usage)
+        total_usage.cost_usd = self._compute_cost(total_usage) + self._aux_cost()
         exec_result = ExecResult(text=full_text, usage=total_usage, provider=self.name,
                                  model=self._model or "unknown")
         yield ExecEvent(kind=EventKind.result, message=f"[{self.name}] done",
@@ -371,7 +419,7 @@ class ModelExecutor(Executor):
 
         pending_synthesis = False
         for round_num in range(max_rounds):
-            over_budget = total_usage.cost_usd > budget_usd
+            over_budget = total_usage.cost_usd + self._aux_cost() > budget_usd
             # Force a tool-free synthesis turn when: we've hit the last permitted round,
             # we're over budget, or a previous turn ended without producing any text
             # (a degenerate empty turn). Otherwise the loop can exhaust on a tool_use
@@ -455,6 +503,7 @@ class ModelExecutor(Executor):
                     yield ExecEvent(kind=EventKind.error, message=err)
                 return
 
+        total_usage.cost_usd += self._aux_cost()
         exec_result = ExecResult(text=full_text, usage=total_usage, provider=self.name,
                                  model=self._model or "unknown")
         yield ExecEvent(kind=EventKind.result, message=f"[{self.name}] done",
@@ -515,7 +564,7 @@ class ModelExecutor(Executor):
 
         pending_synthesis = False
         for round_num in range(max_rounds):
-            over_budget = total_usage.cost_usd > budget_usd
+            over_budget = total_usage.cost_usd + self._aux_cost() > budget_usd
             # Force a tool-free synthesis turn on the last round, when over budget, or
             # after a degenerate empty turn — so the loop always returns a complete
             # answer rather than exhausting mid-research or accepting an empty turn.
@@ -620,7 +669,7 @@ class ModelExecutor(Executor):
                 )
             contents.append(types.Content(role="user", parts=resp_parts))
 
-        total_usage.cost_usd = self._compute_cost(total_usage)
+        total_usage.cost_usd = self._compute_cost(total_usage) + self._aux_cost()
         exec_result = ExecResult(text=full_text, usage=total_usage, provider=self.name,
                                  model=self._model or "unknown")
         yield ExecEvent(kind=EventKind.result, message=f"[{self.name}] done",

@@ -55,7 +55,15 @@ class ProviderDef:
     # xAI/Grok's OpenAI-shaped images endpoint; other capable models flip the flag.
     supports_image_gen: bool = False
     image_model: str | None = None        # the images-endpoint model id
-    image_cost_per_image: float = 0.0     # per-asset cost (images bill per-image, not per-token)
+    # Per-asset cost. Two billing shapes seen in the wild: flat per-image (xAI/Grok)
+    # and per-token (OpenAI `gpt-image-*`, which returns a `usage` block). The tool
+    # meters from token usage × `image_cost_per_mtok` when both are present, else the
+    # flat `image_cost_per_image`.
+    image_cost_per_image: float = 0.0
+    image_cost_per_mtok: float = 0.0
+    # `response_format` handling differs: xAI/Grok accepts `b64_json`; OpenAI's
+    # `gpt-image-*` **rejects** the param (it always returns b64). None = omit it.
+    image_response_format: str | None = "b64_json"
 
 
 # ── Static registry ────────────────────────────────────────────────────────────
@@ -124,6 +132,14 @@ _ALL_PROVIDERS: list[ProviderDef] = [
         cost_out_per_mtok=10.0,
         env_key="OPENAI_API_KEY",
         mode="api",
+        # P-0046 slice 6 / P-0037: OpenAI's images endpoint. V1 uses the cheap
+        # `gpt-image-1-mini` ($8/Mtok image output); gpt-image bills per-token and
+        # rejects `response_format`, so we omit it and meter from the response usage.
+        supports_image_gen=True,
+        image_model="gpt-image-1-mini",
+        image_cost_per_mtok=8.0,
+        image_cost_per_image=0.01,  # fallback estimate if usage tokens are absent
+        image_response_format=None,
     ),
     # xAI Grok via its OpenAI-compatible API (base_url set so it doesn't inherit OPENAI_BASE_URL).
     ProviderDef(
@@ -138,12 +154,13 @@ _ALL_PROVIDERS: list[ProviderDef] = [
         env_key="XAI_API_KEY",
         mode="api",
         # P-0046 slice 6 / P-0037: xAI exposes an OpenAI-shaped images endpoint
-        # (`/v1/images/generations`). V1 = the quality tier (best output for the
-        # multimodal-parity demo); the cheaper `grok-imagine-image` is $0.02/image.
-        # Per xAI's published per-image rate (confirm against the enabled plan).
+        # (`/v1/images/generations`), flat per-image billing, accepts `b64_json`.
+        # V1 = the quality tier (best output for the multimodal-parity demo); the
+        # cheaper `grok-imagine-image` is $0.02/image.
         supports_image_gen=True,
         image_model="grok-imagine-image-quality",
         image_cost_per_image=0.05,
+        image_response_format="b64_json",
     ),
     # Google Gemini via the native google-genai SDK (Developer API).
     ProviderDef(

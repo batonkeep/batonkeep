@@ -68,8 +68,13 @@ async def run(
 ) -> str:
     """Generate one image via the configured provider's images endpoint and write it
     into the workspace. `config` (from the executor) carries `api_key`, `base_url`,
-    `model`, `cost_per_image`, and a mutable `cost_accumulator` list the tool appends
-    the per-asset cost to so the run's budget gate sees it."""
+    `model`, the billing fields (`cost_per_image` / `cost_per_mtok`), the provider's
+    `response_format` handling, and a mutable `cost_accumulator` list the tool appends
+    the per-asset cost to so the run's budget gate sees it.
+
+    Two provider shapes are handled: xAI/Grok (flat per-image, accepts `b64_json`)
+    and OpenAI `gpt-image-*` (per-token billing, rejects `response_format`, always
+    returns b64). The response is read as either `b64_json` or a `url` (fetched)."""
     cfg = config or {}
     api_key = cfg.get("api_key")
     model = cfg.get("model")
@@ -88,10 +93,14 @@ async def run(
     from openai import AsyncOpenAI
 
     client = AsyncOpenAI(api_key=api_key, base_url=cfg.get("base_url") or None)
+    # `response_format` is sent only when the provider accepts it (omit for gpt-image,
+    # which 400s on the param). `None` in config means omit.
+    kwargs: dict = {"model": model, "prompt": prompt, "n": 1}
+    rf = cfg.get("response_format", "b64_json")
+    if rf:
+        kwargs["response_format"] = rf
     try:
-        resp = await client.images.generate(
-            model=model, prompt=prompt, response_format="b64_json", n=1,
-        )
+        resp = await client.images.generate(**kwargs)
     except Exception as exc:
         msg = str(exc)
         if any(kw in msg.lower() for kw in ("rate", "limit", "quota", "429")):
@@ -99,16 +108,15 @@ async def run(
         return f"[image_generate error] {msg}"
 
     data = resp.data[0] if resp.data else None
-    b64 = getattr(data, "b64_json", None) if data else None
-    if not b64:
+    image_bytes = await _extract_bytes(data)
+    if image_bytes is None:
         return "[image_generate error] provider returned no image data"
 
     os.makedirs(os.path.dirname(target) or workdir, exist_ok=True)
     with open(target, "wb") as f:
-        f.write(base64.b64decode(b64))
+        f.write(image_bytes)
 
-    # Meter the per-asset cost into the run so it counts against budget (P-0009 #2).
-    cost = float(cfg.get("cost_per_image", 0.0) or 0.0)
+    cost = _meter_cost(cfg, resp)
     acc = cfg.get("cost_accumulator")
     if isinstance(acc, list):
         acc.append(cost)
@@ -116,3 +124,34 @@ async def run(
     rel = os.path.relpath(target, workdir)
     logger.info("image_generate wrote %s (model=%s, $%.4f)", rel, model, cost)
     return f"[image_generate] saved {rel} (${cost:.4f})"
+
+
+async def _extract_bytes(data) -> bytes | None:
+    """Decode the image from a response datum — either inline `b64_json` or a `url`
+    the provider hands back (some endpoints default to hosted URLs)."""
+    if data is None:
+        return None
+    b64 = getattr(data, "b64_json", None)
+    if b64:
+        return base64.b64decode(b64)
+    url = getattr(data, "url", None)
+    if url:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.get(url)
+            r.raise_for_status()
+            return r.content
+    return None
+
+
+def _meter_cost(cfg: dict, resp) -> float:
+    """Per-asset cost (P-0009 #2). Token-billed providers (OpenAI `gpt-image-*`)
+    return a `usage` block — meter from `output_tokens × cost_per_mtok` when both are
+    present; otherwise fall back to the flat `cost_per_image` (xAI/Grok)."""
+    per_mtok = float(cfg.get("cost_per_mtok", 0.0) or 0.0)
+    usage = getattr(resp, "usage", None)
+    out_tokens = getattr(usage, "output_tokens", None) if usage else None
+    if per_mtok and out_tokens:
+        return out_tokens * per_mtok / 1_000_000
+    return float(cfg.get("cost_per_image", 0.0) or 0.0)

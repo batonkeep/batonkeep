@@ -187,6 +187,8 @@ class ModelExecutor(Executor):
             "base_url": self._def.base_url or os.environ.get("OPENAI_BASE_URL") or None,
             "model": self._def.image_model,
             "cost_per_image": self._def.image_cost_per_image,
+            "cost_per_mtok": self._def.image_cost_per_mtok,
+            "response_format": self._def.image_response_format,
             "cost_accumulator": self._aux_costs,
         }
 

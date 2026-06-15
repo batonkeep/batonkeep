@@ -1374,45 +1374,6 @@ export default function SessionView({
                       ))}
                     </Select>
                   )}
-                  {detail && (() => {
-                    const spent = detail.cost_usd ?? 0;
-                    const cap = detail.budget_usd ?? null;
-                    const frac = cap && cap > 0 ? Math.min(spent / cap, 1) : 0;
-                    const reached = cap != null && cap > 0 && spent >= cap;
-                    return (
-                      <button
-                        type="button"
-                        onClick={handleSetBudget}
-                        className={`flex items-center gap-1.5 rounded border px-2 py-1 font-mono text-[11px] ${
-                          reached
-                            ? "border-bad/50 bg-bad/10 text-bad"
-                            : "border-edge text-muted hover:bg-edge/40"
-                        }`}
-                        title={
-                          cap != null
-                            ? `Session spend $${spent.toFixed(4)} of $${cap.toFixed(2)} cap. ` +
-                              "Enforced cumulatively — a turn stops at the next step that " +
-                              "would exceed the cap. Click to raise or clear."
-                            : `Session spend $${spent.toFixed(4)}. Click to set a budget cap.`
-                        }
-                      >
-                        <span>${spent.toFixed(spent < 1 ? 4 : 2)}</span>
-                        {cap != null && (
-                          <>
-                            <span className="text-edge">/</span>
-                            <span>${cap.toFixed(2)}</span>
-                            <span className="relative inline-block h-1 w-8 overflow-hidden rounded bg-edge/60">
-                              <span
-                                className={`absolute inset-y-0 left-0 ${reached ? "bg-bad" : "bg-brand"}`}
-                                style={{ width: `${frac * 100}%` }}
-                              />
-                            </span>
-                          </>
-                        )}
-                        {reached && <span className="uppercase tracking-wide">raise</span>}
-                      </button>
-                    );
-                  })()}
                   <Button
                     variant={historyOpen ? "outline" : "ghost"}
                     size="sm"
@@ -1478,35 +1439,77 @@ export default function SessionView({
                     <Folder size={11} /> Files
                   </button>
                 </div>
-                {mode === "files" && (
-                  <button
-                    type="button"
-                    onClick={() => loadFiles()}
-                    disabled={filesLoading}
-                    title="Refresh the file listing"
-                    className="ml-auto inline-flex items-center gap-1 rounded border border-edge px-2 py-0.5 font-mono text-[11px] text-muted hover:text-ink disabled:opacity-40"
-                  >
-                    {filesLoading ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
-                    Refresh
-                  </button>
-                )}
                 {mode === "terminal" && (
-                  <>
-                    <span className="font-mono text-[11px] text-muted">{activeInstance} · live · you drive every turn</span>
-                    {/* Capture the session's workspace edits as an artifact turn
-                        (D-0017 thread 2). Also runs automatically on stop. */}
+                  <span className="font-mono text-[11px] text-muted">{activeInstance} · live · you drive every turn</span>
+                )}
+                {/* Right side: mode-specific action + the live session cost / budget chip. */}
+                <div className="ml-auto flex items-center gap-2">
+                  {mode === "files" && (
+                    <button
+                      type="button"
+                      onClick={() => loadFiles()}
+                      disabled={filesLoading}
+                      title="Refresh the file listing"
+                      className="inline-flex items-center gap-1 rounded border border-edge px-2 py-0.5 font-mono text-[11px] text-muted hover:text-ink disabled:opacity-40"
+                    >
+                      {filesLoading ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
+                      Refresh
+                    </button>
+                  )}
+                  {mode === "terminal" && (
+                    // Capture the session's workspace edits as an artifact turn
+                    // (D-0017 thread 2). Also runs automatically on stop.
                     <button
                       type="button"
                       onClick={() => void captureTerminal()}
                       disabled={capturing}
                       title="Capture the files this terminal session changed as a result"
-                      className="ml-auto inline-flex items-center gap-1 rounded border border-edge px-2 py-0.5 font-mono text-[11px] text-muted hover:text-ink disabled:opacity-40"
+                      className="inline-flex items-center gap-1 rounded border border-edge px-2 py-0.5 font-mono text-[11px] text-muted hover:text-ink disabled:opacity-40"
                     >
                       {capturing ? <Loader2 size={11} className="animate-spin" /> : <FileCode size={11} />}
                       Capture
                     </button>
-                  </>
-                )}
+                  )}
+                  {detail && (() => {
+                    const spent = detail.cost_usd ?? 0;
+                    const cap = detail.budget_usd ?? null;
+                    const frac = cap && cap > 0 ? Math.min(spent / cap, 1) : 0;
+                    const reached = cap != null && cap > 0 && spent >= cap;
+                    return (
+                      <button
+                        type="button"
+                        onClick={handleSetBudget}
+                        className={`flex items-center gap-1.5 rounded border px-2 py-0.5 font-mono text-[11px] ${
+                          reached
+                            ? "border-bad/50 bg-bad/10 text-bad"
+                            : "border-edge text-muted hover:bg-edge/40"
+                        }`}
+                        title={
+                          cap != null
+                            ? `Session spend $${spent.toFixed(4)} of $${cap.toFixed(2)} cap. ` +
+                              "Enforced cumulatively — a turn stops at the next step that " +
+                              "would exceed the cap. Click to raise or clear."
+                            : `Session spend $${spent.toFixed(4)}. Click to set a budget cap.`
+                        }
+                      >
+                        <span>${spent.toFixed(spent < 1 ? 4 : 2)}</span>
+                        {cap != null && (
+                          <>
+                            <span className="text-edge">/</span>
+                            <span>${cap.toFixed(2)}</span>
+                            <span className="relative inline-block h-1 w-8 overflow-hidden rounded bg-edge/60">
+                              <span
+                                className={`absolute inset-y-0 left-0 ${reached ? "bg-bad" : "bg-brand"}`}
+                                style={{ width: `${frac * 100}%` }}
+                              />
+                            </span>
+                          </>
+                        )}
+                        {reached && <span className="uppercase tracking-wide">raise</span>}
+                      </button>
+                    );
+                  })()}
+                </div>
               </div>
             )}
 

@@ -298,6 +298,72 @@ class TestSessionRename:
             asyncio.get_event_loop().run_until_complete(engine.dispose())
 
 
+class TestSessionBudget:
+    """PATCH sets/raises/clears the per-session budget; GET surfaces cumulative cost."""
+
+    def test_budget_set_clear_and_cost_surfacing(self, tmp_path):
+        import asyncio
+
+        from fastapi.testclient import TestClient
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+        from app.db import Base, get_db
+        from app.main import _owner_id, app
+        from app.models import Owner
+        from app.models import Session as SessionModel
+        from app.models import SessionTurn
+
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/b.db", echo=False)
+
+        async def _setup():
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+
+        asyncio.get_event_loop().run_until_complete(_setup())
+        Maker = async_sessionmaker(engine, expire_on_commit=False)
+
+        async def _seed():
+            async with Maker() as db:
+                db.add(Owner(id="local", label="Test"))
+                db.add(SessionModel(
+                    id="s1", owner_id="local", title="S", provider="mock",
+                    workspace_path=str(tmp_path), preview_token="tok", status="active",
+                ))
+                # Two succeeded turns → cumulative cost = 0.30.
+                db.add(SessionTurn(session_id="s1", owner_id="local", seq=1,
+                                   prompt="a", status="succeeded", cost_usd=0.10))
+                db.add(SessionTurn(session_id="s1", owner_id="local", seq=2,
+                                   prompt="b", status="succeeded", cost_usd=0.20))
+                await db.commit()
+
+        asyncio.get_event_loop().run_until_complete(_seed())
+
+        async def _override_db():
+            async with Maker() as db:
+                yield db
+
+        app.dependency_overrides[get_db] = _override_db
+        app.dependency_overrides[_owner_id] = lambda: "local"
+        try:
+            c = TestClient(app)
+            # GET surfaces cumulative spend; budget unset by default.
+            g = c.get("/api/sessions/s1").json()
+            assert g["cost_usd"] == 0.30
+            assert g["budget_usd"] is None
+            # Set a cap.
+            r = c.patch("/api/sessions/s1", json={"budget_usd": 5.0})
+            assert r.status_code == 200 and r.json()["budget_usd"] == 5.0
+            # Raise it.
+            assert c.patch("/api/sessions/s1", json={"budget_usd": 10.0}).json()["budget_usd"] == 10.0
+            # 0 clears back to no cap.
+            assert c.patch("/api/sessions/s1", json={"budget_usd": 0}).json()["budget_usd"] is None
+            # Negative rejected.
+            assert c.patch("/api/sessions/s1", json={"budget_usd": -1}).status_code == 422
+        finally:
+            app.dependency_overrides.clear()
+            asyncio.get_event_loop().run_until_complete(engine.dispose())
+
+
 class TestSessionDelete:
     """DELETE /api/sessions/{id} removes the row + its workspace dir; 404 otherwise."""
 

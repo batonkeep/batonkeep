@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from app.schemas import SessionTurnOut
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app import approvals
 from app.config import get_settings
@@ -44,6 +44,10 @@ from app.ws import ws_manager
 
 logger = logging.getLogger(__name__)
 _settings = get_settings()
+
+# Per-turn spend cap applied when a session has no explicit budget set — the prior
+# always-on default. A session budget (opt-in) replaces this with cumulative-remaining.
+_DEFAULT_TURN_BUDGET_USD = 1.0
 
 
 class SessionError(Exception):
@@ -172,6 +176,30 @@ async def run_turn_background(
         )).all()
         recent_turns = [(p, r or "") for p, r in reversed(prior)]
 
+        # Per-session budget (opt-in). When set, the executor's budget gate caps
+        # *cumulative* session spend, not just this one turn: pass the remaining
+        # session headroom (cap − spend on prior succeeded turns). Composes with the
+        # owner daily cap — whichever leaves less headroom wins. Unset → keep the
+        # existing per-turn safety cap. Enforcement is stop-at-next-step (bounded
+        # overshoot ≤ one round), surfaced as such in the UI.
+        turn_budget = _DEFAULT_TURN_BUDGET_USD
+        if session.budget_usd is not None:
+            prior_spend = float((await db.execute(
+                select(func.coalesce(func.sum(SessionTurn.cost_usd), 0.0))
+                .where(
+                    SessionTurn.session_id == session_id,
+                    SessionTurn.seq < seq,
+                    SessionTurn.status == "succeeded",
+                )
+            )).scalar() or 0.0)
+            turn_budget = max(0.0, session.budget_usd - prior_spend)
+        daily_cap = _settings.daily_budget_usd
+        if daily_cap > 0:
+            from app.cost import _start_of_today, spend_since
+            daily_remaining = max(0.0, daily_cap - await spend_since(
+                db, owner_id, _start_of_today()))
+            turn_budget = min(turn_budget, daily_remaining)
+
     # Ledger pre-switch summary (best-effort, only if provider changed — we detect by
     # comparing to the previous turn's provider; approximate but good enough here).
     if _settings.ledger_summary_enabled:
@@ -225,7 +253,7 @@ async def run_turn_background(
             workdir=workspace,
             tools_enabled=_settings.autonomous_tools,
             max_rounds=10,
-            budget_usd=1.0,
+            budget_usd=turn_budget,
             extra={
                 "session": True, "turn_seq": seq, "user_message": message,
                 # P-0046: interactive build sessions have a human in the loop; the
@@ -294,6 +322,8 @@ async def run_turn_background(
                 turn.tokens_in = usage.tokens_in
                 turn.tokens_out = usage.tokens_out
                 turn.cost_usd = usage.cost_usd
+                turn.cache_read_tokens = usage.cache_read_tokens
+                turn.cache_write_tokens = usage.cache_write_tokens
             else:
                 turn.status = "failed"
                 turn.error = error_msg or "no result produced"

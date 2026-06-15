@@ -152,14 +152,22 @@ class ModelExecutor(Executor):
         # Meter at the *effective* rate for the model actually in use: operator
         # pricing override > known-model price book > template default. Pinning to
         # the template made an overridden/custom model bill at the wrong rate.
+        from app.providers import model_pricing
         from app.providers.registry import effective_pricing
 
         in_rate, out_rate = effective_pricing(
             self._def, self._instance.id if self._instance else None, self._model
         )
+        # Cache-read / cache-write tokens bill at their own rates (cheap reads, a
+        # write premium). They are 0 unless caching is on, so this reduces to the
+        # old in/out formula on the non-cached paths. `tokens_in` already excludes
+        # the cached portion (the loops capture them separately), so the three add.
+        cache_read_rate, cache_write_rate = model_pricing.cache_rates(self._model, in_rate)
         return (
             usage.tokens_in * in_rate / 1_000_000
             + usage.tokens_out * out_rate / 1_000_000
+            + usage.cache_read_tokens * cache_read_rate / 1_000_000
+            + usage.cache_write_tokens * cache_write_rate / 1_000_000
         )
 
     def _aux_cost(self) -> float:
@@ -343,9 +351,18 @@ class ModelExecutor(Executor):
 
             async for chunk in stream:
                 if chunk.usage:
+                    # OpenAI auto-caches stable prefixes (≥~1024 tok) and reports the
+                    # cached count under prompt_tokens_details; unlike Anthropic, its
+                    # prompt_tokens *includes* the cached portion, so split it out to
+                    # avoid double-billing. No separate cache-write charge (automatic).
+                    prompt_tok = chunk.usage.prompt_tokens or 0
+                    cached = getattr(
+                        getattr(chunk.usage, "prompt_tokens_details", None),
+                        "cached_tokens", 0) or 0
                     usage_delta = Usage(
-                        tokens_in=chunk.usage.prompt_tokens or 0,
+                        tokens_in=max(prompt_tok - cached, 0),
                         tokens_out=chunk.usage.completion_tokens or 0,
+                        cache_read_tokens=cached,
                     )
                 if not chunk.choices:
                     continue
@@ -430,6 +447,14 @@ class ModelExecutor(Executor):
             {"name": t["name"], "description": t["description"], "input_schema": t["parameters"]}
             for t in _active_tool_schemas(self._extra)
         ] if tools_enabled else []
+        # Prompt caching: mark the last tool as a cache breakpoint so the whole
+        # stable prefix (system + tools) is cached and replayed at the cache-read
+        # rate on every later round, instead of re-billing the full schema each
+        # turn. Reduces cost *and* latency; the per-turn budget is kept honest by
+        # the cache-read/write capture below. Requires a stable prefix ordering
+        # (system + tools first, never reordered) — which this loop already keeps.
+        if anth_tools:
+            anth_tools[-1] = {**anth_tools[-1], "cache_control": {"type": "ephemeral"}}
 
         total_usage = Usage()
         full_text = ""
@@ -457,11 +482,18 @@ class ModelExecutor(Executor):
             # often gets an empty reply mid-conversation (see _SYNTHESIS_USER_MSG).
             if force_answer and len(messages) > 1:
                 messages.append({"role": "user", "content": _SYNTHESIS_USER_MSG})
+            system_text = _base_system_prompt(self._extra) + (
+                _SYNTHESIS_NUDGE if force_answer else "")
             stream_kwargs: dict[str, Any] = dict(
                 model=self._model or "claude-opus-4-5",
                 max_tokens=8192,
-                system=_base_system_prompt(self._extra) + (
-                    _SYNTHESIS_NUDGE if force_answer else ""),
+                # System as a cacheable block: the base prompt is identical every
+                # round (the nudge only appends on the final forced turn), so it
+                # caches alongside the tools prefix above.
+                system=[{
+                    "type": "text", "text": system_text,
+                    "cache_control": {"type": "ephemeral"},
+                }],
                 messages=messages,
             )
             if anth_tools and not force_answer:
@@ -476,10 +508,17 @@ class ModelExecutor(Executor):
                                     yield ExecEvent(kind=EventKind.token, text=event.delta.text)
 
                     final_msg = await stream.get_final_message()
+                    # Anthropic reports cached input separately: `input_tokens` is
+                    # the uncached portion, with cache reads/writes alongside — so
+                    # the three sum to the real prompt and each bills at its rate.
                     in_tok = final_msg.usage.input_tokens
                     out_tok = final_msg.usage.output_tokens
+                    cache_read = getattr(final_msg.usage, "cache_read_input_tokens", 0) or 0
+                    cache_write = getattr(
+                        final_msg.usage, "cache_creation_input_tokens", 0) or 0
                     delta = Usage(tokens_in=in_tok, tokens_out=out_tok,
-                                  cost_usd=self._compute_cost(Usage(in_tok, out_tok)))
+                                  cache_read_tokens=cache_read, cache_write_tokens=cache_write)
+                    delta.cost_usd = self._compute_cost(delta)
                     total_usage = total_usage + delta
 
                     tool_uses = [b for b in final_msg.content if b.type == "tool_use"]
@@ -653,8 +692,13 @@ class ModelExecutor(Executor):
                 tokens_out = last_usage.candidates_token_count or 0
                 if last_usage.thoughts_token_count:
                     tokens_out += last_usage.thoughts_token_count
-                delta = Usage(tokens_in=last_usage.prompt_token_count or 0,
-                              tokens_out=tokens_out)
+                # Gemini's prompt_token_count includes any implicitly-cached content
+                # (reported as cached_content_token_count); split it out so the cached
+                # portion bills at the cache-read rate, not full input rate.
+                prompt_tok = last_usage.prompt_token_count or 0
+                cached = getattr(last_usage, "cached_content_token_count", 0) or 0
+                delta = Usage(tokens_in=max(prompt_tok - cached, 0),
+                              tokens_out=tokens_out, cache_read_tokens=cached)
                 delta.cost_usd = self._compute_cost(delta)
                 total_usage = total_usage + delta
 

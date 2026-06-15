@@ -45,12 +45,21 @@ class Usage:
     tokens_in: int = 0
     tokens_out: int = 0
     cost_usd: float = 0.0
+    # Prompt-cache accounting. Providers report cached input separately from fresh
+    # input, billed at different rates (cache-read cheap, cache-write a premium).
+    # `tokens_in` carries only the *uncached* input; these carry the cached portion
+    # so _compute_cost can price each correctly once caching is on. Both stay 0 when
+    # no caching is in play, so legacy full-rate accounting is unchanged.
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
 
     def __add__(self, other: Usage) -> Usage:
         return Usage(
             tokens_in=self.tokens_in + other.tokens_in,
             tokens_out=self.tokens_out + other.tokens_out,
             cost_usd=self.cost_usd + other.cost_usd,
+            cache_read_tokens=self.cache_read_tokens + other.cache_read_tokens,
+            cache_write_tokens=self.cache_write_tokens + other.cache_write_tokens,
         )
 
 

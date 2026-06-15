@@ -684,6 +684,7 @@ async def list_sessions(
     # Content signals (used by the UI to scale delete confirmation): turn counts +
     # which sessions have a live publish. Two grouped queries, not per-row.
     turn_counts: dict[str, int] = {}
+    costs: dict[str, float] = {}
     published: set[str] = set()
     if ids:
         rows = await db.execute(
@@ -692,6 +693,12 @@ async def list_sessions(
             .group_by(SessionTurn.session_id)
         )
         turn_counts = {sid: n for sid, n in rows.all()}
+        cost_rows = await db.execute(
+            select(SessionTurn.session_id, func.coalesce(func.sum(SessionTurn.cost_usd), 0.0))
+            .where(SessionTurn.session_id.in_(ids))
+            .group_by(SessionTurn.session_id)
+        )
+        costs = {sid: float(c or 0.0) for sid, c in cost_rows.all()}
         pub_rows = await db.execute(
             select(Artifact.session_id).where(
                 Artifact.session_id.in_(ids), Artifact.published.is_(True)
@@ -703,9 +710,19 @@ async def list_sessions(
     for s in sessions:
         item = SessionOut.model_validate(s)
         item.turn_count = turn_counts.get(s.id, 0)
+        item.cost_usd = round(costs.get(s.id, 0.0), 6)
         item.published = s.id in published
         out.append(item)
     return out
+
+
+async def _session_cost(db: AsyncSession, session_id: str) -> float:
+    """Cumulative spend for a session = sum of its turns' cost_usd."""
+    total = (await db.execute(
+        select(func.coalesce(func.sum(SessionTurn.cost_usd), 0.0))
+        .where(SessionTurn.session_id == session_id)
+    )).scalar()
+    return round(float(total or 0.0), 6)
 
 
 @app.get("/api/sessions/{session_id}", response_model=SessionOut, tags=["sessions"])
@@ -717,7 +734,9 @@ async def get_session(
     session = await db.get(Session, session_id)
     if session is None or session.owner_id != owner_id:
         raise HTTPException(status_code=404, detail="Session not found")
-    return SessionOut.model_validate(session)
+    out = SessionOut.model_validate(session)
+    out.cost_usd = await _session_cost(db, session_id)
+    return out
 
 
 @app.patch("/api/sessions/{session_id}", response_model=SessionOut, tags=["sessions"])
@@ -743,9 +762,14 @@ async def update_session(
     if body.image_model_id is not None:
         # "" sentinel clears the override back to the provider default.
         session.image_model_id = body.image_model_id or None
+    if body.budget_usd is not None:
+        # 0 clears the cap (no session budget); a positive value sets/raises it.
+        session.budget_usd = body.budget_usd or None
     await db.commit()
     await db.refresh(session)
-    return SessionOut.model_validate(session)
+    out = SessionOut.model_validate(session)
+    out.cost_usd = await _session_cost(db, session_id)
+    return out
 
 
 @app.post("/api/sessions/{session_id}/approvals/{request_id}", status_code=204, tags=["sessions"])

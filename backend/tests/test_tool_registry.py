@@ -60,6 +60,27 @@ async def test_file_write_receives_workdir(tmp_path):
     assert "wrote 5 chars" in out
 
 
+async def test_file_write_is_group_writable(tmp_path):
+    """Agent-authored files must land co-writable by the sandbox-user agent
+    (P-0022/D-0020), not just readable — even under the backend's default umask.
+    Otherwise the sandbox build/code_exec lane hits EACCES editing files the API
+    path wrote. file_write applies a group-write umask; assert the bit survives on
+    both the file and any directory it creates."""
+    import os
+
+    reg = get_tool_registry()
+    prev = os.umask(0o022)  # simulate the backend's default (drops group write)
+    try:
+        args = json.dumps({"filename": "src/main.jsx", "content": "x"})
+        await reg.call("file_write", args, workdir=str(tmp_path))
+        fmode = os.stat(tmp_path / "src" / "main.jsx").st_mode
+        assert fmode & 0o020, f"file not group-writable: {oct(fmode)}"
+        dmode = os.stat(tmp_path / "src").st_mode
+        assert dmode & 0o020, f"created dir not group-writable: {oct(dmode)}"
+    finally:
+        os.umask(prev)
+
+
 async def test_first_provider_wins_on_name_collision():
     class Dummy(BuiltinToolProvider):
         async def call_tool(self, name, arguments, *, workdir, context=None):

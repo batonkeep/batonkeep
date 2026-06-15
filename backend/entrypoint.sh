@@ -32,11 +32,16 @@ run_migration() {
   chown -R batond:batond /data/publish 2>/dev/null || true
 
   # Shared lanes → agents group, setgid, group-writable (batond + sandbox co-write).
+  # Files use `g+rwX` (capital X), NOT a flat 0660: X only adds execute where it
+  # already exists (or on dirs), so this preserves the execute bit on installed
+  # binaries — e.g. node_modules/.bin shims and @esbuild/*/bin/esbuild that
+  # `vite build` must exec. A flat `chmod 0660` here stripped that bit on every
+  # restart and broke previously-working builds with EACCES/ENOEXEC.
   for d in /data/sessions /work; do
     mkdir -p "$d"
     chown -R batond:agents "$d" 2>/dev/null || true
     find "$d" -type d -exec chmod 2770 {} + 2>/dev/null || true
-    find "$d" -type f -exec chmod 0660 {} + 2>/dev/null || true
+    find "$d" -type f -exec chmod ug+rw,g+X,o-rwx {} + 2>/dev/null || true
   done
 
   # CLI auth / OAuth home stays with sandbox (uid 1000 unchanged across the split).

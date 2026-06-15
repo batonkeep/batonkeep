@@ -112,6 +112,84 @@ _SYNTHESIS_USER_MSG = (
     "final Markdown report now."
 )
 
+# ── Tool-result compaction (P-0048 levers 2+3) ──────────────────────────────────
+# Large tool outputs (web_fetch's ~8000 chars, search dumps, code_exec stdout) are
+# replayed verbatim on every later round at full input rate. Once a result is no
+# longer the most-recent turn's — i.e. the model has already seen and acted on it —
+# we compact it ONCE to a head/tail excerpt and never touch it again, so the
+# rewritten prefix re-stabilises and re-caches (mutating it every round would defeat
+# the lever-1 prompt cache). The most-recent tool turn always stays verbatim so the
+# model's immediate next decision sees the full output; results below the threshold
+# are left whole. Idempotent via the marker — a second pass is a no-op, so a
+# per-round sweep produces byte-identical history once a block has settled.
+_COMPACT_THRESHOLD_CHARS = 2000
+_COMPACT_HEAD_CHARS = 700
+_COMPACT_TAIL_CHARS = 400
+_COMPACT_MARKER = "\n\n…[batonkeep compacted "
+
+
+def _compact_result_text(text: str) -> str:
+    """Compact a single tool-result string to a head/tail excerpt. No-op when the
+    text is short or already carries the compaction marker (idempotent)."""
+    if not text or len(text) <= _COMPACT_THRESHOLD_CHARS or _COMPACT_MARKER in text:
+        return text
+    elided = len(text) - _COMPACT_HEAD_CHARS - _COMPACT_TAIL_CHARS
+    return (
+        f"{text[:_COMPACT_HEAD_CHARS]}"
+        f"{_COMPACT_MARKER}{elided} chars elided]…\n\n"
+        f"{text[-_COMPACT_TAIL_CHARS:]}"
+    )
+
+
+def _compact_openai_messages(messages: list[dict]) -> None:
+    """Compact aged tool messages in place, protecting the most-recent tool turn
+    (those following the last assistant message carrying tool_calls)."""
+    last_turn_start = None
+    for i, m in enumerate(messages):
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            last_turn_start = i
+    for i, m in enumerate(messages):
+        if m.get("role") != "tool":
+            continue
+        if last_turn_start is not None and i > last_turn_start:
+            continue  # most-recent turn — keep verbatim
+        if isinstance(m.get("content"), str):
+            m["content"] = _compact_result_text(m["content"])
+
+
+def _compact_anthropic_messages(messages: list[dict]) -> None:
+    """Compact aged `tool_result` blocks in place, protecting the most-recent
+    tool-result turn. Only the block `content` text changes — `cache_control`
+    breakpoints (managed by the loop) are left untouched."""
+    tr_idxs = [
+        i for i, m in enumerate(messages)
+        if m.get("role") == "user" and isinstance(m.get("content"), list)
+        and any(isinstance(b, dict) and b.get("type") == "tool_result"
+                for b in m["content"])
+    ]
+    for i in tr_idxs[:-1]:  # all but the most recent
+        for b in messages[i]["content"]:
+            if (isinstance(b, dict) and b.get("type") == "tool_result"
+                    and isinstance(b.get("content"), str)):
+                b["content"] = _compact_result_text(b["content"])
+
+
+def _compact_gemini_contents(contents: list) -> None:
+    """Compact aged Gemini function-response parts in place, protecting the
+    most-recent response turn. Only user-role function responses are touched —
+    model parts (which carry thought_signatures) are never rewritten."""
+    fr_idxs = [
+        i for i, c in enumerate(contents)
+        if getattr(c, "role", None) == "user"
+        and any(getattr(p, "function_response", None) for p in (c.parts or []))
+    ]
+    for i in fr_idxs[:-1]:  # all but the most recent
+        for p in contents[i].parts:
+            fr = getattr(p, "function_response", None)
+            if fr and isinstance(fr.response, dict) and isinstance(
+                    fr.response.get("result"), str):
+                fr.response["result"] = _compact_result_text(fr.response["result"])
+
 
 class ModelExecutor(Executor):
     """OpenAI-compatible or Anthropic model backend with our own agent loop."""
@@ -311,6 +389,9 @@ class ModelExecutor(Executor):
                     kind=EventKind.log,
                     message=f"[{self.name}] budget ${budget_usd:.4f} reached — synthesizing",
                 )
+            # Compact aged tool results before re-sending the growing history
+            # (P-0048 levers 2+3); idempotent, so settled blocks stay byte-stable.
+            _compact_openai_messages(messages)
             round_system = _base_system_prompt(self._extra) + (
                 _SYNTHESIS_NUDGE if force_answer else "")
             messages[0] = {"role": "system", "content": round_system}
@@ -488,6 +569,10 @@ class ModelExecutor(Executor):
             # often gets an empty reply mid-conversation (see _SYNTHESIS_USER_MSG).
             if force_answer and len(messages) > 1:
                 messages.append({"role": "user", "content": _SYNTHESIS_USER_MSG})
+            # Compact aged tool_result blocks before re-sending (P-0048 levers 2+3);
+            # idempotent and never touches the protected most-recent turn or the
+            # cache_control breakpoints, so the cached prefix stays stable.
+            _compact_anthropic_messages(messages)
             system_text = _base_system_prompt(self._extra) + (
                 _SYNTHESIS_NUDGE if force_answer else "")
             stream_kwargs: dict[str, Any] = dict(
@@ -666,6 +751,10 @@ class ModelExecutor(Executor):
                 contents.append(
                     types.Content(role="user", parts=[types.Part(text=_SYNTHESIS_USER_MSG)])
                 )
+            # Compact aged function-response parts before re-sending (P-0048 levers
+            # 2+3); idempotent and only touches aged user-role responses, never the
+            # model parts that carry thought_signatures.
+            _compact_gemini_contents(contents)
             # Keep the tools declared (history holds function calls); on the synthesis
             # turn forbid new calls via FunctionCallingConfig mode=NONE rather than
             # dropping `tools`.

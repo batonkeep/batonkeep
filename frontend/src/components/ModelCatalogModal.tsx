@@ -67,6 +67,13 @@ export default function ModelCatalogModal({
     run(() => api.updateCatalogModel(template, { id, enabled: true, ...pricing }));
     setNewId(""); setNewIn(""); setNewOut("");
   };
+  // Selecting a model sets the catalog default AND clears any stale per-instance
+  // runtime override, so the catalog default actually becomes the *effective* model
+  // (otherwise an old override would win and the star would diverge from what runs).
+  const selectModel = (id: string) => run(async () => {
+    await api.setCatalogPreferred(template, "default", id);
+    await api.setProviderModel(template, null);
+  });
 
   const enabled = catalog?.models.filter((m) => m.enabled) ?? [];
 
@@ -83,6 +90,11 @@ export default function ModelCatalogModal({
       ) : (
         <div className="space-y-5">
           {error && <p className="font-mono text-xs text-bad">{error}</p>}
+
+          <p className="font-mono text-[11px] text-muted">
+            Active model: <span className="text-ink">{catalog.effective_model ?? "—"}</span>
+            <span className="text-muted"> — ★ a model below to switch.</span>
+          </p>
 
           {/* Add a model */}
           <section>
@@ -127,7 +139,9 @@ export default function ModelCatalogModal({
                 <p className="px-3 py-3 font-mono text-xs text-muted">no models — add one above</p>
               )}
               {catalog.models.map((m) => {
-                const isDefault = catalog.preferred.default === m.id;
+                // Star marks the *active* (effective) model, not just the stored
+                // preferred — so it always matches what the provider card shows / runs.
+                const isActive = catalog.effective_model === m.id;
                 const isEditing = editId === m.id;
                 return (
                   <div key={m.id} className="px-3 py-2">
@@ -135,11 +149,11 @@ export default function ModelCatalogModal({
                       <div className="flex min-w-0 items-center gap-2">
                         <button
                           type="button" disabled={busy}
-                          title={isDefault ? "provider default" : "set as default"}
-                          onClick={() => run(() => api.setCatalogPreferred(template, "default", m.id))}
-                          className={isDefault ? "text-brand" : "text-muted hover:text-brand"}
+                          title={isActive ? "active model" : "use this model"}
+                          onClick={() => selectModel(m.id)}
+                          className={isActive ? "text-brand" : "text-muted hover:text-brand"}
                         >
-                          <Star size={13} fill={isDefault ? "currentColor" : "none"} />
+                          <Star size={13} fill={isActive ? "currentColor" : "none"} />
                         </button>
                         <span className={`truncate font-mono text-xs ${m.enabled ? "text-ink" : "text-muted line-through"}`}>
                           {m.id}

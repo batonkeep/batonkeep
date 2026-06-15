@@ -192,26 +192,16 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
                             <Badge tone="neutral">headless</Badge>
                           </>
                         ) : (
-                          <Badge tone="neutral">
+                          // Model selection + catalog management (P-0049) — a clear
+                          // button, not a muted tag. Pricing/enable/add live in the modal.
+                          <button
+                            onClick={() => setManageTemplate(p.template)}
+                            title="Manage models (select, add, enable/disable, pricing)"
+                            className="inline-flex items-center gap-1 rounded border border-brand/40 bg-brand/5 px-1.5 py-0.5 font-mono text-[11px] text-brand hover:bg-brand/10"
+                          >
+                            <Sliders size={11} />
                             {p.model || "default model"}
-                            <button
-                              onClick={() => setManageTemplate(p.template)}
-                              title="Manage models (select, add, enable/disable, pricing)"
-                              className="ml-1 text-muted hover:text-brand"
-                            >
-                              <Sliders size={10} />
-                            </button>
-                          </Badge>
-                        )}
-                        {/* Effective $/Mtok the run meters at, with where it came from:
-                            override (operator-set) · registry (known-model book) · est. (template fallback). */}
-                        {p.kind !== "cli" && (p.cost_in_per_mtok > 0 || p.cost_out_per_mtok > 0) && (
-                          <Badge tone={p.pricing_source === "template" ? "warn" : "neutral"}>
-                            ${p.cost_in_per_mtok}/${p.cost_out_per_mtok} per Mtok
-                            <span className="ml-1 text-muted">
-                              · {p.pricing_source === "override" ? "set" : p.pricing_source === "registry" ? "registry" : "est."}
-                            </span>
-                          </Badge>
+                          </button>
                         )}
                       </div>
                     </div>

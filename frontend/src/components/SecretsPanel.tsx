@@ -1,163 +1,15 @@
-// SecretsPanel.tsx — the named secrets-management surface (P-0009 #3) + key/model
-// entry (P-0035). For every key-backed provider it reports where its credential
-// resolves from (encrypted store / deployment env / missing), a masked last-4 hint,
-// the effective model, and lets the operator paste a BYO key and set the model id.
-// Never shows or returns any plaintext key.
+// SecretsPanel.tsx — the named secrets-management surface (P-0009 #3) + key entry
+// (P-0035). For every key-backed provider it reports where its credential resolves
+// from (encrypted store / deployment env / missing) and a masked last-4 hint, and
+// lets the operator paste a BYO key. Never shows or returns any plaintext key.
+// Model selection + catalog management live on the provider card (P-0049), not here —
+// this panel stays focused on credentials.
 // D-track: composed from ui/ primitives (Badge, Button, Card, Input, StatusDot).
 import { useCallback, useEffect, useState } from "react";
-import { Check, KeyRound, Pencil, Plus, RefreshCw, ShieldCheck, Sliders, Star, Trash2, X } from "lucide-react";
-import type { ProviderCatalog, SecretStatus } from "../types";
+import { Check, KeyRound, Pencil, RefreshCw, ShieldCheck, Trash2, X } from "lucide-react";
+import type { SecretStatus } from "../types";
 import { api } from "../api";
 import { Badge, Button, Card, Input, StatusDot } from "../ui";
-
-function priceLabel(m: { cost_in_per_mtok: number | null; cost_out_per_mtok: number | null }): string {
-  if (m.cost_in_per_mtok == null || m.cost_out_per_mtok == null) return "no price";
-  return `$${m.cost_in_per_mtok}/$${m.cost_out_per_mtok} per Mtok`;
-}
-
-// Compact catalog editor (P-0049): add/enable/disable models, edit per-model pricing
-// (write-through to the flat overlay), set the per-capability preferred model (the
-// substrate cost-aware routing will later consume), and mark a provider default.
-function ModelManager({
-  catalog, busy, onChange,
-}: {
-  catalog: ProviderCatalog;
-  busy: boolean;
-  onChange: (fn: () => Promise<unknown>) => void;
-}) {
-  const t = catalog.template;
-  const enabled = catalog.models.filter((m) => m.enabled);
-  const [editId, setEditId] = useState<string | null>(null);   // model whose price is being edited
-  const [pin, setPin] = useState("");
-  const [pout, setPout] = useState("");
-  const [newId, setNewId] = useState("");
-  const [newIn, setNewIn] = useState("");
-  const [newOut, setNewOut] = useState("");
-
-  const beginEdit = (m: ProviderCatalog["models"][number]) => {
-    setEditId(m.id);
-    setPin(m.cost_in_per_mtok != null ? String(m.cost_in_per_mtok) : "");
-    setPout(m.cost_out_per_mtok != null ? String(m.cost_out_per_mtok) : "");
-  };
-  const savePrice = (id: string) => {
-    const ci = parseFloat(pin), co = parseFloat(pout);
-    const pricing = Number.isFinite(ci) && Number.isFinite(co)
-      ? { cost_in_per_mtok: ci, cost_out_per_mtok: co }
-      : { clear_pricing: true };
-    onChange(() => api.updateCatalogModel(t, { id, ...pricing }));
-    setEditId(null);
-  };
-  const addModel = () => {
-    const id = newId.trim();
-    if (!id) return;
-    const ci = parseFloat(newIn), co = parseFloat(newOut);
-    const pricing = Number.isFinite(ci) && Number.isFinite(co)
-      ? { cost_in_per_mtok: ci, cost_out_per_mtok: co } : {};
-    onChange(() => api.updateCatalogModel(t, { id, enabled: true, ...pricing }));
-    setNewId(""); setNewIn(""); setNewOut("");
-  };
-
-  return (
-    <div className="space-y-2 rounded-lg border border-edge bg-base/30 p-2">
-      <div>
-        <span className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-muted">
-          Preferred per capability
-        </span>
-        <div className="grid grid-cols-2 gap-1 sm:grid-cols-3">
-          {catalog.capabilities_vocab.map((cap) => (
-            <label key={cap} className="flex flex-col gap-0.5">
-              <span className="font-mono text-[9px] text-muted">{cap}</span>
-              <select
-                disabled={busy}
-                value={catalog.preferred[cap] ?? ""}
-                onChange={(e) =>
-                  onChange(() => api.setCatalogPreferred(t, cap, e.target.value || null))}
-                className="rounded border border-edge bg-base px-1 py-0.5 font-mono text-[10px] text-ink"
-              >
-                <option value="">— inherit default —</option>
-                {enabled.map((m) => <option key={m.id} value={m.id}>{m.id}</option>)}
-              </select>
-            </label>
-          ))}
-        </div>
-      </div>
-      <div>
-        <span className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-muted">
-          Models ({enabled.length}/{catalog.models.length} enabled)
-        </span>
-        <div className="max-h-44 space-y-0.5 overflow-y-auto">
-          {catalog.models.map((m) => {
-            const isDefault = catalog.preferred.default === m.id;
-            const isEditing = editId === m.id;
-            return (
-              <div key={m.id} className="rounded px-1 py-0.5 hover:bg-base/60">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex min-w-0 items-center gap-1.5">
-                    <button
-                      type="button" disabled={busy}
-                      title={isDefault ? "default model" : "set as default"}
-                      onClick={() => onChange(() => api.setCatalogPreferred(t, "default", m.id))}
-                      className={isDefault ? "text-brand" : "text-muted hover:text-brand"}
-                    >
-                      <Star size={11} fill={isDefault ? "currentColor" : "none"} />
-                    </button>
-                    <span className={`truncate font-mono text-[11px] ${m.enabled ? "text-ink" : "text-muted line-through"}`}>
-                      {m.id}
-                    </span>
-                    {m.use_count > 0 && <span className="font-mono text-[9px] text-muted">{m.use_count}×</span>}
-                  </div>
-                  <div className="flex shrink-0 items-center gap-2">
-                    <button
-                      type="button" disabled={busy}
-                      onClick={() => (isEditing ? setEditId(null) : beginEdit(m))}
-                      className="font-mono text-[10px] text-muted hover:text-brand"
-                      title="Edit $/Mtok pricing"
-                    >
-                      {m.cost_in_per_mtok != null ? priceLabel(m) : "set price"}
-                    </button>
-                    <button
-                      type="button" disabled={busy}
-                      onClick={() => onChange(() => api.updateCatalogModel(t, { id: m.id, enabled: !m.enabled }))}
-                      className="font-mono text-[10px] text-muted hover:text-brand"
-                    >
-                      {m.enabled ? "disable" : "enable"}
-                    </button>
-                  </div>
-                </div>
-                {isEditing && (
-                  <div className="mt-1 flex items-center gap-1 pl-5">
-                    <Input value={pin} onChange={(e) => setPin(e.target.value)}
-                      placeholder="$ in" inputMode="decimal"
-                      className="w-16 py-0.5 font-mono text-[10px]" />
-                    <Input value={pout} onChange={(e) => setPout(e.target.value)}
-                      placeholder="$ out" inputMode="decimal"
-                      className="w-16 py-0.5 font-mono text-[10px]" />
-                    <span className="font-mono text-[9px] text-muted">/Mtok</span>
-                    <Button size="sm" className="px-2 py-0.5" disabled={busy}
-                      onClick={() => savePrice(m.id)}>save</Button>
-                    <span className="font-mono text-[9px] text-muted">(blank → clear)</span>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-      <div className="flex items-center gap-1 border-t border-edge pt-2">
-        <Plus size={11} className="shrink-0 text-muted" />
-        <Input value={newId} onChange={(e) => setNewId(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && !busy && addModel()}
-          placeholder="add model id" className="min-w-0 flex-1 py-0.5 font-mono text-[10px]" />
-        <Input value={newIn} onChange={(e) => setNewIn(e.target.value)}
-          placeholder="$ in" inputMode="decimal" className="w-14 py-0.5 font-mono text-[10px]" />
-        <Input value={newOut} onChange={(e) => setNewOut(e.target.value)}
-          placeholder="$ out" inputMode="decimal" className="w-14 py-0.5 font-mono text-[10px]" />
-        <Button size="sm" className="px-2 py-0.5" disabled={busy || !newId.trim()}
-          onClick={addModel}>add</Button>
-      </div>
-    </div>
-  );
-}
 
 const SOURCE_TONE: Record<SecretStatus["source"], "ok" | "neutral" | "bad"> = {
   stored: "ok",
@@ -181,46 +33,25 @@ export default function SecretsPanel() {
   const [rows, setRows] = useState<SecretStatus[]>([]);
   const [editing, setEditing] = useState<string | null>(null);
   const [keyDraft, setKeyDraft] = useState("");
-  const [modelDraft, setModelDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [catalog, setCatalog] = useState<ProviderCatalog | null>(null);
-  const [manage, setManage] = useState(false);
 
   const load = useCallback(() => api.getSecretsStatus().then(setRows).catch(() => { }), []);
   useEffect(() => { load(); }, [load]);
 
-  const loadCatalog = useCallback(
-    (provider: string) =>
-      api.getProviderCatalog(provider).then(setCatalog).catch(() => setCatalog(null)),
-    [],
-  );
-
   const openEditor = (r: SecretStatus) => {
     setEditing(r.provider);
     setKeyDraft("");
-    setModelDraft(r.model ?? "");
     setError(null);
-    setManage(false);
-    setCatalog(null);
-    loadCatalog(r.provider);
   };
-  const closeEditor = () => {
-    setEditing(null); setKeyDraft(""); setModelDraft(""); setError(null);
-    setCatalog(null); setManage(false);
-  };
+  const closeEditor = () => { setEditing(null); setKeyDraft(""); setError(null); };
 
-  // Save whatever changed: a non-empty key is stored; a model that differs is set.
   const save = async (r: SecretStatus) => {
     setBusy(true);
     setError(null);
     try {
       if (keyDraft.trim()) {
         await api.createCredential(r.provider, keyDraft.trim());
-      }
-      const nextModel = modelDraft.trim();
-      if (nextModel !== (r.model ?? "")) {
-        await api.setProviderModel(r.provider, nextModel || null);
       }
       await load();
       closeEditor();
@@ -257,8 +88,9 @@ export default function SecretsPanel() {
         </Button>
       </div>
       <p className="mt-1 text-xs text-muted">
-        Add an API key and pick the model for each provider. BYO keys are encrypted at rest
-        and never displayed; <span className="text-brand">local</span> providers need no remote key.
+        Add a BYO API key for each provider — encrypted at rest, never displayed;
+        <span className="text-brand"> local</span> providers need no remote key. Model
+        selection lives on each provider card.
       </p>
 
       <div className="mt-3 divide-y divide-edge">
@@ -274,7 +106,6 @@ export default function SecretsPanel() {
                   <StatusDot tone={r.source === "missing" ? "bad" : "ok"} />
                   <span className="truncate font-mono text-sm text-ink">{r.provider}</span>
                   {r.local && <Badge tone="ok">local</Badge>}
-                  {r.model && <Badge tone="neutral">{r.model}</Badge>}
                   {r.key_hint && <span className="font-mono text-[11px] text-muted">{r.key_hint}</span>}
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
@@ -283,7 +114,7 @@ export default function SecretsPanel() {
                   <button
                     onClick={() => (isEditing ? closeEditor() : openEditor(r))}
                     className="text-muted hover:text-brand"
-                    title={isEditing ? "Close" : "Add key / set model"}
+                    title={isEditing ? "Close" : "Add / rotate key"}
                   >
                     {isEditing ? <X size={13} /> : <Pencil size={13} />}
                   </button>
@@ -299,65 +130,11 @@ export default function SecretsPanel() {
                       autoFocus
                       value={keyDraft}
                       onChange={(e) => setKeyDraft(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && !busy && save(r)}
                       placeholder={r.source === "stored" ? "paste a new key to rotate" : "paste API key"}
                       className="w-full py-1 font-mono text-xs"
                     />
                   </label>
-                  <label className="block">
-                    <span className="mb-1 flex items-center justify-between font-mono text-[10px] uppercase tracking-wider text-muted">
-                      <span>Model id</span>
-                      {catalog && (
-                        <button
-                          type="button"
-                          onClick={() => setManage((v) => !v)}
-                          className="flex items-center gap-1 normal-case text-muted hover:text-brand"
-                          title="Manage models (enable/disable, default, pricing)"
-                        >
-                          <Sliders size={10} /> {manage ? "Hide" : "Manage models"}
-                        </button>
-                      )}
-                    </span>
-                    <Input
-                      list={`models-${r.provider}`}
-                      value={modelDraft}
-                      onChange={(e) => setModelDraft(e.target.value)}
-                      onKeyDown={(e) => e.key === "Enter" && !busy && save(r)}
-                      placeholder="pick from the list or type any model id"
-                      className="w-full py-1 font-mono text-xs"
-                    />
-                    <datalist id={`models-${r.provider}`}>
-                      {(catalog?.models ?? []).filter((m) => m.enabled).map((m) => (
-                        <option key={m.id} value={m.id}>
-                          {priceLabel(m)}{m.use_count ? ` · used ${m.use_count}×` : ""}
-                        </option>
-                      ))}
-                    </datalist>
-                    {catalog && (() => {
-                      const picked = catalog.models.find((m) => m.id === modelDraft.trim());
-                      return (
-                        <span className="mt-1 block font-mono text-[10px] text-muted">
-                          {picked
-                            ? `${priceLabel(picked)}${picked.use_count ? ` · used ${picked.use_count}×` : ""}`
-                            : modelDraft.trim()
-                              ? "unlisted id — will be used as-is"
-                              : `default: ${catalog.preferred.default ?? catalog.effective_model ?? "—"}`}
-                        </span>
-                      );
-                    })()}
-                  </label>
-
-                  {manage && catalog && (
-                    <ModelManager
-                      catalog={catalog}
-                      busy={busy}
-                      onChange={async (fn) => {
-                        setBusy(true); setError(null);
-                        try { await fn(); await loadCatalog(r.provider); }
-                        catch (e) { setError(e instanceof Error ? e.message : "Update failed"); }
-                        finally { setBusy(false); }
-                      }}
-                    />
-                  )}
                   {error && <p className="font-mono text-[11px] text-bad">{error}</p>}
                   <div className="flex items-center justify-between">
                     {r.source === "stored" ? (
@@ -372,7 +149,7 @@ export default function SecretsPanel() {
                     <Button
                       size="sm" icon={<Check size={12} />}
                       onClick={() => save(r)}
-                      disabled={busy || (!keyDraft.trim() && modelDraft.trim() === (r.model ?? ""))}
+                      disabled={busy || !keyDraft.trim()}
                     >
                       {busy ? "Saving…" : "Save"}
                     </Button>

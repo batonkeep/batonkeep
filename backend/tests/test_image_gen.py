@@ -34,7 +34,7 @@ def _fake_client(b64: str | None = _PNG_B64):
 def _config(tmp_path, **over):
     cfg = {
         "api_key": "k", "base_url": "https://api.x.ai/v1",
-        "model": "grok-2-image-1212", "cost_per_image": 0.07,
+        "model": "grok-imagine-image-quality", "cost_per_image": 0.05,
         "cost_accumulator": [],
     }
     cfg.update(over)
@@ -50,7 +50,7 @@ async def test_writes_image_and_meters_cost(tmp_path):
     assert saved.exists()
     assert saved.read_bytes() == base64.b64decode(_PNG_B64)
     assert "logo.png" in out
-    assert cfg["cost_accumulator"] == [0.07]  # per-asset cost metered for the budget gate
+    assert cfg["cost_accumulator"] == [0.05]  # per-asset cost metered for the budget gate
 
 
 @pytest.mark.asyncio

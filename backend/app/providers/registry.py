@@ -138,10 +138,12 @@ _ALL_PROVIDERS: list[ProviderDef] = [
         env_key="XAI_API_KEY",
         mode="api",
         # P-0046 slice 6 / P-0037: xAI exposes an OpenAI-shaped images endpoint
-        # (`/v1/images/generations`). $0.07/image per xAI's published rate.
+        # (`/v1/images/generations`). V1 = the quality tier (best output for the
+        # multimodal-parity demo); the cheaper `grok-imagine-image` is $0.02/image.
+        # Per xAI's published per-image rate (confirm against the enabled plan).
         supports_image_gen=True,
-        image_model="grok-2-image-1212",
-        image_cost_per_image=0.07,
+        image_model="grok-imagine-image-quality",
+        image_cost_per_image=0.05,
     ),
     # Google Gemini via the native google-genai SDK (Developer API).
     ProviderDef(

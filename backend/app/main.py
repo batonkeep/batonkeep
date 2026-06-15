@@ -665,6 +665,7 @@ async def create_session(
         preview_token=secrets.token_urlsafe(24),
         status="active",
         confidential=body.confidential,
+        model=body.model,
         image_model_id=body.image_model_id,
     )
     db.add(session)
@@ -765,6 +766,9 @@ async def update_session(
     if body.image_model_id is not None:
         # "" sentinel clears the override back to the provider default.
         session.image_model_id = body.image_model_id or None
+    if body.model is not None:
+        # P-0049: "" sentinel clears back to the provider's catalog default.
+        session.model = body.model.strip() or None
     if body.budget_usd is not None:
         # 0 clears the cap (no session budget); a positive value sets/raises it.
         session.budget_usd = body.budget_usd or None
@@ -880,7 +884,8 @@ async def create_session_turn(
     from app.sessions.orchestrator import SessionError, create_turn_record, run_turn_background
     try:
         turn_id, turn_out = await create_turn_record(
-            session_id, body.message, provider=body.provider, owner_id=owner_id,
+            session_id, body.message, provider=body.provider, model=body.model,
+            owner_id=owner_id,
         )
     except SessionError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

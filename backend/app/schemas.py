@@ -195,6 +195,9 @@ class SessionCreate(BaseModel):
     template: str | None = None
     # P-0009 #1: pin this session to a local model (confidential — never off-box).
     confidential: bool = False
+    # P-0049: per-session model override for the chosen API provider. None = the
+    # provider's catalog preferred.default. CLI plans own their model elsewhere.
+    model: str | None = None
     # P-0046 slice 6 follow-up: image-gen model override (catalog id; cross-provider
     # allowed). None = inherit the text provider's default image model.
     image_model_id: str | None = None
@@ -233,6 +236,9 @@ class SessionUpdate(BaseModel):
     confidential: bool | None = None
     # P-0046 code-exec execution policy: off | confirmation | allow-safe | auto
     exec_policy: str | None = None
+    # P-0049: per-session model override (API path). Sentinel "" clears it back to the
+    # provider's catalog default; a model id sets it; None leaves it unchanged.
+    model: str | None = None
     # P-0046 slice 6 follow-up: image-gen model override. Sentinel "" clears it back
     # to the provider default; a catalog id sets it; None leaves it unchanged.
     image_model_id: str | None = None
@@ -270,6 +276,9 @@ class TurnCreate(BaseModel):
     message: str
     # optional provider switch for this and subsequent turns
     provider: str | None = None
+    # optional model switch for this and subsequent turns (P-0049, API path). "" clears
+    # back to the provider default; a model id pins it; None leaves it unchanged.
+    model: str | None = None
 
 
 class CaptureRequest(BaseModel):
@@ -447,6 +456,7 @@ class SessionOut(BaseModel):
     status: str
     cf_project: str | None = None  # Cloudflare Pages project this session deploys to
     confidential: bool = False  # P-0009 #1: pinned to a local model
+    model: str | None = None  # P-0049: per-session model override (API path)
     exec_policy: str = "confirmation"  # P-0046 code-exec execution policy
     image_model_id: str | None = None  # P-0046 slice 6: image-gen model override
     # Optional per-session spend cap (USD, API path). None = no cap (opt-in).

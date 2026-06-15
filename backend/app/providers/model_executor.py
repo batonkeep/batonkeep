@@ -203,11 +203,19 @@ class ModelExecutor(Executor):
         # Per-account overrides (Phase B): which model + which stored credential.
         # Runtime model override (set from the UI console) wins over the declared
         # instance/template default.
+        from app.providers import model_catalog
         from app.providers.registry import get_model_override
         runtime_model = get_model_override(instance.id) if instance else None
+        # Catalog `preferred.default` (P-0049) is the provider-level chosen model when
+        # there's no per-instance override — so the executor *actually runs* what the
+        # catalog editor selected (effective_model resolves the same chain for display).
+        catalog_default = (
+            model_catalog.preferred(instance.template, "default") if instance else None
+        )
         self._model = (
             runtime_model
             or (instance.model_override if instance and instance.model_override else None)
+            or catalog_default
             or provider_def.model
         )
         self._cred_provider = (
@@ -306,6 +314,12 @@ class ModelExecutor(Executor):
         # Per-run dispatch context (e.g. the P-0046 code-exec execution policy);
         # threaded into tool listing (`_active_tool_schemas`) and dispatch.
         self._extra: dict[str, Any] = dict(extra or {})
+        # Per-session model override (P-0049): a build session may pin a specific
+        # model for the chosen API provider, overriding the provider-level default
+        # for this run only (cost metering follows self._model via effective_pricing).
+        run_model = self._extra.get("model")
+        if run_model:
+            self._model = run_model
         # Per-asset cost from non-token tools (image_generate); accumulated by the
         # tool via the shared list and folded into the run cost / budget gate.
         self._aux_costs: list[float] = []

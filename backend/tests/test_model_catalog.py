@@ -14,17 +14,24 @@ from app.providers import model_catalog, model_pricing
 
 
 @pytest.fixture
-def tmp_overlays(tmp_path, monkeypatch):
-    """Point both overlay files at tmp paths and rebuild from baked defaults."""
+def tmp_overlays(tmp_path):
+    """Point both overlay files at tmp paths and rebuild from baked defaults. Restores
+    the original paths *before* the final reload so edits don't leak into other tests
+    (module-level `_CATALOG`/`_PRICES` are global)."""
+    orig_cat, orig_price = model_catalog._CATALOG_PATH, model_pricing._PRICING_PATH
     cat = tmp_path / "model-catalog.json"
     price = tmp_path / "model-pricing.json"
-    monkeypatch.setattr(model_catalog, "_CATALOG_PATH", str(cat))
-    monkeypatch.setattr(model_pricing, "_PRICING_PATH", str(price))
+    model_catalog._CATALOG_PATH = str(cat)
+    model_pricing._PRICING_PATH = str(price)
     model_pricing.reload()
     model_catalog.reload()
-    yield cat, price
-    model_pricing.reload()
-    model_catalog.reload()
+    try:
+        yield cat, price
+    finally:
+        model_catalog._CATALOG_PATH = orig_cat
+        model_pricing._PRICING_PATH = orig_price
+        model_pricing.reload()
+        model_catalog.reload()
 
 
 def test_baked_buckets_models_by_provider(tmp_overlays):
@@ -81,3 +88,13 @@ def test_effective_model_uses_catalog_default(tmp_overlays):
     model_catalog.set_preferred("claude-api", "default", "claude-haiku-4-5")
     inst = get_instance("claude-api")
     assert effective_model(inst, get_provider_def("claude-api")) == "claude-haiku-4-5"
+
+
+def test_executor_runs_catalog_default_not_just_template(tmp_overlays):
+    """The executor must *run* the catalog default, not only the template default
+    (regression: __init__ bypassed effective_model and pinned the template model)."""
+    from app.providers.model_executor import ModelExecutor
+    from app.providers.registry import get_instance, get_provider_def
+    model_catalog.set_preferred("openai-api", "default", "gpt-4o-mini")
+    ex = ModelExecutor(get_provider_def("openai-api"), get_instance("openai-api"))
+    assert ex._model == "gpt-4o-mini"  # catalog default, not the template's gpt-4o

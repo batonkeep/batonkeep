@@ -74,6 +74,7 @@ async def create_turn_record(
     message: str,
     *,
     provider: str | None = None,
+    model: str | None = None,
     owner_id: str = "local",
 ) -> tuple[int, SessionTurnOut]:
     """
@@ -103,6 +104,10 @@ async def create_turn_record(
 
         switched = chosen != session.provider
         session.provider = chosen
+        # Per-session model override (P-0049, API path): "" clears back to the
+        # provider's catalog default; a model id pins it; None leaves it unchanged.
+        if model is not None:
+            session.model = model.strip() or None
 
         seq = await _next_turn_seq(db, session_id)
         turn = SessionTurn(
@@ -161,6 +166,7 @@ async def run_turn_background(
         workspace = session.workspace_path
         exec_policy = session.exec_policy
         image_model_id = session.image_model_id  # P-0046 slice 6: image-gen override
+        model_override = session.model  # P-0049: per-session API model override
         # Load the immediate dialogue tail so conversational follow-ups keep their
         # referent (the workspace stays the source of truth — D-0008). Prior
         # completed turns only, most recent few, in chronological order.
@@ -262,6 +268,9 @@ async def run_turn_background(
                 "exec_policy": exec_policy, "human_in_loop": True, "approve": _approve,
                 # P-0046 slice 6: image-gen model override (None → provider default).
                 "image_model_id": image_model_id,
+                # P-0049: per-session model override for the API provider (None →
+                # the provider's catalog preferred.default).
+                "model": model_override,
             },
         ):
             # Rewrite agent file:// links to the raw-file route so the result

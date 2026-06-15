@@ -5,7 +5,7 @@
 // Never shows or returns any plaintext key.
 // D-track: composed from ui/ primitives (Badge, Button, Card, Input, StatusDot).
 import { useCallback, useEffect, useState } from "react";
-import { Check, KeyRound, Pencil, RefreshCw, ShieldCheck, Sliders, Star, Trash2, X } from "lucide-react";
+import { Check, KeyRound, Pencil, Plus, RefreshCw, ShieldCheck, Sliders, Star, Trash2, X } from "lucide-react";
 import type { ProviderCatalog, SecretStatus } from "../types";
 import { api } from "../api";
 import { Badge, Button, Card, Input, StatusDot } from "../ui";
@@ -15,9 +15,9 @@ function priceLabel(m: { cost_in_per_mtok: number | null; cost_out_per_mtok: num
   return `$${m.cost_in_per_mtok}/$${m.cost_out_per_mtok} per Mtok`;
 }
 
-// Compact catalog editor (P-0049): enable/disable models, set the per-capability
-// preferred model (the substrate cost-aware routing will later consume), and mark a
-// provider default. Pricing edits route through the existing flat overlay seam.
+// Compact catalog editor (P-0049): add/enable/disable models, edit per-model pricing
+// (write-through to the flat overlay), set the per-capability preferred model (the
+// substrate cost-aware routing will later consume), and mark a provider default.
 function ModelManager({
   catalog, busy, onChange,
 }: {
@@ -27,6 +27,36 @@ function ModelManager({
 }) {
   const t = catalog.template;
   const enabled = catalog.models.filter((m) => m.enabled);
+  const [editId, setEditId] = useState<string | null>(null);   // model whose price is being edited
+  const [pin, setPin] = useState("");
+  const [pout, setPout] = useState("");
+  const [newId, setNewId] = useState("");
+  const [newIn, setNewIn] = useState("");
+  const [newOut, setNewOut] = useState("");
+
+  const beginEdit = (m: ProviderCatalog["models"][number]) => {
+    setEditId(m.id);
+    setPin(m.cost_in_per_mtok != null ? String(m.cost_in_per_mtok) : "");
+    setPout(m.cost_out_per_mtok != null ? String(m.cost_out_per_mtok) : "");
+  };
+  const savePrice = (id: string) => {
+    const ci = parseFloat(pin), co = parseFloat(pout);
+    const pricing = Number.isFinite(ci) && Number.isFinite(co)
+      ? { cost_in_per_mtok: ci, cost_out_per_mtok: co }
+      : { clear_pricing: true };
+    onChange(() => api.updateCatalogModel(t, { id, ...pricing }));
+    setEditId(null);
+  };
+  const addModel = () => {
+    const id = newId.trim();
+    if (!id) return;
+    const ci = parseFloat(newIn), co = parseFloat(newOut);
+    const pricing = Number.isFinite(ci) && Number.isFinite(co)
+      ? { cost_in_per_mtok: ci, cost_out_per_mtok: co } : {};
+    onChange(() => api.updateCatalogModel(t, { id, enabled: true, ...pricing }));
+    setNewId(""); setNewIn(""); setNewOut("");
+  };
+
   return (
     <div className="space-y-2 rounded-lg border border-edge bg-base/30 p-2">
       <div>
@@ -58,34 +88,72 @@ function ModelManager({
         <div className="max-h-44 space-y-0.5 overflow-y-auto">
           {catalog.models.map((m) => {
             const isDefault = catalog.preferred.default === m.id;
+            const isEditing = editId === m.id;
             return (
-              <div key={m.id} className="flex items-center justify-between gap-2 rounded px-1 py-0.5 hover:bg-base/60">
-                <div className="flex min-w-0 items-center gap-1.5">
-                  <button
-                    type="button" disabled={busy}
-                    title={isDefault ? "default model" : "set as default"}
-                    onClick={() => onChange(() => api.setCatalogPreferred(t, "default", m.id))}
-                    className={isDefault ? "text-brand" : "text-muted hover:text-brand"}
-                  >
-                    <Star size={11} fill={isDefault ? "currentColor" : "none"} />
-                  </button>
-                  <span className={`truncate font-mono text-[11px] ${m.enabled ? "text-ink" : "text-muted line-through"}`}>
-                    {m.id}
-                  </span>
-                  {!m.known && <Badge tone="neutral">no price</Badge>}
-                  {m.use_count > 0 && <span className="font-mono text-[9px] text-muted">{m.use_count}×</span>}
+              <div key={m.id} className="rounded px-1 py-0.5 hover:bg-base/60">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <button
+                      type="button" disabled={busy}
+                      title={isDefault ? "default model" : "set as default"}
+                      onClick={() => onChange(() => api.setCatalogPreferred(t, "default", m.id))}
+                      className={isDefault ? "text-brand" : "text-muted hover:text-brand"}
+                    >
+                      <Star size={11} fill={isDefault ? "currentColor" : "none"} />
+                    </button>
+                    <span className={`truncate font-mono text-[11px] ${m.enabled ? "text-ink" : "text-muted line-through"}`}>
+                      {m.id}
+                    </span>
+                    {m.use_count > 0 && <span className="font-mono text-[9px] text-muted">{m.use_count}×</span>}
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <button
+                      type="button" disabled={busy}
+                      onClick={() => (isEditing ? setEditId(null) : beginEdit(m))}
+                      className="font-mono text-[10px] text-muted hover:text-brand"
+                      title="Edit $/Mtok pricing"
+                    >
+                      {m.cost_in_per_mtok != null ? priceLabel(m) : "set price"}
+                    </button>
+                    <button
+                      type="button" disabled={busy}
+                      onClick={() => onChange(() => api.updateCatalogModel(t, { id: m.id, enabled: !m.enabled }))}
+                      className="font-mono text-[10px] text-muted hover:text-brand"
+                    >
+                      {m.enabled ? "disable" : "enable"}
+                    </button>
+                  </div>
                 </div>
-                <button
-                  type="button" disabled={busy}
-                  onClick={() => onChange(() => api.updateCatalogModel(t, { id: m.id, enabled: !m.enabled }))}
-                  className="shrink-0 font-mono text-[10px] text-muted hover:text-brand"
-                >
-                  {m.enabled ? "disable" : "enable"}
-                </button>
+                {isEditing && (
+                  <div className="mt-1 flex items-center gap-1 pl-5">
+                    <Input value={pin} onChange={(e) => setPin(e.target.value)}
+                      placeholder="$ in" inputMode="decimal"
+                      className="w-16 py-0.5 font-mono text-[10px]" />
+                    <Input value={pout} onChange={(e) => setPout(e.target.value)}
+                      placeholder="$ out" inputMode="decimal"
+                      className="w-16 py-0.5 font-mono text-[10px]" />
+                    <span className="font-mono text-[9px] text-muted">/Mtok</span>
+                    <Button size="sm" className="px-2 py-0.5" disabled={busy}
+                      onClick={() => savePrice(m.id)}>save</Button>
+                    <span className="font-mono text-[9px] text-muted">(blank → clear)</span>
+                  </div>
+                )}
               </div>
             );
           })}
         </div>
+      </div>
+      <div className="flex items-center gap-1 border-t border-edge pt-2">
+        <Plus size={11} className="shrink-0 text-muted" />
+        <Input value={newId} onChange={(e) => setNewId(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && !busy && addModel()}
+          placeholder="add model id" className="min-w-0 flex-1 py-0.5 font-mono text-[10px]" />
+        <Input value={newIn} onChange={(e) => setNewIn(e.target.value)}
+          placeholder="$ in" inputMode="decimal" className="w-14 py-0.5 font-mono text-[10px]" />
+        <Input value={newOut} onChange={(e) => setNewOut(e.target.value)}
+          placeholder="$ out" inputMode="decimal" className="w-14 py-0.5 font-mono text-[10px]" />
+        <Button size="sm" className="px-2 py-0.5" disabled={busy || !newId.trim()}
+          onClick={addModel}>add</Button>
       </div>
     </div>
   );

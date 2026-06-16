@@ -8,7 +8,7 @@ import { Ban, Download, RotateCw, X } from "lucide-react";
 import type { Run, RunAsset, RunEvent } from "../types";
 import { api } from "../api";
 import { useRunEvents } from "../useLiveFeed";
-import { STATUS_META, fmtCost, fmtDuration, fmtTime } from "../format";
+import { STATUS_META, fmtCost, fmtCount, fmtDuration, fmtTime } from "../format";
 import { Badge, Button, StatusDot, Tabs } from "../ui";
 
 // Parse naive ISO backend timestamps as UTC before formatting.
@@ -148,7 +148,12 @@ export default function RunViewer({ run, taskName, now, onRequeue, onCancel, onC
             {run.provider && <span className="text-ink">{run.provider}{run.model ? ` · ${run.model}` : ""}</span>}
             {run.started_at && <span title={run.started_at}>{fmtTime(run.started_at)}</span>}
             <span>elapsed {fmtDuration(run.finished_at ? run.duration_ms : elapsedMs)}</span>
-            <span className="text-brand">{run.tokens_in + run.tokens_out} tok</span>
+            <span
+              className="text-brand"
+              title={`${(run.tokens_in + run.tokens_out).toLocaleString()} tokens (${run.tokens_in.toLocaleString()} in · ${run.tokens_out.toLocaleString()} out)`}
+            >
+              {fmtCount(run.tokens_in + run.tokens_out)} tok
+            </span>
             <span className="text-brand">{fmtCost(run.cost_usd)}</span>
             {run.overflow_used && <Badge tone="defer">overflow</Badge>}
           </div>

@@ -474,8 +474,15 @@ async def _do_execute(run_id: int, task: Task) -> None:
         # the run cwd (antigravity/agy writes generated media to its own HOME, which
         # batond can't read) — copy them into outputs/ via the sandbox helper and
         # rewrite the report's references to the captured relative path so it renders
-        # (P-0050/D-0046). Must run before output.md is written.
-        full_text, referenced = await task_workspace.import_referenced_assets(full_text, outputs_dir)
+        # (P-0050/D-0046). Must run before output.md is written. Best-effort: asset
+        # handling must never strand or fail a run, so any error is logged and skipped.
+        referenced: list[dict] = []
+        try:
+            full_text, referenced = await task_workspace.import_referenced_assets(
+                full_text, outputs_dir
+            )
+        except Exception:
+            logger.exception("[orchestrator] run %d: referenced-asset import failed", run_id)
 
         # Canonical outputs land in the control-plane outputs dir (batond-owned),
         # not the agent's sandbox workspace, then get promoted to read-only history.
@@ -499,7 +506,11 @@ async def _do_execute(run_id: int, task: Task) -> None:
         # as RunAsset rows (P-0050/D-0046) — otherwise they'd be discarded with the
         # scratch on the next run. Combine with referenced artifacts pulled from the
         # agent's HOME above (dedupe by rel_path). Then enforce the task's retention caps.
-        captured = task_workspace.capture_assets(workdir, outputs_dir)
+        try:
+            captured = task_workspace.capture_assets(workdir, outputs_dir)
+        except Exception:
+            logger.exception("[orchestrator] run %d: workspace asset capture failed", run_id)
+            captured = []
         seen_rel = {c["rel_path"] for c in captured}
         captured += [r for r in referenced if r["rel_path"] not in seen_rel]
         if captured:

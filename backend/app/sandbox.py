@@ -109,20 +109,51 @@ async def read_file_as_agent(path: str, *, max_bytes: int) -> bytes | None:
                 return f.read()
         except OSError:
             return None
+    proc: asyncio.subprocess.Process | None = None
     try:
         proc = await asyncio.create_subprocess_exec(
             _settings.sandbox_spawn_path, "--", "cat", path,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
-        # +1 so we can detect an over-cap file and reject it rather than truncate.
-        data = await proc.stdout.read(max_bytes + 1)  # type: ignore[union-attr]
-        rc = await proc.wait()
-        if rc != 0 or not data or len(data) > max_bytes:
+
+        def _kill() -> None:
+            if proc is not None and proc.returncode is None:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+
+        async def _drain() -> bytes | None:
+            # Read in chunks so we keep draining the pipe — a single read(n) + wait()
+            # deadlocks once `cat`'s output exceeds the ~64K pipe buffer (it blocks on
+            # write while we block on wait()). Enforce the cap as we go; on over-cap
+            # kill `cat` rather than leaving it blocked on the unread tail.
+            assert proc is not None and proc.stdout is not None
+            buf = bytearray()
+            while True:
+                chunk = await proc.stdout.read(65536)
+                if not chunk:
+                    break
+                buf += chunk
+                if len(buf) > max_bytes:
+                    _kill()
+                    return None
+            return bytes(buf)
+
+        data = await asyncio.wait_for(_drain(), timeout=120)
+        if data is None:
+            await asyncio.wait_for(proc.wait(), timeout=10)
             return None
-        return data
-    except Exception as exc:  # noqa: BLE001 — best-effort read must not raise
+        rc = await asyncio.wait_for(proc.wait(), timeout=10)
+        return data if rc == 0 and data else None
+    except Exception as exc:  # noqa: BLE001 — best-effort read must not raise (incl. TimeoutError)
         logger.warning("[sandbox] read_file_as_agent(%s) failed: %s", path, exc)
+        if proc is not None and proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
         return None
 
 

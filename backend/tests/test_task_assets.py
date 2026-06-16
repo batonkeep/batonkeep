@@ -7,6 +7,7 @@ them with the scratch.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 
 import pytest
@@ -183,6 +184,37 @@ async def test_import_referenced_assets_from_agent_home(monkeypatch, tmp_path):
     # External + out-of-root refs untouched / not pulled.
     assert "https://example.com/x.png" in new_text
     assert "/etc/shadow.jpg" in new_text
+
+
+@pytest.mark.asyncio
+async def test_read_file_as_agent_large_file_no_deadlock(monkeypatch, tmp_path):
+    """Reading via the spawner must drain the pipe — a >64K file (the image case)
+    would deadlock or truncate with a single read()+wait() (the run-#41 hang)."""
+    import stat as _stat
+
+    from app import sandbox
+
+    # A stand-in 'spawner' that drops the leading "--" and execs the rest (cat <path>).
+    shim = tmp_path / "spawn_shim.sh"
+    shim.write_text("#!/bin/sh\nshift\nexec \"$@\"\n")
+    shim.chmod(shim.stat().st_mode | _stat.S_IXUSR | _stat.S_IXGRP | _stat.S_IXOTH)
+    monkeypatch.setitem(sandbox._settings.__dict__, "sandbox_spawn_path", str(shim))
+    assert sandbox.available()
+
+    big = tmp_path / "big.bin"
+    payload = os.urandom(512 * 1024)  # 512K, well over the ~64K pipe buffer
+    big.write_bytes(payload)
+
+    data = await asyncio.wait_for(
+        sandbox.read_file_as_agent(str(big), max_bytes=100 * 1024 * 1024), timeout=15
+    )
+    assert data == payload
+
+    # Over-cap files are rejected, not truncated.
+    none = await asyncio.wait_for(
+        sandbox.read_file_as_agent(str(big), max_bytes=1024), timeout=15
+    )
+    assert none is None
 
 
 def test_asset_abs_path_rejects_traversal(monkeypatch, tmp_path):

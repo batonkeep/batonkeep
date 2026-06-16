@@ -272,14 +272,18 @@ async def import_referenced_assets(text: str, outputs_dir: str) -> tuple[str, li
         os.makedirs(os.path.dirname(abs_dst), exist_ok=True)
         with open(abs_dst, "wb") as f:
             f.write(data)
-        captured.append({"rel_path": rel, "mime": mimetypes.guess_type(name)[0], "bytes": len(data)})
+        captured.append(
+            {"rel_path": rel, "mime": mimetypes.guess_type(name)[0], "bytes": len(data)}
+        )
         seen_src[path] = rel
         rewrites[raw] = rel
 
     for original, rel in rewrites.items():
         text = text.replace(original, rel)
     if captured:
-        logger.info("[task_workspace] imported %d referenced asset(s) into %s", len(captured), outputs_dir)
+        logger.info(
+            "[task_workspace] imported %d referenced asset(s) into %s", len(captured), outputs_dir
+        )
     return text, captured
 
 

@@ -682,7 +682,9 @@ async def get_run_asset(
     headers = {"Cache-Control": "no-store"}
     if download:
         headers["Content-Disposition"] = f'attachment; filename="{os.path.basename(abs_path)}"'
-    return FileResponse(abs_path, media_type=row.mime or "application/octet-stream", headers=headers)
+    return FileResponse(
+        abs_path, media_type=row.mime or "application/octet-stream", headers=headers
+    )
 
 
 @app.delete("/api/runs/{run_id}/assets", status_code=204, tags=["runs"])

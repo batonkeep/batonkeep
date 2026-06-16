@@ -311,6 +311,16 @@ class ModelExecutor(Executor):
             "cost_accumulator": self._aux_costs,
         }
 
+    def _vision_images(self, prompt: str, workdir: str | None) -> list:
+        """Images the prompt explicitly references, for vision-capable API providers
+        (P-0051 / D-0047). Empty for providers without `supports_vision` — the caller
+        then sends a text-only message (today's behavior)."""
+        if not self._def.supports_vision:
+            return []
+        from app.providers import vision
+
+        return vision.referenced_images(prompt, workdir)
+
     async def run_stream(
         self,
         prompt: str,
@@ -390,14 +400,26 @@ class ModelExecutor(Executor):
             return
 
         client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        vimgs = self._vision_images(prompt, workdir)
+        if vimgs:
+            user_content = [{"type": "text", "text": prompt}] + [
+                {"type": "image_url", "image_url": {"url": im.data_url}} for im in vimgs
+            ]
+        else:
+            user_content = prompt
         messages = [
             {"role": "system", "content": _base_system_prompt(self._extra)},
-            {"role": "user", "content": prompt},
+            {"role": "user", "content": user_content},
         ]
         tools = _active_tool_schemas(self._extra) if tools_enabled else []
         total_usage = Usage()
         full_text = ""
 
+        if vimgs:
+            yield ExecEvent(
+                kind=EventKind.log,
+                message=f"[{self.name}] vision: attached {len(vimgs)} referenced image(s)",
+            )
         yield ExecEvent(kind=EventKind.log, message=f"[{self.name}] starting (openai-compat)")
         yield ExecEvent(kind=EventKind.phase, phase="running")
 
@@ -547,7 +569,18 @@ class ModelExecutor(Executor):
             return
         client = anthropic.AsyncAnthropic(api_key=api_key)
 
-        messages = [{"role": "user", "content": prompt}]
+        vimgs = self._vision_images(prompt, workdir)
+        if vimgs:
+            first_content = [{"type": "text", "text": prompt}] + [
+                {
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": im.mime, "data": im.b64},
+                }
+                for im in vimgs
+            ]
+            messages = [{"role": "user", "content": first_content}]
+        else:
+            messages = [{"role": "user", "content": prompt}]
         anth_tools = [
             {"name": t["name"], "description": t["description"], "input_schema": t["parameters"]}
             for t in _active_tool_schemas(self._extra)
@@ -570,6 +603,11 @@ class ModelExecutor(Executor):
         # keeps us at ≤3 of Anthropic's 4-breakpoint cap as history grows.
         prev_history_bp: dict | None = None
 
+        if vimgs:
+            yield ExecEvent(
+                kind=EventKind.log,
+                message=f"[{self.name}] vision: attached {len(vimgs)} referenced image(s)",
+            )
         yield ExecEvent(kind=EventKind.log, message=f"[{self.name}] starting (anthropic)")
         yield ExecEvent(kind=EventKind.phase, phase="running")
 
@@ -748,12 +786,21 @@ class ModelExecutor(Executor):
                     for t in _active_tool_schemas(self._extra)
                 ])
             ]
+        vimgs = self._vision_images(prompt, workdir)
+        first_parts = [types.Part(text=prompt)] + [
+            types.Part.from_bytes(data=im.data, mime_type=im.mime) for im in vimgs
+        ]
         contents: list[types.Content] = [
-            types.Content(role="user", parts=[types.Part(text=prompt)])
+            types.Content(role="user", parts=first_parts)
         ]
         total_usage = Usage()
         full_text = ""
 
+        if vimgs:
+            yield ExecEvent(
+                kind=EventKind.log,
+                message=f"[{self.name}] vision: attached {len(vimgs)} referenced image(s)",
+            )
         yield ExecEvent(kind=EventKind.log, message=f"[{self.name}] starting (gemini)")
         yield ExecEvent(kind=EventKind.phase, phase="running")
 

@@ -54,6 +54,12 @@ class ProviderDef:
     # text models can't generate images even though the provider exists). V1 wires
     # xAI/Grok's OpenAI-shaped images endpoint; other capable models flip the flag.
     supports_image_gen: bool = False
+    # Multimodal image *input* / vision (P-0051 / D-0047). When set, the API executor
+    # passes images the user *explicitly references* in their prompt to the model as
+    # native vision blocks (referenced-only bounds token cost). Plan-CLI providers read
+    # images natively and ignore this flag; gate keys on the provider's frontier model
+    # being vision-capable (gpt-4o / Claude / Gemini / Grok all are).
+    supports_vision: bool = False
     # The image model a session inherits *by default* when this is its text provider —
     # a catalog id (`app/providers/image_models.py`). Sessions can override to any
     # catalog entry, including a cross-provider one (`Session.image_model_id`). The
@@ -117,6 +123,7 @@ _ALL_PROVIDERS: list[ProviderDef] = [
         cost_out_per_mtok=75.0,
         env_key="ANTHROPIC_API_KEY",
         mode="api",
+        supports_vision=True,  # Claude frontier models accept image input (P-0051)
     ),
     ProviderDef(
         name="openai-api",
@@ -132,6 +139,7 @@ _ALL_PROVIDERS: list[ProviderDef] = [
         # gpt-image-1-mini; sessions can override to any catalog entry (incl. Grok).
         supports_image_gen=True,
         default_image_model_id="openai:gpt-image-1-mini",
+        supports_vision=True,  # gpt-4o accepts image input (P-0051)
     ),
     # xAI Grok via its OpenAI-compatible API (base_url set so it doesn't inherit OPENAI_BASE_URL).
     ProviderDef(
@@ -149,6 +157,7 @@ _ALL_PROVIDERS: list[ProviderDef] = [
         # Default to the quality tier; sessions can override (incl. to OpenAI).
         supports_image_gen=True,
         default_image_model_id="grok:grok-imagine-image-quality",
+        supports_vision=True,  # Grok frontier models accept image input (P-0051)
     ),
     # Google Gemini via the native google-genai SDK (Developer API).
     ProviderDef(
@@ -165,6 +174,7 @@ _ALL_PROVIDERS: list[ProviderDef] = [
         cost_out_per_mtok=10.0,
         env_key="GEMINI_API_KEY",
         mode="api",
+        supports_vision=True,  # Gemini is natively multimodal (P-0051)
     ),
     # ── Open-weight (credential-free to end user; requires OPENAI_BASE_URL) ───
     ProviderDef(

@@ -140,6 +140,9 @@ class Run(Base):
     assets: Mapped[list[RunAsset]] = relationship(
         back_populates="run", cascade="all, delete-orphan", order_by="RunAsset.id"
     )
+    routing_decisions: Mapped[list[RoutingDecision]] = relationship(
+        back_populates="run", cascade="all, delete-orphan", order_by="RoutingDecision.id"
+    )
 
     @property
     def duration_ms(self) -> int | None:
@@ -174,6 +177,57 @@ class RunAsset(Base):
     )
 
     run: Mapped[Run] = relationship(back_populates="assets")
+
+
+class RoutingDecision(Base):
+    """A structured record of one routing decision (P-0053) — what the router
+    considered and *why*, captured at decision time by `router.RoutingTrace`.
+
+    This is the spine of the smart-routing backbone: it accumulates the
+    (context → route → outcome) tuples a later scored/learned policy needs, which
+    cannot be retrofitted from history we never captured. The router stays DB-free;
+    the orchestrator persists this from the trace it returns.
+
+    Content-free by construction — only candidate metadata + decision features, never
+    prompt/output (so it respects the D-0017/D-0022 telemetry posture; confidential
+    runs may record the *decision* — local, audience-A — but never content). Linked to
+    the run it routed; `run_id` is nullable so session-level routing can reuse the table
+    later. Outcome/quality linkage + a scored-policy seam are the follow-on slices.
+    """
+
+    __tablename__ = "routing_decisions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    owner_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("owners.id"), nullable=False, default="local", index=True
+    )
+    run_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("runs.id"), nullable=True, index=True
+    )
+    task_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    # Which policy made the call (router.POLICY_VERSION) — partitions decisions when
+    # a scored/learned policy later replaces or augments the rule-based one.
+    policy_version: Mapped[str] = mapped_column(String(32), nullable=False, default="rule-v1")
+    strategy: Mapped[str] = mapped_column(String(32), nullable=False)
+    # Constraint layers in force at decision time.
+    confidential: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    degraded: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    deployment_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    deferred: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    deciding_reason: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    # The originally-declared candidate set (before sovereignty/budget rewrite).
+    requested_candidates: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Per-candidate features + status at decision time (see RoutingTrace.evaluated).
+    evaluated: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Primary chosen instance (chosen_candidates[0]) + the full ordered failover list.
+    chosen: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    chosen_candidates: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    overflow_to: Mapped[str | None] = mapped_column(String(96), nullable=True)
+
+    run: Mapped[Run | None] = relationship(back_populates="routing_decisions")
 
 
 class RunEvent(Base):

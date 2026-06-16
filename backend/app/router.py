@@ -17,12 +17,13 @@ router.resolve() returns:
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from app.config import get_settings
 from app.providers.registry import (
     ProviderDef,
+    effective_capability_tags,
     get_instance,
     get_provider_def,
     is_provider_enabled,
@@ -36,12 +37,59 @@ _settings = get_settings()
 # Round-robin counters per task (keyed by task routing candidates tuple)
 _rr_counters: dict[tuple, int] = {}
 
+# Version of the routing *policy* in force (P-0053). Stamped on every RoutingTrace
+# so accumulated decisions can be partitioned by policy when a scored/learned
+# policy later replaces (or augments) this rule-based one.
+POLICY_VERSION = "rule-v1"
+
+
+@dataclass
+class RoutingTrace:
+    """A pure, DB-free record of what the router considered and why (P-0053).
+
+    The router stays DB-free: it only *describes* the decision here; the
+    orchestrator persists it as a RoutingDecision row. Content-free by
+    construction — only candidate metadata + features, never prompt/output.
+    """
+    strategy: str
+    policy_version: str = POLICY_VERSION
+    confidential: bool = False
+    degraded: bool = False
+    deployment_mode: str | None = None
+    deferred: bool = False
+    deciding_reason: str = ""
+    requested_candidates: list[str] = field(default_factory=list)
+    # per-candidate features at decision time:
+    #   {instance, kind, free, cost_per_mtok, tags, status}
+    # status ∈ {"chosen", "healthy", "cooling", "excluded:<reason>"}
+    evaluated: list[dict] = field(default_factory=list)
+    chosen: str | None = None
+    chosen_candidates: list[str] = field(default_factory=list)
+    overflow_to: str | None = None
+
+    def to_dict(self) -> dict:
+        return {
+            "strategy": self.strategy,
+            "policy_version": self.policy_version,
+            "confidential": self.confidential,
+            "degraded": self.degraded,
+            "deployment_mode": self.deployment_mode,
+            "deferred": self.deferred,
+            "deciding_reason": self.deciding_reason,
+            "requested_candidates": self.requested_candidates,
+            "evaluated": self.evaluated,
+            "chosen": self.chosen,
+            "chosen_candidates": self.chosen_candidates,
+            "overflow_to": self.overflow_to,
+        }
+
 
 @dataclass
 class CandidatePlan:
     """Router resolved successfully — ordered candidate list ready for failover loop."""
     candidates: list[str]
     overflow_to: str | None = None
+    trace: RoutingTrace | None = None
 
 
 @dataclass
@@ -49,6 +97,7 @@ class DeferredResult:
     """All candidates are cooling down; the run should be deferred."""
     deferred_until: datetime | None
     cooling_providers: list[str]
+    trace: RoutingTrace | None = None
 
 
 def resolve(
@@ -74,11 +123,67 @@ def resolve(
         CandidatePlan or DeferredResult.
     """
     strategy = routing.get("strategy", "capability")
-    raw_candidates: list[str] = routing.get("candidates", _settings.candidates_list)
+    raw_candidates: list[str] = list(routing.get("candidates", _settings.candidates_list))
     cap_tags: list[str] = routing.get("capability_tags", [])
     overflow_to: str | None = routing.get("overflow_to")
     max_attempts: int = routing.get("max_attempts", 3)
     failover: bool = routing.get("failover", True)
+    confidential = routing.get("sensitivity") == "confidential"
+    mode = deployment_mode or _settings.deployment_mode.value
+
+    # P-0053: build a pure decision trace as we go; the orchestrator persists it.
+    # The router itself does no DB I/O ("router stays DB-free").
+    trace = RoutingTrace(
+        strategy=strategy,
+        confidential=confidential,
+        degraded=degrade_to_free,
+        deployment_mode=mode,
+        requested_candidates=list(raw_candidates),
+    )
+    # `excluded`/`available` are populated by step 1; _eval_list reads them.
+    excluded: list[dict] = []
+    available: list[tuple[str, ProviderDef]] = []
+
+    def _features(iid: str, pdef: ProviderDef) -> dict:
+        return {
+            "instance": iid,
+            "kind": pdef.kind,
+            "free": bool(pdef.kind == "cli" or pdef.local),
+            "cost_per_mtok": round(pdef.cost_in_per_mtok + pdef.cost_out_per_mtok, 4),
+            "tags": list(effective_capability_tags(pdef)),
+        }
+
+    def _eval_list(chosen: list[str]) -> list[dict]:
+        """Per-candidate features at decision time: excluded rows + each available
+        candidate annotated chosen / healthy / cooling (health from the same quota
+        source the strategy used)."""
+        rows = list(excluded)
+        chosen_set = set(chosen)
+        for iid, pdef in available:
+            if iid in chosen_set:
+                status = "chosen"
+            elif not quota.is_healthy(iid):
+                status = "cooling"
+            else:
+                status = "healthy"
+            rows.append({**_features(iid, pdef), "status": status})
+        return rows
+
+    def _defer(reason: str, *, until: datetime | None = None,
+               cooling: list[str] | None = None) -> DeferredResult:
+        trace.deferred = True
+        trace.deciding_reason = reason
+        # nothing chosen — annotate whatever was evaluated (cooling/healthy/excluded)
+        trace.evaluated = _eval_list([])
+        return DeferredResult(deferred_until=until, cooling_providers=cooling or [], trace=trace)
+
+    def _plan(ordered: list[str], *, reason: str) -> CandidatePlan:
+        trace.deciding_reason = reason
+        trace.overflow_to = overflow_to
+        trace.evaluated = _eval_list(ordered)
+        trace.chosen_candidates = list(ordered)
+        trace.chosen = ordered[0] if ordered else None
+        return CandidatePlan(candidates=ordered, overflow_to=overflow_to, trace=trace)
 
     # Sovereignty boundary (P-0009 #1): a confidential task may only ever run on a
     # local provider — never a remote API/CLI. This is a policy layer over the
@@ -86,14 +191,13 @@ def resolve(
     # providers (ignoring any remote candidates the task declared) and forbids
     # overflow off-box. If no local provider is healthy the task defers — it must
     # fail closed, never silently fall back to a remote model.
-    confidential = routing.get("sensitivity") == "confidential"
     if confidential:
         raw_candidates = local_candidate_ids()
         overflow_to = None
         logger.info("[router] confidential — local providers only: %s", raw_candidates)
         if not raw_candidates:
             logger.warning("[router] confidential task, no local provider available — deferring")
-            return DeferredResult(deferred_until=None, cooling_providers=[])
+            return _defer("confidential: no local provider available")
 
     # Budget boundary (P-0009 #2): when the owner is over the daily cap, degrade to
     # zero-marginal-cost providers only — subscription plan-CLIs + local models —
@@ -106,10 +210,9 @@ def resolve(
         logger.info("[router] over budget — degrading to free providers only: %s", free)
         if not free:
             logger.warning("[router] over budget, no free provider available — deferring")
-            return DeferredResult(deferred_until=None, cooling_providers=[])
+            return _defer("over budget: no zero-cost provider available")
         raw_candidates = free
 
-    mode = deployment_mode or _settings.deployment_mode.value
     plan_cli_allowed = mode != "managed"
 
     # 1. Filter candidates by availability and deployment mode.
@@ -117,26 +220,29 @@ def resolve(
     # instance + its template ProviderDef. Cost/tags come from the template; health
     # and ordering are tracked per-instance so same-provider accounts fail over
     # independently.
-    available: list[tuple[str, ProviderDef]] = []
     for cand in raw_candidates:
         inst = get_instance(cand)
         if inst is None:
             logger.debug("[router] instance %s not available, skipping", cand)
+            excluded.append({"instance": cand, "status": "excluded:not_available"})
             continue
         pdef = get_provider_def(inst.template)
         if pdef is None:
+            excluded.append({"instance": cand, "status": "excluded:no_provider_def"})
             continue
         if pdef.kind == "cli" and not plan_cli_allowed:
             logger.debug("[router] %s excluded (managed mode forbids plan-CLI)", cand)
+            excluded.append({"instance": inst.id, "status": "excluded:managed_forbids_cli"})
             continue
         if not is_provider_enabled(inst.id):
             logger.debug("[router] %s excluded (operator-disabled)", cand)
+            excluded.append({"instance": inst.id, "status": "excluded:operator_disabled"})
             continue
         available.append((inst.id, pdef))
 
     if not available:
         logger.warning("[router] no available providers after filtering")
-        return DeferredResult(deferred_until=None, cooling_providers=[])
+        return _defer("no available providers after filtering")
 
     # 2. Apply strategy to produce an ordered list of instance ids
     if strategy == "fixed":
@@ -145,12 +251,9 @@ def resolve(
     elif strategy == "round_robin":
         healthy_ids = [iid for iid, _ in available if quota.is_healthy(iid)]
         if not healthy_ids:
-            # All cooling — return deferred
             all_ids = [iid for iid, _ in available]
-            return DeferredResult(
-                deferred_until=quota.earliest_reset(all_ids),
-                cooling_providers=all_ids,
-            )
+            return _defer("all candidates cooling (round_robin)",
+                          until=quota.earliest_reset(all_ids), cooling=all_ids)
         key = tuple(iid for iid, _ in available)
         idx = _rr_counters.get(key, 0) % len(healthy_ids)
         _rr_counters[key] = idx + 1
@@ -165,10 +268,8 @@ def resolve(
         healthy = [item for item in available if quota.is_healthy(item[0])]
         if not healthy:
             all_ids = [iid for iid, _ in available]
-            return DeferredResult(
-                deferred_until=quota.earliest_reset(all_ids),
-                cooling_providers=all_ids,
-            )
+            return _defer("all candidates cooling (cost_optimized)",
+                          until=quota.earliest_reset(all_ids), cooling=all_ids)
         healthy.sort(key=_cost)
         ordered = [iid for iid, _ in healthy]
 
@@ -184,10 +285,8 @@ def resolve(
             c_names = cooling_providers  # type: ignore[possibly-undefined]
         else:
             c_names = [iid for iid, _ in available]
-        return DeferredResult(
-            deferred_until=quota.earliest_reset(c_names),
-            cooling_providers=c_names,
-        )
+        return _defer("all tag-matched candidates cooling",
+                      until=quota.earliest_reset(c_names), cooling=c_names)
 
     # 4. Cap at max_attempts
     if not failover:
@@ -195,7 +294,7 @@ def resolve(
     else:
         ordered = ordered[:max_attempts]
 
-    return CandidatePlan(candidates=ordered, overflow_to=overflow_to)
+    return _plan(ordered, reason=f"{strategy}: {len(ordered)} candidate(s) ordered")
 
 
 def _is_free_candidate(candidate_id: str) -> bool:
@@ -222,8 +321,6 @@ def _resolve_capability(
 
     Returns a tuple so callers can distinguish tag-mismatch from actual cooldown.
     """
-    from app.providers.registry import effective_capability_tags
-
     matched_healthy = []
     cooling = []
     for iid, pdef in providers:

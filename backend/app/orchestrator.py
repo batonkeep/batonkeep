@@ -28,7 +28,7 @@ from app import task_assets, task_workspace
 from app.config import get_settings
 from app.db import AsyncSessionLocal
 from app.logging_config import bind_run
-from app.models import Run, RunEvent, Task
+from app.models import RoutingDecision, Run, RunEvent, Task
 from app.providers.base import EventKind, ExecEvent, ExecResult, Usage
 from app.providers.registry import get_executor
 from app.quota import quota_tracker
@@ -150,6 +150,10 @@ async def _do_execute(run_id: int, task: Task) -> None:
                 "[orchestrator] run %d over daily budget — degrading to free providers", run_id
             )
         route_result = resolve(routing, quota_tracker, degrade_to_free=degrade)
+
+        # P-0053: persist the routing decision (what was considered + why). Best-effort
+        # — telemetry must never break a run, so a failure here is logged and swallowed.
+        await _record_routing_decision(db, run, route_result.trace)
 
         if isinstance(route_result, DeferredResult):
             run.status = "deferred"
@@ -796,6 +800,39 @@ async def _fail(db, run: Run, error: str) -> None:
     run.finished_at = datetime.now(UTC)
     await db.commit()
     await _broadcast_run(run)
+
+
+async def _record_routing_decision(db, run: Run, trace) -> None:
+    """Persist a RoutingDecision from the router's trace (P-0053).
+
+    Best-effort and never load-bearing: any failure is logged and swallowed so a
+    telemetry write can't fail a run. Content-free — only candidate metadata.
+    """
+    if trace is None:
+        return
+    try:
+        t = trace.to_dict()
+        db.add(RoutingDecision(
+            owner_id=run.owner_id,
+            run_id=run.id,
+            task_id=run.task_id,
+            policy_version=t.get("policy_version", "rule-v1"),
+            strategy=t.get("strategy", ""),
+            confidential=bool(t.get("confidential")),
+            degraded=bool(t.get("degraded")),
+            deployment_mode=t.get("deployment_mode"),
+            deferred=bool(t.get("deferred")),
+            deciding_reason=(t.get("deciding_reason") or "")[:256],
+            requested_candidates=t.get("requested_candidates"),
+            evaluated=t.get("evaluated"),
+            chosen=t.get("chosen"),
+            chosen_candidates=t.get("chosen_candidates"),
+            overflow_to=t.get("overflow_to"),
+        ))
+        await db.commit()
+    except Exception:
+        logger.exception("[orchestrator] run %s — failed to record routing decision", run.id)
+        await db.rollback()
 
 
 async def _next_seq(db, run_id: int) -> int:

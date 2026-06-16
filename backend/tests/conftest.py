@@ -8,9 +8,41 @@ global registry observed by other tests.
 """
 from __future__ import annotations
 
+import asyncio
 import sys
+import warnings
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _ensure_event_loop():
+    """Guarantee a usable current event loop on the main thread per test.
+
+    Several sync tests drive async setup via
+    ``asyncio.get_event_loop().run_until_complete(...)`` (sharing one loop across
+    a test's setup/seed/dispose so the SQLAlchemy async engine stays loop-bound).
+    Since pytest-asyncio 1.x (and Python 3.12), the main thread is no longer
+    handed an implicit loop, so ``get_event_loop()`` raises ``RuntimeError`` —
+    or returns a closed loop left by a prior async test. Re-establish one when
+    that happens; async tests are unaffected (pytest-asyncio supplies their loop).
+    """
+    created = None
+    try:
+        with warnings.catch_warnings():
+            # get_event_loop() warns when no current loop is set — that's exactly
+            # the case we're probing for; the DeprecationWarning is noise here.
+            warnings.simplefilter("ignore", DeprecationWarning)
+            loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            raise RuntimeError
+    except RuntimeError:
+        created = asyncio.new_event_loop()
+        asyncio.set_event_loop(created)
+    yield
+    if created is not None:
+        created.close()
+        asyncio.set_event_loop(None)
 
 
 @pytest.fixture(autouse=True)

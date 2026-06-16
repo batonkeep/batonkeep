@@ -27,6 +27,18 @@ export function fmtCost(usd: number | null | undefined): string {
   return `$${usd.toFixed(2)}`;
 }
 
+// Compact count, e.g. 850 → "850", 2000 → "2k", 15647 → "15.6k", 2_300_000 → "2.3M".
+// Keeps one decimal in the k/M range (dropping a trailing ".0"); keep the exact value
+// in a `title` where precision matters.
+export function fmtCount(n: number | null | undefined): string {
+  if (n == null) return "—";
+  const abs = Math.abs(n);
+  if (abs < 1000) return `${n}`;
+  const strip = (v: number) => v.toFixed(1).replace(/\.0$/, "");
+  if (abs < 1_000_000) return `${strip(n / 1000)}k`;
+  return `${strip(n / 1_000_000)}M`;
+}
+
 export function fmtPct(frac: number | null | undefined): string {
   if (frac == null) return "—";
   return `${Math.round(frac * 100)}%`;

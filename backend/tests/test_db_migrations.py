@@ -13,6 +13,18 @@ import pytest
 from sqlalchemy import create_engine, inspect, text
 
 
+@pytest.fixture(autouse=True)
+def _restore_settings_cache():
+    """These tests repoint DATABASE_URL + clear the Settings cache; rebuild it
+    afterwards so the tmp-DB singleton doesn't leak to the next test (the conftest
+    `_coherent_settings` fixture then re-converges every module on it)."""
+    yield
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    get_settings()
+
+
 def _use_db(monkeypatch, url_path: str) -> None:
     """Point app settings at a tmp SQLite file and clear the cached Settings."""
     from app.config import get_settings

@@ -21,6 +21,7 @@ import type {
   ProviderHealth,
   ProviderLimitsUpdate,
   Run,
+  RunAsset,
   RunEvent,
   SecretStatus,
   Session,
@@ -110,6 +111,14 @@ export const api = {
   requeueRun: (id: number) => req<Run>(`/runs/${id}/requeue`, { method: "POST" }),
   outputUrl: (id: number, format: "md" | "json") =>
     `${BASE}/runs/${id}/output?format=${format}`,
+  // Run assets (P-0050): list + raw URL + delete; clear all for a task.
+  listRunAssets: (id: number) => req<RunAsset[]>(`/runs/${id}/assets`),
+  runAssetUrl: (id: number, relPath: string, download = false) =>
+    `${BASE}/runs/${id}/assets/raw/${relPath.split("/").map(encodeURIComponent).join("/")}${download ? "?download=1" : ""}`,
+  // Base for resolving relative asset/data refs embedded in a run's report markdown.
+  runAssetBase: (id: number) => `${BASE}/runs/${id}/assets/raw/`,
+  deleteRunAssets: (id: number) => req<void>(`/runs/${id}/assets`, { method: "DELETE" }),
+  clearTaskAssets: (taskId: number) => req<void>(`/tasks/${taskId}/assets`, { method: "DELETE" }),
 
   // ── Sessions (M1: build sessions + live preview) ───────────────────────
   listSessionTemplates: () => req<SessionTemplate[]>("/session-templates"),

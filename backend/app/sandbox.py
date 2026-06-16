@@ -91,6 +91,72 @@ async def path_exists(path: str) -> bool:
         return False
 
 
+async def read_file_as_agent(path: str, *, max_bytes: int) -> bytes | None:
+    """Read a file *as the sandbox user* and return its bytes, or None.
+
+    CLI agents (e.g. antigravity/agy) save generated artifacts under their own HOME
+    (`/home/agent/...`), which `batond` cannot traverse — so the backend can't read
+    them directly even when the files are world-readable, because a parent dir is
+    not. Route the read through the same setuid spawner the CLIs use so it runs as
+    `sandbox`. Streams via `cat`, capped at `max_bytes` (returns None if exceeded or
+    on any error). Falls back to a direct read when the spawner is unavailable
+    (dev / tests / non-container)."""
+    if not available():
+        try:
+            if os.path.getsize(path) > max_bytes:
+                return None
+            with open(path, "rb") as f:
+                return f.read()
+        except OSError:
+            return None
+    proc: asyncio.subprocess.Process | None = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            _settings.sandbox_spawn_path, "--", "cat", path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+
+        def _kill() -> None:
+            if proc is not None and proc.returncode is None:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+
+        async def _drain() -> bytes | None:
+            # Read in chunks so we keep draining the pipe — a single read(n) + wait()
+            # deadlocks once `cat`'s output exceeds the ~64K pipe buffer (it blocks on
+            # write while we block on wait()). Enforce the cap as we go; on over-cap
+            # kill `cat` rather than leaving it blocked on the unread tail.
+            assert proc is not None and proc.stdout is not None
+            buf = bytearray()
+            while True:
+                chunk = await proc.stdout.read(65536)
+                if not chunk:
+                    break
+                buf += chunk
+                if len(buf) > max_bytes:
+                    _kill()
+                    return None
+            return bytes(buf)
+
+        data = await asyncio.wait_for(_drain(), timeout=120)
+        if data is None:
+            await asyncio.wait_for(proc.wait(), timeout=10)
+            return None
+        rc = await asyncio.wait_for(proc.wait(), timeout=10)
+        return data if rc == 0 and data else None
+    except Exception as exc:  # noqa: BLE001 — best-effort read must not raise (incl. TimeoutError)
+        logger.warning("[sandbox] read_file_as_agent(%s) failed: %s", path, exc)
+        if proc is not None and proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+        return None
+
+
 def reap(pgid: int) -> None:
     """SIGKILL a sandbox-owned process group via the privileged helper.
 

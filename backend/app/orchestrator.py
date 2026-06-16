@@ -24,7 +24,7 @@ from typing import Any
 
 from sqlalchemy import select, update
 
-from app import task_workspace
+from app import task_assets, task_workspace
 from app.config import get_settings
 from app.db import AsyncSessionLocal
 from app.logging_config import bind_run
@@ -470,6 +470,20 @@ async def _do_execute(run_id: int, task: Task) -> None:
             )
             full_text = agent_md
 
+        # Pull in artifacts the agent referenced by absolute path but saved outside
+        # the run cwd (antigravity/agy writes generated media to its own HOME, which
+        # batond can't read) — copy them into outputs/ via the sandbox helper and
+        # rewrite the report's references to the captured relative path so it renders
+        # (P-0050/D-0046). Must run before output.md is written. Best-effort: asset
+        # handling must never strand or fail a run, so any error is logged and skipped.
+        referenced: list[dict] = []
+        try:
+            full_text, referenced = await task_workspace.import_referenced_assets(
+                full_text, outputs_dir
+            )
+        except Exception:
+            logger.exception("[orchestrator] run %d: referenced-asset import failed", run_id)
+
         # Canonical outputs land in the control-plane outputs dir (batond-owned),
         # not the agent's sandbox workspace, then get promoted to read-only history.
         if task.want_json:
@@ -487,9 +501,28 @@ async def _do_execute(run_id: int, task: Task) -> None:
                 f.write(full_text)
             run.markdown_path = md_path
 
-        # Promote this run's output into the task's read-only history so the next
-        # run can read it (injected into its prompt) but cannot mutate it (P-0022).
+        # Capture non-text deliverables (generated images, agent-written csv/pdf) from
+        # the agent's current/ scratch into the canonical outputs dir and record them
+        # as RunAsset rows (P-0050/D-0046) — otherwise they'd be discarded with the
+        # scratch on the next run. Combine with referenced artifacts pulled from the
+        # agent's HOME above (dedupe by rel_path). Then enforce the task's retention caps.
+        try:
+            captured = task_workspace.capture_assets(workdir, outputs_dir)
+        except Exception:
+            logger.exception("[orchestrator] run %d: workspace asset capture failed", run_id)
+            captured = []
+        seen_rel = {c["rel_path"] for c in captured}
+        captured += [r for r in referenced if r["rel_path"] not in seen_rel]
+        if captured:
+            db.add_all(task_assets.record_assets(run, captured))
+            await db.flush()
+
+        # Promote this run's output (text + captured assets) into the task's read-only
+        # history so the next run can read it (injected into its prompt) but cannot
+        # mutate it (P-0022).
         task_workspace.promote(task.id, run_id, outputs_dir)
+
+        await task_assets.enforce_retention(db, task)
 
 
         # ── 6. Finalise ───────────────────────────────────────────────────────

@@ -106,6 +106,16 @@ export interface Run {
   duration_ms: number | null;
 }
 
+// A non-text artifact a task run produced (generated image, csv/pdf) — P-0050.
+export interface RunAsset {
+  id: number;
+  run_id: number;
+  rel_path: string;
+  mime: string | null;
+  bytes: number;
+  created_at: string;
+}
+
 export interface RunEvent {
   id?: number;
   run_id?: number;

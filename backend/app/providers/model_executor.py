@@ -87,6 +87,16 @@ def _base_system_prompt(extra: dict | None) -> str:
             " You can generate images with the image_generate tool; saved images "
             "render in the preview pane, so create visuals directly when asked."
         )
+    # On scheduled task runs, only output.md/output.json plus files saved under
+    # assets/ (media) or data/ (csv/pdf/etc.) are captured and kept; anything written
+    # elsewhere in the scratch is discarded after the run (P-0050). Steer the model to
+    # save non-text deliverables there so they survive.
+    if extra and extra.get("task"):
+        prompt += (
+            " This is a scheduled task run: besides your Markdown report, save any "
+            "file deliverable you produce under assets/ (images) or data/ "
+            "(csv, pdf, and other data files) — files saved elsewhere are not kept."
+        )
     if not (extra and policy_offers_tool(extra.get("exec_policy"))):
         return prompt
     from app.exec_env import render_capabilities

@@ -384,7 +384,7 @@ function AppShell({ appAuthEnabled, onLogout }: { appAuthEnabled: boolean; onLog
               className="mb-4"
               tabs={[
                 { id: "tasks", label: "Tasks" },
-                { id: "live", label: activeRuns > 0 ? `Live · ${activeRuns}` : "Live" },
+                { id: "live", label: activeRuns > 0 ? `Runs · ${activeRuns}` : "Runs" },
               ] as const}
               active={tasksTab}
               onChange={setTasksTab}

@@ -192,7 +192,15 @@ class RoutingDecision(Base):
     prompt/output (so it respects the D-0017/D-0022 telemetry posture; confidential
     runs may record the *decision* — local, audience-A — but never content). Linked to
     the run it routed; `run_id` is nullable so session-level routing can reuse the table
-    later. Outcome/quality linkage + a scored-policy seam are the follow-on slices.
+    later. A scored-policy seam is the follow-on slice.
+
+    **Outcome linkage (P-0053 slice 2)** — the `outcome_*` / `executed_*` / `failover_used`
+    / `attempt_count` fields are filled at run finalization, closing the
+    (decision → realized outcome) tuple a scored policy learns from: did the chosen
+    route succeed, on the first try or only after failover, and at what cost/latency.
+    These are *outcome-derived* routing signals — honest and immediately available. A
+    richer **user-acceptance** quality signal (kept-vs-regenerated, explicit feedback)
+    is deliberately a later slice tied to session-level routing + UI, not inferred here.
     """
 
     __tablename__ = "routing_decisions"
@@ -226,6 +234,22 @@ class RoutingDecision(Base):
     chosen: Mapped[str | None] = mapped_column(String(96), nullable=True)
     chosen_candidates: Mapped[list | None] = mapped_column(JSON, nullable=True)
     overflow_to: Mapped[str | None] = mapped_column(String(96), nullable=True)
+
+    # ── Outcome linkage (P-0053 slice 2) — filled at run finalization ──────────
+    # Terminal run status: succeeded | failed | deferred | cancelled.
+    outcome_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # The instance/model that actually produced the result (may differ from `chosen`).
+    executed_provider: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    executed_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # True iff the primary choice didn't produce the result (fell back / overflowed) —
+    # the cleanest route-quality signal: "did my top pick work first try".
+    failover_used: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    attempt_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Realized cost/latency of the chosen route — core optimization targets for a
+    # future scored policy, denormalized so the tuple is self-contained.
+    outcome_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    outcome_duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    outcome_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     run: Mapped[Run | None] = relationship(back_populates="routing_decisions")
 

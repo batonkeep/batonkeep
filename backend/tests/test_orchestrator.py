@@ -662,3 +662,109 @@ class TestOrchestratorSmoke:
             if "outputs_dir" in orch_mod._settings.__dict__:
                 del orch_mod._settings.__dict__["outputs_dir"]
             quota_tracker.mark_healthy("mock")
+
+
+# ── P-0053: routing-decision capture + outcome linkage ────────────────────────
+
+class TestRoutingOutcomeDerivation:
+    """Pure derivation of the realized routing outcome (slice 2) — no DB."""
+
+    def _run(self, **kw):
+        from app.models import Run
+        r = Run(owner_id="local", task_id=1, status=kw.get("status", "succeeded"))
+        r.provider = kw.get("provider", "mock")
+        r.model = kw.get("model", "m1")
+        r.attempts = kw.get("attempts", [{"provider": "mock", "outcome": "success"}])
+        r.cost_usd = kw.get("cost_usd", 0.01)
+        r.overflow_used = kw.get("overflow_used", False)
+        r.started_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        r.finished_at = r.started_at + timedelta(seconds=2)
+        return r
+
+    def test_primary_success_is_not_failover(self):
+        from app.orchestrator import _derive_routing_outcome
+        out = _derive_routing_outcome(self._run(provider="mock"), chosen="mock")
+        assert out["outcome_status"] == "succeeded"
+        assert out["executed_provider"] == "mock"
+        assert out["failover_used"] is False
+        assert out["attempt_count"] == 1
+        assert out["outcome_duration_ms"] == 2000
+        assert out["outcome_cost_usd"] == 0.01
+
+    def test_executed_differs_from_chosen_is_failover(self):
+        from app.orchestrator import _derive_routing_outcome
+        out = _derive_routing_outcome(self._run(provider="grok"), chosen="claude")
+        assert out["failover_used"] is True
+
+    def test_overflow_counts_as_failover(self):
+        from app.orchestrator import _derive_routing_outcome
+        out = _derive_routing_outcome(
+            self._run(provider="mock", overflow_used=True), chosen="mock")
+        assert out["failover_used"] is True
+
+
+class TestRoutingDecisionCapture:
+    """End-to-end: a successful run records a RoutingDecision with decision (slice 1)
+    + outcome (slice 2) fields."""
+
+    @pytest.mark.asyncio
+    async def test_decision_and_outcome_recorded(self, fresh_db, tmp_path):
+        engine, Session, base_path = fresh_db
+        from sqlalchemy import select
+
+        import app.orchestrator as orch_mod
+        from app.models import RoutingDecision, Run, Task
+
+        orig_session_local = orch_mod.AsyncSessionLocal
+        orch_mod.AsyncSessionLocal = Session
+        orch_mod._settings.__dict__["outputs_dir"] = str(base_path / "outputs")
+        orch_mod._settings.__dict__["work_dir"] = str(base_path / "work")
+        try:
+            async with Session() as db:
+                task = Task(
+                    owner_id="local", name="Routing test",
+                    prompt_template="Tell me about {topic}", params={"topic": "AI"},
+                    routing={"strategy": "capability", "candidates": ["mock"],
+                             "failover": True, "max_attempts": 1},
+                    want_markdown=True,
+                )
+                db.add(task)
+                await db.commit()
+                await db.refresh(task)
+                task_id = task.id
+
+            run = await orch_mod.enqueue_run(task_id, trigger="test")
+            run_id = run.id
+            bg = orch_mod._cancel_handles.get(run_id)
+            if bg:
+                try:
+                    await asyncio.wait_for(asyncio.shield(bg), timeout=8.0)
+                except asyncio.TimeoutError:
+                    pass
+            await asyncio.sleep(0.3)
+
+            async with Session() as db:
+                run = await db.get(Run, run_id)
+                assert run.status == "succeeded", f"status={run.status} error={run.error}"
+                rows = (await db.execute(
+                    select(RoutingDecision).where(RoutingDecision.run_id == run_id)
+                )).scalars().all()
+                assert len(rows) == 1, f"expected 1 decision, got {len(rows)}"
+                d = rows[0]
+                # slice 1 — the decision
+                assert d.strategy == "capability"
+                assert d.chosen == "mock"
+                assert d.chosen_candidates == ["mock"]
+                assert d.deferred is False
+                assert d.owner_id == "local" and d.task_id == task_id
+                assert d.evaluated and any(r.get("status") == "chosen" for r in d.evaluated)
+                # slice 2 — the outcome
+                assert d.outcome_status == "succeeded"
+                assert d.executed_provider == "mock"
+                assert d.failover_used is False
+                assert d.attempt_count and d.attempt_count >= 1
+                assert d.outcome_at is not None
+        finally:
+            orch_mod.AsyncSessionLocal = orig_session_local
+            for k in ("outputs_dir", "work_dir"):
+                orch_mod._settings.__dict__.pop(k, None)

@@ -160,7 +160,10 @@ the archives back into fresh volumes before
 `docker compose --profile selfhost up -d` adds an Ollama container on the internal network.
 Point a custom provider at `http://inference:11434/v1`.
 
-Note: open-weight and other API-key providers connect through the standard API path, which
-has **more limited agentic support** than plan-backed providers running each vendor's own
-agent CLI (native tool use, multimodal). Use them for sovereignty/offline work and expect the
-plan-CLI lane to be the more capable one.
+Note: open-weight and other API-key providers connect through our own agent loop — a
+**first-class agentic lane** (web search/fetch, filesystem read/search, Python code execution,
+image generation, and image input on vision-capable models), now at **near-parity** with the
+plan-CLI lane. Two edge differences remain: the plan-CLI lane draws on each vendor's full native
+toolset (arbitrary external tools sit behind a trust boundary on the API lane), and failover
+behaves a little differently per lane. Open-weight models are the right call for
+sovereignty/offline work; capability between the lanes is close.

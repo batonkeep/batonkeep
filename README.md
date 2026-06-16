@@ -52,7 +52,12 @@ No build required — pull the prebuilt images from GHCR:
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/batonkeep/batonkeep/main/docker-compose.yml
 curl -fsSL  https://raw.githubusercontent.com/batonkeep/batonkeep/main/.env.example -o .env
+curl -fsSLO https://raw.githubusercontent.com/batonkeep/batonkeep/main/searxng-settings.yml
 ```
+
+> Grab all three: the compose file bind-mounts `searxng-settings.yml` to power the built-in
+> SearXNG web-search backend (it runs by default). Omit it and the `searxng` container won't
+> start cleanly — or remove that service to fall back to a DuckDuckGo scrape.
 
 Before starting, set two values in `.env`:
 

@@ -1,0 +1,73 @@
+# Changelog
+
+All notable changes to batonkeep are documented here. This project adheres to
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html) (pre-1.0: minor versions may
+add features freely; patch versions are fixes).
+
+## [0.2.0] — 2026-06-16
+
+The API-key lane grows up. Where v0.1.x leaned on the plan-CLI lane for the rich agentic
+experience, this release brings the API path to **near-parity** — real tools, code
+execution, web search, and full multimodal — so BYO-key and self-hosted models are now a
+first-class way to run batonkeep.
+
+### Added
+
+- **Agent tools on the API lane.** API-key providers now run a real tool loop:
+  - **Web search** via a self-hosted, key-free **SearXNG** backend, with a transparent
+    DuckDuckGo fallback when SearXNG isn't configured.
+  - **Filesystem** read / list / glob / grep over the session workspace.
+  - **Code execution** — run Python in a pinned, sandboxed environment to produce charts,
+    PDFs, CSVs, and scraped data. Gated by a per-session/per-task **execution policy**
+    (off / allow-safe / confirm / auto) with an in-UI **approval round-trip** for
+    confirm mode.
+  - **External tools via MCP** — a curated, SSRF-fenced `fetch` server ships built-in;
+    the seam is ready for more.
+- **Multimodal.**
+  - **Image generation** on the API path (OpenAI `gpt-image-*` and xAI Grok image models),
+    capability-gated and budget-metered, saved as normal workspace artifacts.
+  - **Image input (vision)** — images you reference in a prompt are passed to
+    vision-capable API models (Claude, GPT-4o, Gemini, Grok).
+  - **Per-session and per-task image-model selection**, including cross-provider (run text
+    on one provider, render images on another).
+- **Structured API model catalog** — manage which models are enabled, their pricing, and a
+  preferred model per capability, from a Settings editor backed by an overlay file. Plus
+  **per-session model selection**.
+- **Prompt caching & budgets** — cache-aware cost accounting with caching breakpoints on the
+  API loop, and **per-session budget** controls with a live cost chip.
+- **Task-run generated assets** — scheduled task runs now **capture, serve, and retain**
+  images and data files an agent produces, surfaced in a new **Assets** tab, with per-task
+  retention and storage controls.
+- **Provider suspend / reactivate** toggle, with suspended providers hidden from task and
+  session pickers.
+
+### Changed
+
+- **CLI and API lanes are now near-parity** on tools and multimodal; documentation reframed
+  accordingly (the remaining differences are the vendor's full native toolset and per-lane
+  failover behavior).
+- API tool-result history is compacted to control token cost on long loops.
+- UI polish — a **Runs** tab, a relocated session cost/budget chip, and humanized token
+  counts.
+
+### Fixed
+
+- The sandbox now **fails closed** when sandboxing is required, rather than silently running
+  unsandboxed.
+- Several build-session permission and `umask` defects that broke code execution in shared
+  workspaces.
+- Build-session cost is metered and conversational context preserved across turns.
+- A pipe deadlock that could strand agent runs while reading large files.
+- SearXNG default engine set trimmed (dropped Tor-only engines that produced log noise).
+
+### Security
+
+- **SSRF egress fence** for the curated `fetch` MCP server.
+- Sandbox isolation hardening on the code-execution path.
+
+## [0.1.1] — 2026-06-12
+
+First public release.
+
+[0.2.0]: https://github.com/batonkeep/batonkeep/releases/tag/v0.2.0
+[0.1.1]: https://github.com/batonkeep/batonkeep/releases/tag/v0.1.1

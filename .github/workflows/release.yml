@@ -17,6 +17,10 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/batonkeep
+  # Force JS actions onto Node 24 — Node 20 was deprecated for Actions runners
+  # (auto-migration began 2026-06-16). Covers the docker/* actions without pinning
+  # exact node24 release tags; safe to drop once each is bumped to a node24 major.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   images:
@@ -33,7 +37,7 @@ jobs:
           - component: frontend
             context: frontend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up QEMU (arm64 emulation)
         uses: docker/setup-qemu-action@v3

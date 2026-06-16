@@ -28,7 +28,7 @@ from app import task_assets, task_workspace
 from app.config import get_settings
 from app.db import AsyncSessionLocal
 from app.logging_config import bind_run
-from app.models import Run, RunEvent, Task
+from app.models import RoutingDecision, Run, RunEvent, Task
 from app.providers.base import EventKind, ExecEvent, ExecResult, Usage
 from app.providers.registry import get_executor
 from app.quota import quota_tracker
@@ -150,6 +150,10 @@ async def _do_execute(run_id: int, task: Task) -> None:
                 "[orchestrator] run %d over daily budget — degrading to free providers", run_id
             )
         route_result = resolve(routing, quota_tracker, degrade_to_free=degrade)
+
+        # P-0053: persist the routing decision (what was considered + why). Best-effort
+        # — telemetry must never break a run, so a failure here is logged and swallowed.
+        await _record_routing_decision(db, run, route_result.trace)
 
         if isinstance(route_result, DeferredResult):
             run.status = "deferred"
@@ -418,6 +422,7 @@ async def _do_execute(run_id: int, task: Task) -> None:
                 run.deferred_until = quota_tracker.earliest_reset(candidates)
                 run.attempts = attempts
                 await db.commit()
+                await _record_routing_outcome(db, run)  # P-0053 slice 2
                 await _broadcast_run(run)
                 return
 
@@ -543,6 +548,7 @@ async def _do_execute(run_id: int, task: Task) -> None:
         )
 
         await db.commit()
+        await _record_routing_outcome(db, run)  # P-0053 slice 2
         await _broadcast_run(run)
         logger.info(
             "[orchestrator] run %d succeeded via %s (%.4f USD)", run_id, run.provider, run.cost_usd
@@ -659,6 +665,7 @@ async def cancel_run(run_id: int) -> bool:
                 run.status = "cancelled"
                 run.finished_at = datetime.now(UTC)
                 await db.commit()
+                await _record_routing_outcome(db, run)  # P-0053 slice 2
                 await _broadcast_run(run)
         return True
     return False
@@ -795,7 +802,106 @@ async def _fail(db, run: Run, error: str) -> None:
     run.error = error
     run.finished_at = datetime.now(UTC)
     await db.commit()
+    await _record_routing_outcome(db, run)  # P-0053 slice 2 (no-op if no decision)
     await _broadcast_run(run)
+
+
+async def _record_routing_decision(db, run: Run, trace) -> None:
+    """Persist a RoutingDecision from the router's trace (P-0053).
+
+    Best-effort and never load-bearing: any failure is logged and swallowed so a
+    telemetry write can't fail a run. Content-free — only candidate metadata.
+    """
+    if trace is None:
+        return
+    try:
+        t = trace.to_dict()
+        db.add(RoutingDecision(
+            owner_id=run.owner_id,
+            run_id=run.id,
+            task_id=run.task_id,
+            policy_version=t.get("policy_version", "rule-v1"),
+            strategy=t.get("strategy", ""),
+            confidential=bool(t.get("confidential")),
+            degraded=bool(t.get("degraded")),
+            deployment_mode=t.get("deployment_mode"),
+            deferred=bool(t.get("deferred")),
+            deciding_reason=(t.get("deciding_reason") or "")[:256],
+            requested_candidates=t.get("requested_candidates"),
+            evaluated=t.get("evaluated"),
+            chosen=t.get("chosen"),
+            chosen_candidates=t.get("chosen_candidates"),
+            overflow_to=t.get("overflow_to"),
+        ))
+        await db.commit()
+    except Exception:
+        logger.exception("[orchestrator] run %s — failed to record routing decision", run.id)
+        await db.rollback()
+
+
+def _safe_duration_ms(run: Run) -> int | None:
+    """Run duration in ms, tolerant of a tz-aware finished_at vs. a DB-reloaded
+    tz-naive started_at (SQLite drops tzinfo) — which would make `Run.duration_ms`
+    raise on the mixed subtraction at finalization."""
+    start, finish = run.started_at, run.finished_at
+    if not start or not finish:
+        return None
+    try:
+        if (start.tzinfo is None) != (finish.tzinfo is None):
+            start = start.replace(tzinfo=None)
+            finish = finish.replace(tzinfo=None)
+        return int((finish - start).total_seconds() * 1000)
+    except Exception:
+        return None
+
+
+def _derive_routing_outcome(run: Run, chosen: str | None) -> dict:
+    """Pure: realized routing outcome from a finalized run (P-0053 slice 2).
+
+    `failover_used` is True when the primary choice didn't produce the result —
+    either an explicit overflow or the executed provider differs from `chosen`.
+    Kept pure (no DB) so it is unit-testable without fixtures.
+    """
+    executed = run.provider
+    attempts = run.attempts or []
+    failover_used = bool(
+        getattr(run, "overflow_used", False)
+        or (executed and chosen and executed != chosen)
+    )
+    return {
+        "outcome_status": run.status,
+        "executed_provider": executed,
+        "executed_model": run.model,
+        "failover_used": failover_used,
+        "attempt_count": len(attempts),
+        "outcome_cost_usd": run.cost_usd,
+        "outcome_duration_ms": _safe_duration_ms(run),
+    }
+
+
+async def _record_routing_outcome(db, run: Run) -> None:
+    """Link the realized outcome back onto this run's RoutingDecision (P-0053 slice 2).
+
+    Best-effort and never load-bearing — a telemetry write must not fail a run. Safely
+    no-ops when no decision was recorded (e.g. a pre-routing failure like task-not-found).
+    """
+    try:
+        result = await db.execute(
+            select(RoutingDecision)
+            .where(RoutingDecision.run_id == run.id)
+            .order_by(RoutingDecision.id.desc())
+            .limit(1)
+        )
+        decision = result.scalar_one_or_none()
+        if decision is None:
+            return
+        for key, val in _derive_routing_outcome(run, decision.chosen).items():
+            setattr(decision, key, val)
+        decision.outcome_at = datetime.now(UTC)
+        await db.commit()
+    except Exception:
+        logger.exception("[orchestrator] run %s — failed to record routing outcome", run.id)
+        await db.rollback()
 
 
 async def _next_seq(db, run_id: int) -> int:

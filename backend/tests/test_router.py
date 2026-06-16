@@ -448,3 +448,59 @@ class TestConsoleModelOverrides:
         assert valid_auth_target("bogus") is False
         assert valid_auth_target("claude:undeclared") is False  # not in config
         assert valid_auth_target("rm -rf /") is False
+
+
+# ── RoutingTrace (P-0053 routing-signal backbone) ─────────────────────────────
+
+class TestRoutingTrace:
+    """The router attaches a pure, DB-free decision trace the orchestrator persists
+    as a RoutingDecision. Verifies it is present, faithful, and JSON-serializable."""
+
+    def test_plan_carries_trace(self):
+        q = fresh_quota()
+        result = resolve(_routing(candidates=["mock"]), q)
+        assert isinstance(result, CandidatePlan)
+        tr = result.trace
+        assert tr is not None
+        assert tr.deferred is False
+        assert tr.policy_version == "rule-v1"
+        assert tr.strategy == "capability"
+        assert tr.chosen == "mock"
+        assert tr.chosen_candidates == result.candidates
+        assert tr.requested_candidates == ["mock"]
+        # the chosen candidate is annotated in evaluated with full features
+        chosen_rows = [r for r in tr.evaluated if r.get("status") == "chosen"]
+        assert any(r["instance"] == "mock" for r in chosen_rows)
+        assert "tags" in chosen_rows[0] and "free" in chosen_rows[0]
+
+    def test_deferred_carries_trace(self):
+        q = fresh_quota()
+        q.mark_cooldown("mock", datetime.now(UTC) + timedelta(minutes=5))
+        result = resolve(_routing(candidates=["mock"]), q)
+        assert isinstance(result, DeferredResult)
+        tr = result.trace
+        assert tr is not None
+        assert tr.deferred is True
+        assert "cooling" in tr.deciding_reason
+        # mock is present and marked cooling (not chosen)
+        cooling = [r for r in tr.evaluated if r.get("status") == "cooling"]
+        assert any(r["instance"] == "mock" for r in cooling)
+
+    def test_trace_records_excluded_candidate(self):
+        """A candidate that doesn't resolve to an instance is recorded as excluded,
+        with a reason — so the decision is auditable, not just the survivors."""
+        q = fresh_quota()
+        result = resolve(_routing(candidates=["mock", "does-not-exist"]), q)
+        assert isinstance(result, CandidatePlan)
+        excluded = [r for r in result.trace.evaluated
+                    if str(r.get("status", "")).startswith("excluded")]
+        assert any(r["instance"] == "does-not-exist" for r in excluded)
+
+    def test_trace_is_json_serializable_and_content_free(self):
+        import json
+        q = fresh_quota()
+        result = resolve(_routing(candidates=["mock"]), q)
+        blob = json.dumps(result.trace.to_dict())  # must not raise
+        assert blob and "mock" in blob
+        # content-free: the trace never carries prompt/output text
+        assert "prompt" not in result.trace.to_dict()

@@ -31,12 +31,14 @@ rate-limited, and publish work to shareable URLs — all on a backend you contro
   backend. No third-party service holds your tokens.
 - **Device-independent PWA** — the frontend is installable; the phone is a first-class client.
 
-> **Two provider lanes — different capability.** Plan-backed providers run through each
-> vendor's own agent CLI, so they get the full agentic experience: native tool use,
-> multimodal input, and the richest behavior. API-key providers — including self-hosted or
-> open-weight models behind an OpenAI-compatible endpoint — connect through a standard API
-> path with **more limited agentic support**. You can mix both; expect the CLI/plan lane to
-> be the more capable one.
+> **Two provider lanes — now near-parity.** Plan-backed providers run through each vendor's
+> own agent CLI. API-key providers — including self-hosted or open-weight models behind an
+> OpenAI-compatible endpoint — connect through our own agent loop, which is a **first-class
+> agentic lane**: web search/fetch, filesystem read/search, Python code execution
+> (charts, PDFs, scraping), image generation, and image input on vision-capable models. The
+> remaining differences are at the edges — the plan-CLI lane still draws on each vendor's full
+> native toolset (arbitrary external tools land behind a trust boundary on the API lane), and
+> failover behaves a little differently per lane. Mix both freely; capability is close.
 
 ## Stack
 

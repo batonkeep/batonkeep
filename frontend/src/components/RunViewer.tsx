@@ -116,8 +116,13 @@ export default function RunViewer({ run, taskName, now, onRequeue, onCancel, onC
   const reportHtml = useMemo(() => {
     const src = reportMd ?? (active ? streamingText : run.summary ?? "");
     if (!src) return "";
-    return marked.parse(src, { async: false }) as string;
-  }, [reportMd, streamingText, active, run.summary]);
+    const html = marked.parse(src, { async: false }) as string;
+    // Reports may reference captured assets by relative path (assets/… or data/…,
+    // e.g. an agy-generated image pulled in at capture time). Resolve those against
+    // this run's asset route so they render inline. Absolute/http srcs are untouched.
+    const base = api.runAssetBase(run.id);
+    return html.replace(/(src|href)="(assets|data)\//g, `$1="${base}$2/`);
+  }, [reportMd, streamingText, active, run.summary, run.id]);
 
   return (
     <div className="flex h-full flex-col rounded-xl border border-edge bg-panel/90">

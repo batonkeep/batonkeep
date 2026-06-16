@@ -147,6 +147,44 @@ async def test_clear_task_assets(fresh_db, monkeypatch, tmp_path):
         assert not os.path.exists(task_assets.asset_abs_path(run.id, rel))
 
 
+@pytest.mark.asyncio
+async def test_import_referenced_assets_from_agent_home(monkeypatch, tmp_path):
+    """An agy-style report referencing an image saved in the agent HOME (outside the
+    run cwd) gets the file pulled in + the reference rewritten to the captured path."""
+    _settings_to(monkeypatch, tmp_path)
+    # Stand in for the sandbox HOME the agent saved into (batond-readable here, so the
+    # dev fallback in read_file_as_agent reads it directly — no spawner in tests).
+    home = tmp_path / "home"
+    monkeypatch.setitem(task_workspace._settings.__dict__, "sandbox_home", str(home))
+    brain = home / ".gemini" / "antigravity-cli" / "brain" / "abc"
+    img = brain / "ai_ecosystem_map_123.jpg"
+    _write(str(img), b"\xff\xd8\xffJPEGDATA")
+
+    text = (
+        f"# Report\n\n![AI Ecosystem Map]({img})\n\n"
+        f"See also [the source](file://{home}/.gemini/antigravity-cli/brain/abc/ai_ecosystem_map_123.jpg).\n"
+        "And an external [link](https://example.com/x.png) that must NOT be pulled.\n"
+        "Plus a forbidden ref to /etc/shadow.jpg that must NOT be pulled.\n"
+    )
+    outputs = os.path.join(str(tmp_path / "outputs"), "run_7")
+    os.makedirs(outputs, exist_ok=True)
+
+    new_text, captured = await task_workspace.import_referenced_assets(text, outputs)
+
+    assert len(captured) == 1
+    rel = captured[0]["rel_path"]
+    assert rel == "assets/ai_ecosystem_map_123.jpg"
+    assert captured[0]["mime"] == "image/jpeg"
+    assert os.path.exists(os.path.join(outputs, rel))
+    # Both the markdown image ref and the file:// ref are rewritten to the rel path.
+    assert str(img) not in new_text
+    assert f"file://{home}" not in new_text
+    assert new_text.count(rel) == 2
+    # External + out-of-root refs untouched / not pulled.
+    assert "https://example.com/x.png" in new_text
+    assert "/etc/shadow.jpg" in new_text
+
+
 def test_asset_abs_path_rejects_traversal(monkeypatch, tmp_path):
     _settings_to(monkeypatch, tmp_path)
     assert task_assets.asset_abs_path(1, "../../etc/passwd") is None

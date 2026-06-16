@@ -91,6 +91,41 @@ async def path_exists(path: str) -> bool:
         return False
 
 
+async def read_file_as_agent(path: str, *, max_bytes: int) -> bytes | None:
+    """Read a file *as the sandbox user* and return its bytes, or None.
+
+    CLI agents (e.g. antigravity/agy) save generated artifacts under their own HOME
+    (`/home/agent/...`), which `batond` cannot traverse — so the backend can't read
+    them directly even when the files are world-readable, because a parent dir is
+    not. Route the read through the same setuid spawner the CLIs use so it runs as
+    `sandbox`. Streams via `cat`, capped at `max_bytes` (returns None if exceeded or
+    on any error). Falls back to a direct read when the spawner is unavailable
+    (dev / tests / non-container)."""
+    if not available():
+        try:
+            if os.path.getsize(path) > max_bytes:
+                return None
+            with open(path, "rb") as f:
+                return f.read()
+        except OSError:
+            return None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            _settings.sandbox_spawn_path, "--", "cat", path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        # +1 so we can detect an over-cap file and reject it rather than truncate.
+        data = await proc.stdout.read(max_bytes + 1)  # type: ignore[union-attr]
+        rc = await proc.wait()
+        if rc != 0 or not data or len(data) > max_bytes:
+            return None
+        return data
+    except Exception as exc:  # noqa: BLE001 — best-effort read must not raise
+        logger.warning("[sandbox] read_file_as_agent(%s) failed: %s", path, exc)
+        return None
+
+
 def reap(pgid: int) -> None:
     """SIGKILL a sandbox-owned process group via the privileged helper.
 

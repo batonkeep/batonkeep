@@ -470,6 +470,13 @@ async def _do_execute(run_id: int, task: Task) -> None:
             )
             full_text = agent_md
 
+        # Pull in artifacts the agent referenced by absolute path but saved outside
+        # the run cwd (antigravity/agy writes generated media to its own HOME, which
+        # batond can't read) — copy them into outputs/ via the sandbox helper and
+        # rewrite the report's references to the captured relative path so it renders
+        # (P-0050/D-0046). Must run before output.md is written.
+        full_text, referenced = await task_workspace.import_referenced_assets(full_text, outputs_dir)
+
         # Canonical outputs land in the control-plane outputs dir (batond-owned),
         # not the agent's sandbox workspace, then get promoted to read-only history.
         if task.want_json:
@@ -490,8 +497,11 @@ async def _do_execute(run_id: int, task: Task) -> None:
         # Capture non-text deliverables (generated images, agent-written csv/pdf) from
         # the agent's current/ scratch into the canonical outputs dir and record them
         # as RunAsset rows (P-0050/D-0046) — otherwise they'd be discarded with the
-        # scratch on the next run. Then enforce the task's retention caps.
+        # scratch on the next run. Combine with referenced artifacts pulled from the
+        # agent's HOME above (dedupe by rel_path). Then enforce the task's retention caps.
         captured = task_workspace.capture_assets(workdir, outputs_dir)
+        seen_rel = {c["rel_path"] for c in captured}
+        captured += [r for r in referenced if r["rel_path"] not in seen_rel]
         if captured:
             db.add_all(task_assets.record_assets(run, captured))
             await db.flush()

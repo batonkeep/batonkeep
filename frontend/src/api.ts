@@ -115,6 +115,8 @@ export const api = {
   listRunAssets: (id: number) => req<RunAsset[]>(`/runs/${id}/assets`),
   runAssetUrl: (id: number, relPath: string, download = false) =>
     `${BASE}/runs/${id}/assets/raw/${relPath.split("/").map(encodeURIComponent).join("/")}${download ? "?download=1" : ""}`,
+  // Base for resolving relative asset/data refs embedded in a run's report markdown.
+  runAssetBase: (id: number) => `${BASE}/runs/${id}/assets/raw/`,
   deleteRunAssets: (id: number) => req<void>(`/runs/${id}/assets`, { method: "DELETE" }),
   clearTaskAssets: (taskId: number) => req<void>(`/tasks/${taskId}/assets`, { method: "DELETE" }),
 

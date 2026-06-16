@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 import mimetypes
 import os
+import re
 import shutil
 import stat
 
@@ -174,6 +175,112 @@ def capture_assets(workdir: str, outputs_dir: str) -> list[dict]:
     if captured:
         logger.info("[task_workspace] captured %d run asset(s) into %s", len(captured), outputs_dir)
     return captured
+
+
+# Reference patterns in an agent's report that point at a saved artifact: markdown
+# link/image targets `](…)` and bare `file://…` URIs. We follow these because some
+# CLI agents save outside the run cwd (antigravity/agy → its HOME brain dir).
+_MD_TARGET_RE = re.compile(r"\]\(\s*<?([^)\s>]+)>?\s*\)")
+_FILE_URI_RE = re.compile(r"file://(/[^\s)>\]\"']+)")
+
+
+def _sanitize_asset_name(name: str) -> str:
+    base = os.path.basename(name).split("?", 1)[0].split("#", 1)[0]
+    safe = "".join(c if (c.isalnum() or c in "._-") else "_" for c in base).strip("._")
+    return safe[:128] or "asset"
+
+
+def _normalize_ref(raw: str) -> str | None:
+    """Turn a markdown target / file URI into a local absolute path, or None.
+
+    Drops http(s)/data URIs and query/fragments; expands `~` and `file://`. The
+    result is `normpath`'d but NOT realpath'd (batond can't resolve symlinks inside
+    the sandbox HOME); the caller confines it to an allowed root.
+    """
+    import urllib.parse as _url
+
+    s = raw.strip().strip("<>").strip()
+    if s.startswith(("http://", "https://", "data:", "mailto:", "#")):
+        return None
+    if s.startswith("file://"):
+        s = s[len("file://"):]
+    s = _url.unquote(s.split("?", 1)[0].split("#", 1)[0])
+    if s.startswith("~"):
+        s = _settings.sandbox_home + s[1:]
+    if not s.startswith("/"):
+        return None
+    return os.path.normpath(s)
+
+
+async def import_referenced_assets(text: str, outputs_dir: str) -> tuple[str, list[dict]]:
+    """Pull artifacts an agent referenced by absolute path into the run outputs dir.
+
+    Some CLI agents (antigravity/agy) save generated media under their own HOME and
+    reference it by absolute path in the report (`![map](/home/agent/.gemini/.../x.jpg)`)
+    — a location `batond` can't read, so the workdir scan never sees it (P-0050). This
+    parses the report for such references, reads each file **as the sandbox user**
+    (`sandbox.read_file_as_agent`), copies it to `outputs_dir/assets/<name>`, records
+    it, and rewrites the reference to the relative `assets/<name>` so the report
+    renders the captured asset. Returns `(rewritten_text, [{rel_path, mime, bytes}])`.
+
+    Confined to files under the sandbox HOME or the work dir, on the media/document
+    extension set, within the per-file cap — so a stray reference to `/etc/…` or an
+    http URL is never pulled.
+    """
+    from app import sandbox
+
+    allowed_roots = tuple(
+        os.path.normpath(r) + os.sep for r in (_settings.sandbox_home, _settings.work_dir)
+    )
+    candidates: list[str] = []
+    for m in _MD_TARGET_RE.finditer(text):
+        candidates.append(m.group(1))
+    for m in _FILE_URI_RE.finditer(text):
+        candidates.append("file://" + m.group(1))
+
+    captured: list[dict] = []
+    rewrites: dict[str, str] = {}   # original raw token → relative replacement
+    used_names: set[str] = set()
+    seen_src: dict[str, str] = {}   # normalized src path → relative replacement
+
+    for raw in candidates:
+        path = _normalize_ref(raw)
+        if path is None or ".." in path.split(os.sep):
+            continue
+        ext = path.rsplit(".", 1)[-1].lower() if "." in os.path.basename(path) else ""
+        if ext not in _ASSET_EXT:
+            continue
+        if not any(path.startswith(root) for root in allowed_roots):
+            continue
+        if path in seen_src:
+            rewrites[raw] = seen_src[path]
+            continue
+        if not await sandbox.path_exists(path):
+            continue
+        data = await sandbox.read_file_as_agent(path, max_bytes=_ASSET_MAX_FILE_BYTES)
+        if not data:
+            continue
+        name = _sanitize_asset_name(path)
+        stem, dot, suffix = name.partition(".")
+        n = 1
+        while name in used_names:
+            n += 1
+            name = f"{stem}-{n}{dot}{suffix}"
+        used_names.add(name)
+        rel = f"assets/{name}"
+        abs_dst = os.path.join(outputs_dir, rel)
+        os.makedirs(os.path.dirname(abs_dst), exist_ok=True)
+        with open(abs_dst, "wb") as f:
+            f.write(data)
+        captured.append({"rel_path": rel, "mime": mimetypes.guess_type(name)[0], "bytes": len(data)})
+        seen_src[path] = rel
+        rewrites[raw] = rel
+
+    for original, rel in rewrites.items():
+        text = text.replace(original, rel)
+    if captured:
+        logger.info("[task_workspace] imported %d referenced asset(s) into %s", len(captured), outputs_dir)
+    return text, captured
 
 
 def promote(task_id: int, run_id: int, src_dir: str) -> None:

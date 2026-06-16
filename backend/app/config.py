@@ -180,6 +180,11 @@ class Settings(BaseSettings):
     # cwd's into current/ (writable); history/ holds prior runs' outputs read-only,
     # promoted by the orchestrator (never the agent) so it can't be poisoned.
     work_dir: str = "/work"
+    # The sandbox user's HOME. Some CLI agents (antigravity/agy) save generated
+    # artifacts under their own HOME (e.g. /home/agent/.gemini/.../brain/<id>/img.jpg)
+    # rather than the run cwd. Task-run asset capture follows references into this
+    # root (read via the sandbox helper, since batond can't traverse it) — P-0050.
+    sandbox_home: str = "/home/agent"
 
     # ── Build sessions (M1) ─────────────────────────────────────────────────────
     # Base dir for sandboxed, git-init'd per-session workspaces (one subdir each).

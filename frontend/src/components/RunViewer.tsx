@@ -236,21 +236,27 @@ export default function RunViewer({ run, taskName, now, onRequeue, onCancel, onC
         {tab === "assets" && (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
             {assets.map((a) => {
-              const isImage = (a.mime || "").startsWith("image/");
+              const mime = a.mime || "";
+              const kind = mime.startsWith("image/") ? "image"
+                : mime.startsWith("video/") ? "video"
+                : mime.startsWith("audio/") ? "audio" : "file";
+              const src = api.runAssetUrl(run.id, a.rel_path);
               return (
                 <a
                   key={a.id}
-                  href={api.runAssetUrl(run.id, a.rel_path)}
+                  href={src}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="group flex flex-col overflow-hidden rounded-lg border border-edge bg-base hover:border-brand"
                 >
-                  {isImage ? (
-                    <img
-                      src={api.runAssetUrl(run.id, a.rel_path)}
-                      alt={a.rel_path}
-                      className="aspect-square w-full object-cover"
-                    />
+                  {kind === "image" ? (
+                    <img src={src} alt={a.rel_path} className="aspect-square w-full object-cover" />
+                  ) : kind === "video" ? (
+                    <video src={src} className="aspect-square w-full object-cover" muted playsInline controls />
+                  ) : kind === "audio" ? (
+                    <div className="flex aspect-square w-full items-center justify-center p-2">
+                      <audio src={src} controls className="w-full" onClick={(e) => e.preventDefault()} />
+                    </div>
                   ) : (
                     <div className="flex aspect-square w-full items-center justify-center text-3xl text-muted">
                       <Download size={28} />

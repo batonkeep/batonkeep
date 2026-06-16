@@ -45,24 +45,30 @@ def _write(path: str, data: bytes = b"x") -> None:
         f.write(data)
 
 
-def test_capture_picks_assets_and_data_skips_scratch(monkeypatch, tmp_path):
+def test_capture_scans_whole_scratch_with_allowlist(monkeypatch, tmp_path):
     _settings_to(monkeypatch, tmp_path)
     workdir = task_workspace.prepare_current(1)
+    # API-path convention (assets//data/) AND a CLI-lane file dropped at the cwd root
+    # (agy saves there) — both must be captured.
     _write(os.path.join(workdir, "assets", "generated-1.png"), b"\x89PNG")
     _write(os.path.join(workdir, "data", "report.csv"), b"a,b\n1,2\n")
-    _write(os.path.join(workdir, "scratch.png"), b"junk")   # not under assets/ or data/
-    _write(os.path.join(workdir, "assets", "notes.exe"), b"nope")  # not allowlisted
+    _write(os.path.join(workdir, "daily-image.png"), b"\x89PNGroot")  # CLI lane: cwd root
+    _write(os.path.join(workdir, "clip.mp4"), b"\x00\x00\x00 ftypmp4")  # media beyond upload allowlist
+    # Skipped: source/scratch ext, the text report (md), and noise/dependency dirs.
+    _write(os.path.join(workdir, "scratch.py"), b"print(1)")
+    _write(os.path.join(workdir, "report.md"), b"# not an asset")
+    _write(os.path.join(workdir, "node_modules", "lib", "icon.png"), b"libpng")
+    _write(os.path.join(workdir, ".cache", "thumb.png"), b"cachepng")
 
     outputs = os.path.join(str(tmp_path / "outputs"), "run_5")
     os.makedirs(outputs, exist_ok=True)
     captured = task_workspace.capture_assets(workdir, outputs)
 
     rels = sorted(c["rel_path"] for c in captured)
-    assert rels == ["assets/generated-1.png", "data/report.csv"]
-    assert os.path.exists(os.path.join(outputs, "assets/generated-1.png"))
-    # mime guessed
+    assert rels == ["assets/generated-1.png", "clip.mp4", "daily-image.png", "data/report.csv"]
+    assert os.path.exists(os.path.join(outputs, "daily-image.png"))
     by_path = {c["rel_path"]: c for c in captured}
-    assert by_path["assets/generated-1.png"]["mime"] == "image/png"
+    assert by_path["daily-image.png"]["mime"] == "image/png"
     assert by_path["data/report.csv"]["bytes"] == len(b"a,b\n1,2\n")
 
 
@@ -72,13 +78,14 @@ def test_promote_copies_assets_readonly(monkeypatch, tmp_path):
     outputs = os.path.join(str(tmp_path / "outputs"), "run_9")
     _write(os.path.join(outputs, "output.md"), b"# report")
     _write(os.path.join(outputs, "assets", "img.png"), b"\x89PNG")
+    _write(os.path.join(outputs, "daily-image.png"), b"\x89PNGroot")  # root-level asset
 
     task_workspace.promote(2, 9, outputs)
     hist = os.path.join(task_workspace._task_root(2), "history", "run_9")
-    asset = os.path.join(hist, "assets", "img.png")
-    assert os.path.exists(asset)
-    # read-only (0440): no write bit
-    assert not (os.stat(asset).st_mode & 0o222)
+    for rel in ("output.md", "assets/img.png", "daily-image.png"):
+        p = os.path.join(hist, rel)
+        assert os.path.exists(p), rel
+        assert not (os.stat(p).st_mode & 0o222), f"{rel} should be read-only"
 
 
 @pytest.mark.asyncio

@@ -24,9 +24,16 @@ put a domain and TLS in front of.
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/batonkeep/batonkeep/main/docker-compose.yml
 curl -fsSL  https://raw.githubusercontent.com/batonkeep/batonkeep/main/.env.example -o .env
+curl -fsSLO https://raw.githubusercontent.com/batonkeep/batonkeep/main/searxng-settings.yml
 # edit .env — see "Configure your environment" below
 docker compose up -d
 ```
+
+> **Grab all three files.** The compose file bind-mounts `searxng-settings.yml` (next to it)
+> to power the built-in **SearXNG** web-search backend, which runs by default. If the file is
+> missing, the `searxng` container can't start cleanly — download it alongside the other two.
+> (You can run without search by removing the `searxng` service from the compose file;
+> `web_search` then falls back to a DuckDuckGo scrape.)
 
 ### Configure your environment
 
@@ -55,7 +62,7 @@ to your real providers (e.g. `claude,grok`) after the auth step below. The in-br
 Pin a release instead of `latest` for production:
 
 ```bash
-TAG=v0.1.1 docker compose up -d
+TAG=v0.2.0 docker compose up -d
 ```
 
 Log in to your subscription-plan CLIs once (auth persists on the `agent_home` volume):

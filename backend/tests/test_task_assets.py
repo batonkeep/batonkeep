@@ -12,18 +12,13 @@ import os
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-# NOTE: app modules (task_assets, task_workspace, models, db) are imported lazily
-# *inside* the fixtures/tests below, never at module top. Importing app.task_workspace
-# at collection time perturbs the orchestrator/run_single tests' settings patching —
-# a pre-existing test-isolation fragility in those suites — so we keep this module's
-# collection inert. See P-0050/D-0046.
+from app import task_assets, task_workspace
+from app.db import Base
+from app.models import Owner, Run, RunAsset, Task
 
 
 @pytest.fixture
 async def fresh_db(tmp_path):
-    from app.db import Base
-    from app.models import Owner
-
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/test.db", echo=False)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -37,8 +32,6 @@ async def fresh_db(tmp_path):
 
 def _settings_to(monkeypatch, tmp_path):
     """Point work_dir + outputs_dir at the tmp tree (auto-restored by monkeypatch)."""
-    from app import task_assets, task_workspace
-
     monkeypatch.setitem(task_workspace._settings.__dict__, "work_dir", str(tmp_path / "work"))
     monkeypatch.setitem(task_workspace._settings.__dict__, "outputs_dir", str(tmp_path / "outputs"))
     # task_assets imports the same cached settings singleton, but set explicitly in
@@ -53,7 +46,6 @@ def _write(path: str, data: bytes = b"x") -> None:
 
 
 def test_capture_picks_assets_and_data_skips_scratch(monkeypatch, tmp_path):
-    from app import task_workspace
     _settings_to(monkeypatch, tmp_path)
     workdir = task_workspace.prepare_current(1)
     _write(os.path.join(workdir, "assets", "generated-1.png"), b"\x89PNG")
@@ -75,7 +67,6 @@ def test_capture_picks_assets_and_data_skips_scratch(monkeypatch, tmp_path):
 
 
 def test_promote_copies_assets_readonly(monkeypatch, tmp_path):
-    from app import task_workspace
     _settings_to(monkeypatch, tmp_path)
     task_workspace.prepare_current(2)
     outputs = os.path.join(str(tmp_path / "outputs"), "run_9")
@@ -92,8 +83,6 @@ def test_promote_copies_assets_readonly(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_retention_prunes_oldest(fresh_db, monkeypatch, tmp_path):
-    from app import task_assets
-    from app.models import Run, RunAsset, Task
     _settings_to(monkeypatch, tmp_path)
     Session, _ = fresh_db
     async with Session() as db:
@@ -128,8 +117,6 @@ async def test_retention_prunes_oldest(fresh_db, monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_clear_task_assets(fresh_db, monkeypatch, tmp_path):
-    from app import task_assets
-    from app.models import Run, RunAsset, Task
     _settings_to(monkeypatch, tmp_path)
     Session, _ = fresh_db
     async with Session() as db:
@@ -154,7 +141,6 @@ async def test_clear_task_assets(fresh_db, monkeypatch, tmp_path):
 
 
 def test_asset_abs_path_rejects_traversal(monkeypatch, tmp_path):
-    from app import task_assets
     _settings_to(monkeypatch, tmp_path)
     assert task_assets.asset_abs_path(1, "../../etc/passwd") is None
     assert task_assets.asset_abs_path(1, "assets/ok.png") is not None

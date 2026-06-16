@@ -8,7 +8,49 @@ global registry observed by other tests.
 """
 from __future__ import annotations
 
+import sys
+
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _coherent_settings():
+    """Keep the `Settings` singleton coherent across modules around every test.
+
+    Several modules bind ``_settings = get_settings()`` at import time, and some
+    tests both (a) call ``get_settings.cache_clear()`` (e.g. ``test_db_migrations``
+    repointing ``DATABASE_URL``) and (b) patch a module's ``_settings.__dict__``
+    directly (e.g. the orchestrator/run-single tests setting ``work_dir`` to a tmp
+    path). Once the cache is cleared, two modules imported on opposite sides of the
+    clear hold *different* ``Settings`` instances depending on collection/import
+    order — so a ``_settings.__dict__`` patch applied to one module is invisible to a
+    reader in another. That manifested as the order-dependent
+    ``OSError: Read-only file system: '/work'`` flakiness (``task_workspace`` reading
+    the default ``work_dir`` while the test patched the orchestrator's snapshot).
+
+    Before each test, rebind every loaded module's ``_settings`` snapshot to the one
+    canonical ``get_settings()`` instance — independent of import order, so a
+    module-level ``from app import …`` in a test file is safe again. We deliberately
+    do **not** clear the cache or swap the canonical object during/after a test:
+    in-place mutation of the live object (as the auth tests do) must stay visible to
+    code paths that captured it (FastAPI deps, closures). Tests that repoint settings
+    via ``cache_clear()`` (``test_db_migrations``) restore it themselves; the
+    setup-time coalesce here then re-converges every module on the next test.
+    """
+    from app.config import Settings, get_settings
+
+    canon = get_settings()
+    for mod in list(sys.modules.values()):
+        try:
+            snap = getattr(mod, "_settings", None)
+        except Exception:
+            continue
+        if isinstance(snap, Settings) and snap is not canon:
+            try:
+                mod._settings = canon
+            except Exception:
+                pass
+    yield
 
 
 @pytest.fixture(autouse=True)

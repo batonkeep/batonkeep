@@ -24,7 +24,7 @@ from typing import Any
 
 from sqlalchemy import select, update
 
-from app import task_workspace
+from app import task_assets, task_workspace
 from app.config import get_settings
 from app.db import AsyncSessionLocal
 from app.logging_config import bind_run
@@ -487,9 +487,21 @@ async def _do_execute(run_id: int, task: Task) -> None:
                 f.write(full_text)
             run.markdown_path = md_path
 
-        # Promote this run's output into the task's read-only history so the next
-        # run can read it (injected into its prompt) but cannot mutate it (P-0022).
+        # Capture non-text deliverables (generated images, agent-written csv/pdf) from
+        # the agent's current/ scratch into the canonical outputs dir and record them
+        # as RunAsset rows (P-0050/D-0046) — otherwise they'd be discarded with the
+        # scratch on the next run. Then enforce the task's retention caps.
+        captured = task_workspace.capture_assets(workdir, outputs_dir)
+        if captured:
+            db.add_all(task_assets.record_assets(run, captured))
+            await db.flush()
+
+        # Promote this run's output (text + captured assets) into the task's read-only
+        # history so the next run can read it (injected into its prompt) but cannot
+        # mutate it (P-0022).
         task_workspace.promote(task.id, run_id, outputs_dir)
+
+        await task_assets.enforce_retention(db, task)
 
 
         # ── 6. Finalise ───────────────────────────────────────────────────────

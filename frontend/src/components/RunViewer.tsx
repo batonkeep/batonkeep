@@ -5,7 +5,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
 import { Ban, Download, RotateCw, X } from "lucide-react";
-import type { Run, RunEvent } from "../types";
+import type { Run, RunAsset, RunEvent } from "../types";
 import { api } from "../api";
 import { useRunEvents } from "../useLiveFeed";
 import { STATUS_META, fmtCost, fmtDuration, fmtTime } from "../format";
@@ -26,12 +26,13 @@ interface Props {
   onClose: () => void;
 }
 
-type Tab = "report" | "json" | "raw";
-const RUN_TABS = [
-  { id: "report" as Tab, label: "Report" },
-  { id: "json"   as Tab, label: "JSON" },
-  { id: "raw"    as Tab, label: "Raw" },
-] as const;
+type Tab = "report" | "json" | "assets" | "raw";
+
+function fmtBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 const KIND_COLOR: Record<string, string> = {
   log: "text-muted",
@@ -63,6 +64,7 @@ export default function RunViewer({ run, taskName, now, onRequeue, onCancel, onC
   const [tab, setTab] = useState<Tab>("report");
   const [reportMd, setReportMd] = useState<string | null>(null);
   const [jsonText, setJsonText] = useState<string | null>(null);
+  const [assets, setAssets] = useState<RunAsset[]>([]);
   const streamRef = useRef<HTMLDivElement>(null);
 
   const meta = STATUS_META[run.status];
@@ -82,6 +84,13 @@ export default function RunViewer({ run, taskName, now, onRequeue, onCancel, onC
     }
   }, [run.id, run.markdown_path, run.json_path]);
 
+  // Run assets (P-0050) — only meaningful once a run is terminal. Refetch when the
+  // run finishes so a just-completed run shows its generated images.
+  useEffect(() => {
+    if (active) return;
+    api.listRunAssets(run.id).then(setAssets).catch(() => { });
+  }, [run.id, active]);
+
   useEffect(() => {
     if (tab === "raw" && streamRef.current) streamRef.current.scrollTop = streamRef.current.scrollHeight;
   }, [events, streamingText, tab]);
@@ -93,6 +102,16 @@ export default function RunViewer({ run, taskName, now, onRequeue, onCancel, onC
     const end = run.finished_at ? asUTC(run.finished_at).getTime() : now;
     return end - asUTC(run.started_at).getTime();
   }, [run.started_at, run.finished_at, now]);
+
+  const runTabs = useMemo(() => {
+    const t: { id: Tab; label: string }[] = [
+      { id: "report", label: "Report" },
+      { id: "json", label: "JSON" },
+    ];
+    if (assets.length) t.push({ id: "assets", label: `Assets · ${assets.length}` });
+    t.push({ id: "raw", label: "Raw" });
+    return t as readonly { id: Tab; label: string }[];
+  }, [assets.length]);
 
   const reportHtml = useMemo(() => {
     const src = reportMd ?? (active ? streamingText : run.summary ?? "");
@@ -176,7 +195,7 @@ export default function RunViewer({ run, taskName, now, onRequeue, onCancel, onC
 
       {/* Tabs + downloads */}
       <div className="flex items-center gap-2 border-b border-edge px-3 pt-2">
-        <Tabs tabs={RUN_TABS} active={tab} onChange={setTab} />
+        <Tabs tabs={runTabs} active={tab} onChange={setTab} />
         <div className="ml-auto flex items-center gap-2 pb-1">
           {run.markdown_path && (
             <a href={api.outputUrl(run.id, "md")} target="_blank" rel="noopener noreferrer"
@@ -212,6 +231,41 @@ export default function RunViewer({ run, taskName, now, onRequeue, onCancel, onC
           ) : (
             <div className="text-sm text-muted">No JSON output for this run.</div>
           )
+        )}
+
+        {tab === "assets" && (
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            {assets.map((a) => {
+              const isImage = (a.mime || "").startsWith("image/");
+              return (
+                <a
+                  key={a.id}
+                  href={api.runAssetUrl(run.id, a.rel_path)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="group flex flex-col overflow-hidden rounded-lg border border-edge bg-base hover:border-brand"
+                >
+                  {isImage ? (
+                    <img
+                      src={api.runAssetUrl(run.id, a.rel_path)}
+                      alt={a.rel_path}
+                      className="aspect-square w-full object-cover"
+                    />
+                  ) : (
+                    <div className="flex aspect-square w-full items-center justify-center text-3xl text-muted">
+                      <Download size={28} />
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between gap-1 px-2 py-1.5 font-mono text-[10px] text-muted">
+                    <span className="truncate text-ink/80" title={a.rel_path}>
+                      {a.rel_path.replace(/^(assets|data)\//, "")}
+                    </span>
+                    <span className="shrink-0">{fmtBytes(a.bytes)}</span>
+                  </div>
+                </a>
+              );
+            })}
+          </div>
         )}
 
         {tab === "raw" && (

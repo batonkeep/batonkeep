@@ -74,6 +74,11 @@ class Task(Base):
     # Session.image_model_id: NULL = inherit the text provider's catalog default;
     # otherwise a catalog id (possibly cross-provider) from image_models.py.
     image_model_id: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    # Per-task generated-asset retention (P-0050/D-0046). NULL = unlimited (default).
+    # When set, after each run the oldest stored run-assets are pruned until the
+    # task's total stored asset count / byte size is back under the cap.
+    asset_max_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    asset_max_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -132,12 +137,43 @@ class Run(Base):
     events: Mapped[list[RunEvent]] = relationship(
         back_populates="run", cascade="all, delete-orphan", order_by="RunEvent.seq"
     )
+    assets: Mapped[list[RunAsset]] = relationship(
+        back_populates="run", cascade="all, delete-orphan", order_by="RunAsset.id"
+    )
 
     @property
     def duration_ms(self) -> int | None:
         if self.started_at and self.finished_at:
             return int((self.finished_at - self.started_at).total_seconds() * 1000)
         return None
+
+
+class RunAsset(Base):
+    """A non-md/json artifact a task run produced (generated image, agent-written
+    CSV/PDF, etc.), captured from the agent's `current/` scratch into the run's
+    canonical outputs dir (P-0050/D-0046). The text deliverables stay on
+    `Run.markdown_path` / `Run.json_path`; everything else is a row here.
+
+    `rel_path` is relative to the run's outputs dir (e.g. "assets/generated-1.png");
+    the serving route joins it under /data/outputs/run_<id>. Promoted read-only into
+    the task's history alongside output.md/json so a later run can read but not
+    mutate it.
+    """
+
+    __tablename__ = "run_assets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("runs.id"), nullable=False, index=True
+    )
+    rel_path: Mapped[str] = mapped_column(String(512), nullable=False)
+    mime: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    bytes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    run: Mapped[Run] = relationship(back_populates="assets")
 
 
 class RunEvent(Base):

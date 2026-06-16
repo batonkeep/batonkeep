@@ -36,7 +36,17 @@ from app.auth import SESSION_COOKIE, issue_session, password_matches, verify_ses
 from app.config import get_settings
 from app.db import get_db, init_db
 from app.logging_config import configure_logging, owner_id_var, request_id_var
-from app.models import Artifact, Credential, Owner, Run, RunEvent, Session, SessionTurn, Task
+from app.models import (
+    Artifact,
+    Credential,
+    Owner,
+    Run,
+    RunAsset,
+    RunEvent,
+    Session,
+    SessionTurn,
+    Task,
+)
 from app.schemas import (
     ApprovalDecision,
     AuthStatus,
@@ -70,6 +80,7 @@ from app.schemas import (
     PublishOut,
     RestoreOut,
     RestoreRequest,
+    RunAssetOut,
     RunEventOut,
     RunOut,
     SecretStatusOut,
@@ -79,6 +90,7 @@ from app.schemas import (
     SessionTurnOut,
     SessionUpdate,
     StatsOut,
+    StorageUsageOut,
     SummaryOut,
     TaskCreate,
     TaskOut,
@@ -456,6 +468,11 @@ async def update_task(
     # "" sentinel clears the image-gen override back to the provider default.
     if task.image_model_id == "":
         task.image_model_id = None
+    # -1 sentinel clears a retention cap back to unlimited (P-0050).
+    if task.asset_max_count == -1:
+        task.asset_max_count = None
+    if task.asset_max_bytes == -1:
+        task.asset_max_bytes = None
 
     await db.commit()
     await db.refresh(task)
@@ -613,6 +630,104 @@ async def get_run_output(
 
     filename = f"run_{run_id}.{format}"
     return FileResponse(path, media_type=media, filename=filename)
+
+
+# ── Run assets (P-0050/D-0046) ──────────────────────────────────────────────────
+
+@app.get("/api/runs/{run_id}/assets", response_model=list[RunAssetOut], tags=["runs"])
+async def list_run_assets(
+    run_id: int,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """List the non-text artifacts (generated images, csv/pdf) a run produced."""
+    run = await db.get(Run, run_id)
+    if run is None or run.owner_id != owner_id:
+        raise HTTPException(status_code=404, detail="Run not found")
+    rows = await db.execute(
+        select(RunAsset).where(RunAsset.run_id == run_id).order_by(RunAsset.id)
+    )
+    return [RunAssetOut.model_validate(a) for a in rows.scalars().all()]
+
+
+@app.get("/api/runs/{run_id}/assets/raw/{path:path}", tags=["runs"])
+async def get_run_asset(
+    run_id: int,
+    path: str,
+    download: bool = False,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """Serve one run asset verbatim (view inline, or ?download=1 to save). The path
+    must match a recorded RunAsset row, and resolution is traversal-safe under the
+    run's outputs dir."""
+    from app import task_assets
+
+    run = await db.get(Run, run_id)
+    if run is None or run.owner_id != owner_id:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    row = (
+        await db.execute(
+            select(RunAsset).where(RunAsset.run_id == run_id, RunAsset.rel_path == path)
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    abs_path = task_assets.asset_abs_path(run_id, path)
+    if not abs_path or not os.path.exists(abs_path):
+        raise HTTPException(status_code=404, detail="Asset file missing")
+
+    headers = {"Cache-Control": "no-store"}
+    if download:
+        headers["Content-Disposition"] = f'attachment; filename="{os.path.basename(abs_path)}"'
+    return FileResponse(abs_path, media_type=row.mime or "application/octet-stream", headers=headers)
+
+
+@app.delete("/api/runs/{run_id}/assets", status_code=204, tags=["runs"])
+async def delete_run_assets(
+    run_id: int,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """Delete all stored assets for one run (files + rows) — P-0050 manual purge."""
+    from app import task_assets
+
+    run = await db.get(Run, run_id)
+    if run is None or run.owner_id != owner_id:
+        raise HTTPException(status_code=404, detail="Run not found")
+    await task_assets.delete_run_assets(db, run)
+    await db.commit()
+
+
+@app.delete("/api/tasks/{task_id}/assets", status_code=204, tags=["tasks"])
+async def clear_task_assets(
+    task_id: int,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """Delete every stored run asset across a task's runs — P-0050 clear."""
+    from app import task_assets
+
+    task = await db.get(Task, task_id)
+    if task is None or task.owner_id != owner_id:
+        raise HTTPException(status_code=404, detail="Task not found")
+    await task_assets.clear_task_assets(db, task)
+    await db.commit()
+
+
+@app.get("/api/storage", response_model=StorageUsageOut, tags=["runs"])
+async def get_storage_usage(
+    task_id: int | None = None,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """Stored run-asset usage for the owner (optionally scoped to one task) — P-0050."""
+    from app import task_assets
+
+    usage = await task_assets.storage_usage(db, owner_id, task_id=task_id)
+    return StorageUsageOut(**usage)
 
 
 # ── /api/sessions (M1.1: build sessions + workspace) ─────────────────────────

@@ -71,6 +71,9 @@ class TaskCreate(BaseModel):
     # P-0046 slice 6 follow-up: image-gen model override (catalog id; cross-provider
     # allowed). None = inherit the text provider's default image model.
     image_model_id: str | None = None
+    # P-0050: per-task generated-asset retention caps. None = unlimited (default).
+    asset_max_count: int | None = None
+    asset_max_bytes: int | None = None
 
     @field_validator("exec_policy")
     @classmethod
@@ -83,6 +86,13 @@ class TaskCreate(BaseModel):
     @classmethod
     def _valid_image_model(cls, v: str | None) -> str | None:
         return _validate_image_model_id(v)
+
+    @field_validator("asset_max_count", "asset_max_bytes")
+    @classmethod
+    def _non_negative(cls, v: int | None) -> int | None:
+        if v is not None and v < 0:
+            raise ValueError("retention cap must be >= 0 (None = unlimited)")
+        return v
 
 
 class TaskUpdate(BaseModel):
@@ -101,6 +111,9 @@ class TaskUpdate(BaseModel):
     exec_policy: str | None = None  # P-0046; validated below
     # P-0046 slice 6 follow-up: image-gen model override. "" clears to default.
     image_model_id: str | None = None
+    # P-0050 retention caps. -1 clears back to unlimited (None means "unchanged").
+    asset_max_count: int | None = None
+    asset_max_bytes: int | None = None
 
     @field_validator("exec_policy")
     @classmethod
@@ -113,6 +126,13 @@ class TaskUpdate(BaseModel):
     @classmethod
     def _valid_image_model(cls, v: str | None) -> str | None:
         return _validate_image_model_id(v, allow_empty=True)
+
+    @field_validator("asset_max_count", "asset_max_bytes")
+    @classmethod
+    def _retention_range(cls, v: int | None) -> int | None:
+        if v is not None and v < -1:
+            raise ValueError("retention cap must be >= 0, or -1 to clear to unlimited")
+        return v
 
 
 class TaskOut(BaseModel):
@@ -134,8 +154,30 @@ class TaskOut(BaseModel):
     routing: dict[str, Any] | None
     exec_policy: str = "confirmation"  # P-0046 code-exec execution policy
     image_model_id: str | None = None  # P-0046 slice 6: image-gen model override
+    asset_max_count: int | None = None  # P-0050 retention cap; None = unlimited
+    asset_max_bytes: int | None = None  # P-0050 retention cap; None = unlimited
     created_at: datetime
     updated_at: datetime
+
+
+# ── Run assets (P-0050) ─────────────────────────────────────────────────────────
+
+class RunAssetOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    run_id: int
+    rel_path: str
+    mime: str | None
+    bytes: int
+    created_at: datetime
+
+
+class StorageUsageOut(BaseModel):
+    """Stored run-asset usage for an owner (optionally one task) — P-0050."""
+
+    count: int
+    bytes: int
 
 
 # ── Run ───────────────────────────────────────────────────────────────────────
@@ -163,6 +205,8 @@ class RunOut(BaseModel):
     tool_calls: int
     markdown_path: str | None
     json_path: str | None
+    # Run assets (P-0050) are fetched via GET /api/runs/{id}/assets, not inlined here
+    # — keeps the base RunOut free of an eager-load on every list/broadcast.
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None

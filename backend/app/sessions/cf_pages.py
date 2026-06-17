@@ -103,10 +103,18 @@ async def clear_config(db: AsyncSession, owner_id: str) -> bool:
 # ── Deploy ────────────────────────────────────────────────────────────────────
 
 def _materialize_bundle(workspace: str) -> str:
-    """Copy the workspace's publishable static assets into a fresh temp dir."""
+    """Copy the workspace's publishable static assets into a fresh temp dir.
+
+    Publishes from the build-output dir when one exists (via _site_root), exactly
+    like build_bundle/zip_workspace (D-0009). A bundled project's root index.html
+    is the *source* template (Vite's, pointing at /src/main.tsx); the built site
+    lives in dist/. Walking the workspace root instead would ship that source —
+    and _EXCLUDED_DIRS drops dist — leaving the deployed Pages site blank.
+    """
     out = tempfile.mkdtemp(prefix="cfpages-")
-    for rel in pub._publishable_files(workspace):
-        src = ws.safe_join(workspace, rel)
+    root = pub._site_root(workspace)
+    for rel in pub._publishable_files(root):
+        src = ws.safe_join(root, rel)
         dst = os.path.join(out, rel)
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         shutil.copy2(src, dst)

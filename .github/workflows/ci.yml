@@ -17,12 +17,6 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-env:
-  # Force JS actions onto Node 24 — Node 20 was deprecated for Actions runners
-  # (auto-migration began 2026-06-16). Covers setup-uv without pinning an exact
-  # node24 release tag; safe to drop once it's bumped to a node24 major.
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-
 jobs:
   backend:
     name: backend — lint + tests
@@ -34,7 +28,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           cache-dependency-glob: backend/uv.lock

@@ -146,6 +146,41 @@ class TestDeploy:
             await cf_pages.deploy(root, {"api_token": "t", "account_id": "a"}, "p")
 
 
+class TestBundle:
+    def test_materialize_publishes_build_output_not_source(self, tmp_path):
+        # A Vite-style workspace: a *source* index.html at the root (points at
+        # /src/main.tsx, which a browser can't run) and the real built site in
+        # dist/. The Cloudflare bundle must ship dist/, not the source tree —
+        # otherwise the deployed Pages site is blank.
+        root = str(tmp_path / "ws")
+        os.makedirs(os.path.join(root, "src"))
+        os.makedirs(os.path.join(root, "dist", "assets"))
+        with open(os.path.join(root, "index.html"), "w") as f:
+            f.write('<script type="module" src="/src/main.tsx"></script>')
+        with open(os.path.join(root, "src", "main.tsx"), "w") as f:
+            f.write("createRoot(...)")
+        with open(os.path.join(root, "dist", "index.html"), "w") as f:
+            f.write('<script type="module" src="./assets/index-abc.js"></script>')
+        with open(os.path.join(root, "dist", "assets", "index-abc.js"), "w") as f:
+            f.write("console.log('built')")
+
+        out = cf_pages._materialize_bundle(root)
+        try:
+            files = {
+                os.path.relpath(os.path.join(dp, f), out)
+                for dp, _, fs in os.walk(out) for f in fs
+            }
+            # Built site shipped at the bundle root; source entry point absent.
+            assert "index.html" in files
+            assert os.path.join("assets", "index-abc.js") in files
+            assert os.path.join("src", "main.tsx") not in files
+            with open(os.path.join(out, "index.html")) as f:
+                assert "/src/main.tsx" not in f.read()
+        finally:
+            import shutil
+            shutil.rmtree(out, ignore_errors=True)
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 class TestRoutes:

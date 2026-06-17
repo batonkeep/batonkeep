@@ -4,6 +4,46 @@ All notable changes to batonkeep are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (pre-1.0: minor versions may
 add features freely; patch versions are fixes).
 
+## [0.2.1] — 2026-06-17
+
+A maintenance release: a critical fix for agent sessions that install dependencies,
+file-browser improvements, chat quality-of-life, and dependency/security updates.
+
+### Fixed
+
+- **Agent sessions could become unresponsive after installing dependencies.** The
+  per-session context embedded a full listing of every workspace file; after an
+  `npm install` (tens of thousands of files) this could exceed the operating
+  system's command-line length limit and break the agent launch ("Argument list
+  too long"). Agents are now pointed at the workspace's git repository to discover
+  files on demand, so context size no longer grows with the workspace. The
+  per-session activity log is likewise capped to a recent tail.
+- **File browser flattened nested folders.** Built sites (e.g. `dist/assets/…`)
+  now render as a proper nested tree instead of a single flat level. Dependency
+  and cache directories (`node_modules`, virtualenvs, `__pycache__`, …) are hidden
+  while build output (`dist/`, `build/`) stays visible.
+
+### Added
+
+- **Copy buttons on chat messages** — copy your prompt or the agent's response
+  with one click.
+- **Live progress while the agent works** — the "Generating…" indicator now
+  surfaces the agent's latest step instead of a bare spinner.
+- **Routing-decision capture** — batonkeep now records how each turn was routed
+  and the outcome, laying groundwork for routing insight and tuning. Adds new
+  database tables (see upgrade notes).
+
+### Security
+
+- Dependency updates addressing advisories in Starlette / FastAPI, cryptography,
+  python-multipart, pytest, and Vite.
+
+### Upgrade notes
+
+- This release adds database migrations (routing-decision tables). Self-hosted
+  deployments apply them automatically on start (Alembic `upgrade head`); no manual
+  step is required. Back up your database before upgrading, as always.
+
 ## [0.2.0] — 2026-06-16
 
 The API-key lane grows up. Where v0.1.x leaned on the plan-CLI lane for the rich agentic

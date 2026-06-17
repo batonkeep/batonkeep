@@ -57,6 +57,25 @@ class TestWorkspace:
         assert "(no file changes)" in brief
 
     @pytest.mark.asyncio
+    async def test_activity_log_is_bounded(self, tmp_path, monkeypatch):
+        """The brief feeds every prompt + CLI launch file, so the per-turn Activity
+        log is capped to a recent tail — old entries drop, a trim marker appears."""
+        from app.sessions import workspace as ws
+        monkeypatch.setitem(ws._settings.__dict__, "sessions_dir", str(tmp_path))
+        root = await ws.create_workspace("led2", title="T", goal="G")
+
+        total = ws.ACTIVITY_MAX_ENTRIES + 15
+        for i in range(total):
+            ws.record_turn(root, seq=i, provider="claude", summary=f"turn {i} work", lane="chat")
+
+        brief = ws.read_brief(root)
+        kept = [ln for ln in brief.splitlines() if ln.lstrip().startswith("- **turn")]
+        assert len(kept) == ws.ACTIVITY_MAX_ENTRIES        # bounded, not `total`
+        assert ws.ACTIVITY_TRIM_MARKER in brief            # trim is disclosed
+        assert f"**turn {total - 1}**" in brief            # newest kept
+        assert "**turn 0**" not in brief                   # oldest dropped
+
+    @pytest.mark.asyncio
     async def test_summary_block_upsert_and_read(self, tmp_path, monkeypatch):
         from app.sessions import workspace as ws
         monkeypatch.setitem(ws._settings.__dict__, "sessions_dir", str(tmp_path))
@@ -97,7 +116,7 @@ class TestWorkspace:
 
         ctx = ws.build_turn_context(root, "make the hero bigger")
         assert "built hero section" in ctx     # from SESSION.md brief
-        assert "SESSION.md" in ctx              # workspace file listing
+        assert "SESSION.md" in ctx              # discovery pointer names the brief file
         assert "make the hero bigger" in ctx    # the new user message
 
     async def test_turn_context_includes_recent_dialogue(self, tmp_path, monkeypatch):

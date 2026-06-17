@@ -50,6 +50,23 @@ class TestListing:
         assert entry["size"] > 0
         assert entry["modified"] > 0
 
+    def test_prunes_dependency_dirs_but_keeps_build_output(self, tmp_path):
+        # node_modules (deps) must be pruned — after `npm install` it is ~13k
+        # files and bloats the agent launch past ARG_MAX. But dist/ is the build
+        # OUTPUT (the deliverable the browser/preview/publish surface), so its
+        # nested files must remain visible. Deps out, build in.
+        root = _make_ws(tmp_path)
+        os.makedirs(os.path.join(root, "node_modules", "react"))
+        with open(os.path.join(root, "node_modules", "react", "index.js"), "w") as f:
+            f.write("module.exports = {}")
+        os.makedirs(os.path.join(root, "dist", "assets"))
+        with open(os.path.join(root, "dist", "assets", "app-abc.js"), "w") as f:
+            f.write("console.log(1)")
+        paths = [e["path"] for e in ws.list_files_meta(root)]
+        assert not any(p.startswith("node_modules") for p in paths)
+        assert os.path.join("dist", "assets", "app-abc.js") in paths
+        assert "download_data.py" in paths
+
 
 class TestRawResolve:
     def test_serves_exact_file_no_index_fallback(self, tmp_path):

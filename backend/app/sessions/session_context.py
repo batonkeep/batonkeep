@@ -26,7 +26,7 @@ import os
 from app.sessions.workspace import (
     BRIEF_FILENAME,
     GITIGNORE_GUIDANCE,
-    list_files,
+    WORKSPACE_DISCOVERY,
     read_brief,
 )
 
@@ -70,15 +70,15 @@ def context_filenames() -> set[str]:
 
 
 def render_session_context(workspace: str) -> str:
-    """Render the priming block: brief (SESSION.md) + current workspace files.
+    """Render the priming block: brief (SESSION.md) + a pointer to discover files.
 
-    Reused across providers so a switch transfers the same context. Excludes the
-    brief file itself and our convention files from the listing (they're noise).
+    Reused across providers so a switch transfers the same context. We do NOT
+    enumerate the workspace files: the CLI has shell tools and the workspace is a
+    git repo, so it discovers them itself. A static listing both bloats the seeded
+    convention file (a post-`npm install` tree of ~13k paths blew the launch past
+    ARG_MAX — "[Errno 7] Argument list too long") and goes stale instantly.
     """
     brief = read_brief(workspace).strip()
-    skip = context_filenames() | {BRIEF_FILENAME}
-    files = [f for f in list_files(workspace) if f not in skip]
-    file_list = "\n".join(f"- {f}" for f in files) if files else "- (none yet)"
     return (
         "# Batonkeep session context\n\n"
         "You are continuing an existing Batonkeep build session in **this** "
@@ -87,8 +87,7 @@ def render_session_context(workspace: str) -> str:
         "and pick up from the current state.\n\n"
         "## Brief\n"
         f"{brief or '_(no brief recorded yet)_'}\n\n"
-        "## Workspace files\n"
-        f"{file_list}\n\n"
+        f"{WORKSPACE_DISCOVERY}\n\n"
         f"{GITIGNORE_GUIDANCE}\n"
     )
 

@@ -55,6 +55,11 @@ BRIEF_FILENAME = "SESSION.md"
 SUMMARY_BEGIN = "<!-- BATONKEEP:SUMMARY -->"
 SUMMARY_END = "<!-- /BATONKEEP:SUMMARY -->"
 ACTIVITY_HEADER = "## Activity"
+# The brief (SESSION.md) is read in full into every turn prompt and each CLI launch
+# file, so the per-turn Activity log can't grow without bound. Keep only the recent
+# tail; older turns live in git history and roll up into the `## Summary` section.
+ACTIVITY_MAX_ENTRIES = 30
+ACTIVITY_TRIM_MARKER = "_(… earlier turns trimmed — see History / the Summary above)_"
 _SUMMARY_PLACEHOLDER = "_(auto-maintained summary appears here once summarization runs)_"
 
 _BRIEF_TEMPLATE = """\
@@ -215,7 +220,7 @@ def record_turn(
     headline = (summary.strip().splitlines() or [""])[0][:140] if summary else ""
     headline = headline or "_(no text response)_"
     entry = (
-        f"- **turn {seq}** · {provider} · {lane} — {headline} — changed: {_format_files(files)}\n"
+        f"- **turn {seq}** · {provider} · {lane} — {headline} — changed: {_format_files(files)}"
     )
 
     path = os.path.join(workspace, BRIEF_FILENAME)
@@ -223,12 +228,21 @@ def record_turn(
         existing = read_brief(workspace)
         if ACTIVITY_HEADER in existing:
             head, _, tail = existing.partition(ACTIVITY_HEADER)
-            # Drop the "(none yet)" placeholder on the first real entry.
-            tail = tail.replace("_(none yet)_\n", "").replace("_(none yet)_", "")
-            new = f"{head}{ACTIVITY_HEADER}{tail.rstrip()}\n{entry}"
+            # Existing entries are the bullet lines; this also drops the "(none yet)"
+            # placeholder and any prior trim marker. The brief feeds every turn's
+            # prompt + each CLI launch file (read_brief), so the per-turn log must be
+            # bounded — keep the recent tail; the rolling `## Summary` carries the
+            # durable rollup and git history has the full record.
+            entries = [ln for ln in tail.splitlines() if ln.lstrip().startswith("- ")]
+            entries.append(entry)
+            trimmed = len(entries) > ACTIVITY_MAX_ENTRIES
+            kept = entries[-ACTIVITY_MAX_ENTRIES:]
+            body = "\n".join(kept)
+            marker = f"{ACTIVITY_TRIM_MARKER}\n" if trimmed else ""
+            new = f"{head}{ACTIVITY_HEADER}\n{marker}{body}\n"
         else:
             # Older ledger without the section (or a hand-edited brief): append one.
-            new = existing.rstrip() + f"\n\n{ACTIVITY_HEADER}\n{entry}"
+            new = existing.rstrip() + f"\n\n{ACTIVITY_HEADER}\n{entry}\n"
         with open(path, "w", encoding="utf-8") as f:
             f.write(new)
     except OSError as exc:
@@ -274,40 +288,70 @@ def read_summary(workspace: str) -> str:
     return "" if body == _SUMMARY_PLACEHOLDER else body
 
 
-def list_files(workspace: str) -> list[str]:
-    """Relative paths of files in the workspace, excluding the .git internals."""
-    out: list[str] = []
+# Directory names pruned from the workspace listing: dependency installs and
+# tool caches. Listing these bloats the session context — a `node_modules` after
+# `npm install` is ~13k files, enough to blow the agent launch past ARG_MAX
+# ("[Errno 7] Argument list too long") — and they are noise the user never wants
+# to browse. We prune by directory NAME rather than honouring `.gitignore`,
+# because `.gitignore` also lists build OUTPUT (`dist/`, `build/`) — and that
+# output is the deliverable: it's what the file browser shows, what preview
+# renders, and what publish serves, so it must stay visible. Deps out, build in.
+_PRUNE_DIRS = frozenset({
+    ".git", "node_modules", ".pnpm-store", "bower_components",
+    ".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache",
+    ".ruff_cache", ".cache", ".parcel-cache", ".gradle", "vendor",
+})
+
+
+def _listed_paths(workspace: str) -> list[str]:
+    """
+    Relative paths of the workspace's source/content/build files — everything the
+    user authored, the agent generated, or the build emitted, EXCLUDING dependency
+    installs and tool caches (`_PRUNE_DIRS`). Build output (`dist/`, `build/`) is
+    deliberately kept: it's the deliverable the browser/preview/publish surface.
+    """
     root = os.path.abspath(workspace)
+    out: list[str] = []
     for dirpath, dirnames, filenames in os.walk(root):
-        if ".git" in dirnames:
-            dirnames.remove(".git")
+        dirnames[:] = [d for d in dirnames if d not in _PRUNE_DIRS]
         for name in filenames:
-            rel = os.path.relpath(os.path.join(dirpath, name), root)
-            out.append(rel)
-    return sorted(out)
+            out.append(os.path.relpath(os.path.join(dirpath, name), root))
+    return out
+
+
+# Pointer (not a paste) to how the agent should learn the workspace contents.
+# Both lanes (chat/API and terminal/CLI) have shell/file tools and the workspace
+# is a git repo, so the agent discovers files on demand — keeping the prompt small
+# and never stale. This replaces the old enumerated `## Workspace files` block,
+# whose post-`npm install` size blew the CLI launch past ARG_MAX.
+WORKSPACE_DISCOVERY = (
+    "## Workspace files\n"
+    "This workspace is a git repository and the source of truth. Discover its "
+    "current contents with your own tools — `git ls-files` for tracked source, "
+    "`git status`/`ls`/`find` for untracked or build output — rather than relying "
+    f"on a static list. `{BRIEF_FILENAME}` holds the brief + running state; read "
+    "it and the relevant files, then continue from the current state."
+)
 
 
 def list_files_meta(workspace: str) -> list[dict]:
     """
     File browser listing (P-0016 b): relative path + size + mtime for each
-    workspace file the user authored or the agent generated. Excludes the .git
-    internals and the SESSION.md brief (an internal agent artifact, not user
-    content — surfaced as History/brief elsewhere, not as a build output).
+    workspace file the user authored, the agent generated, or the build emitted.
+    Excludes dependency installs / tool caches (`_PRUNE_DIRS`) and the SESSION.md
+    brief (an internal agent artifact, not user content — surfaced as
+    History/brief elsewhere, not as a build output).
     """
-    out: list[dict] = []
     root = os.path.abspath(workspace)
-    for dirpath, dirnames, filenames in os.walk(root):
-        if ".git" in dirnames:
-            dirnames.remove(".git")
-        for name in filenames:
-            rel = os.path.relpath(os.path.join(dirpath, name), root)
-            if rel == BRIEF_FILENAME:
-                continue
-            try:
-                st = os.stat(os.path.join(dirpath, name))
-            except OSError:
-                continue
-            out.append({"path": rel, "size": st.st_size, "modified": st.st_mtime})
+    out: list[dict] = []
+    for rel in _listed_paths(workspace):
+        if rel == BRIEF_FILENAME:
+            continue
+        try:
+            st = os.stat(os.path.join(root, rel))
+        except OSError:
+            continue
+        out.append({"path": rel, "size": st.st_size, "modified": st.st_mtime})
     return sorted(out, key=lambda e: e["path"])
 
 
@@ -337,10 +381,13 @@ def build_turn_context(
     last few exchanges, included so conversational follow-ups ("yes, do that")
     keep their referent. The workspace remains the source of truth; this is a
     bounded dialogue tail, not the full transcript.
+
+    We do NOT enumerate the workspace files here. The agent has exec/file tools and
+    the workspace is a git repo, so it discovers files itself (`git ls-files`, etc.)
+    — a static listing both bloats the prompt (a post-`npm install` tree is ~13k
+    paths) and goes stale the moment the agent writes a file. We point, not paste.
     """
     brief = read_brief(workspace)
-    files = list_files(workspace)
-    file_list = "\n".join(f"- {f}" for f in files) if files else "- (empty)"
     convo = ""
     if recent_turns:
         lines = []
@@ -351,7 +398,7 @@ def build_turn_context(
         convo = "## Recent conversation\n" + "\n".join(lines) + "\n\n"
     return (
         f"{brief}\n\n"
-        f"## Workspace files\n{file_list}\n\n"
+        f"{WORKSPACE_DISCOVERY}\n\n"
         f"{convo}"
         f"{GITIGNORE_GUIDANCE}\n\n"
         f"## User message\n{user_message}\n"

@@ -32,26 +32,29 @@ def test_convention_file_per_provider():
     assert sc.context_filename("unknown") == "AGENTS.md"  # default
 
 
-def test_seed_writes_brief_and_files(tmp_path):
+def test_seed_writes_brief_and_discovery_pointer(tmp_path):
     ws = _ws(tmp_path)
     fname = sc.seed_provider_context(ws, "claude")
     assert fname == "CLAUDE.md"
     text = (tmp_path / "ws" / "CLAUDE.md").read_text(encoding="utf-8")
     assert "Batonkeep session context" in text
     assert "Build a landing page" in text   # brief content
-    assert "- index.html" in text and "- style.css" in text  # file list
+    # We point the agent at git rather than pasting a file list (avoids ARG_MAX
+    # bloat + staleness): the pointer is present, the enumeration is not.
+    assert "git ls-files" in text
+    assert "- index.html" not in text and "- style.css" not in text
     assert sc._BEGIN in text and sc._END in text
 
 
-def test_seed_excludes_brief_and_convention_files_from_listing(tmp_path):
+def test_seed_does_not_enumerate_files(tmp_path):
+    # No static file list is emitted — not even for source files — so nothing can
+    # blow the launch past ARG_MAX regardless of workspace size.
     ws = _ws(tmp_path, files=("index.html",))
     sc.seed_provider_context(ws, "claude")  # creates CLAUDE.md
     sc.seed_provider_context(ws, "codex")   # creates AGENTS.md
     text = (tmp_path / "ws" / "AGENTS.md").read_text(encoding="utf-8")
-    # the listing must not include SESSION.md, CLAUDE.md, or AGENTS.md
-    assert "- index.html" in text
-    for noise in (BRIEF_FILENAME, "CLAUDE.md", "AGENTS.md"):
-        assert f"- {noise}" not in text
+    for f in ("index.html", BRIEF_FILENAME, "CLAUDE.md", "AGENTS.md"):
+        assert f"- {f}" not in text
 
 
 def test_seed_is_non_destructive_to_user_content(tmp_path):
@@ -69,13 +72,12 @@ def test_seed_refresh_replaces_only_managed_block(tmp_path):
     user_md = "# rules\nkeep me\n"
     (tmp_path / "ws" / "CLAUDE.md").write_text(user_md, encoding="utf-8")
     sc.seed_provider_context(ws, "claude")
-    # add a new file, refresh — block updates, user content still there, single block
-    (tmp_path / "ws" / "new.js").write_text("y", encoding="utf-8")
+    # refresh — managed block is replaced in place, user content stays, single block
     sc.seed_provider_context(ws, "claude")
     text = (tmp_path / "ws" / "CLAUDE.md").read_text(encoding="utf-8")
     assert "keep me" in text
     assert text.count(sc._BEGIN) == 1 and text.count(sc._END) == 1  # not duplicated
-    assert "- new.js" in text
+    assert "Batonkeep session context" in text
 
 
 def test_convention_files_excluded_from_publish():

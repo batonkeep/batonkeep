@@ -249,6 +249,111 @@ function FileEntryRow({
 // the session workspace, grouped by top-level folder with folders collapsed by
 // default (consistent with the artifact card, D-0029), each click-to-open in the
 // right Preview pane via the same viewFile path as the artifact list (D-0028).
+// A folder node in the workspace file tree. `dirs` are nested subfolders keyed by
+// their own (last-segment) name; `files` are the entries that live directly in
+// this folder. Built recursively so arbitrarily deep trees (e.g. dist/assets/…)
+// render as real nested folders, not a flattened single level.
+interface FileNode {
+  dirs: Map<string, FileNode>;
+  files: FileEntry[];
+}
+
+function buildFileTree(entries: FileEntry[]): FileNode {
+  const root: FileNode = { dirs: new Map(), files: [] };
+  for (const e of entries) {
+    const parts = e.path.split("/");
+    let node = root;
+    for (let i = 0; i < parts.length - 1; i++) {
+      const seg = parts[i];
+      let child = node.dirs.get(seg);
+      if (!child) {
+        child = { dirs: new Map(), files: [] };
+        node.dirs.set(seg, child);
+      }
+      node = child;
+    }
+    node.files.push(e);
+  }
+  return root;
+}
+
+// Total files at or below a node — used for the folder's count badge.
+function countFiles(node: FileNode): number {
+  let n = node.files.length;
+  for (const child of node.dirs.values()) n += countFiles(child);
+  return n;
+}
+
+function FileTreeChildren({
+  node,
+  prefix,
+  onOpen,
+  activePath,
+}: {
+  node: FileNode;
+  prefix: string; // path prefix of this node ("" at root, "dist/" one level down)
+  onOpen: (path: string) => void;
+  activePath?: string;
+}) {
+  const dirs = [...node.dirs.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  const files = [...node.files].sort((a, b) => a.path.localeCompare(b.path));
+  return (
+    <>
+      {dirs.map(([name, child]) => (
+        <FileTreeFolder
+          key={prefix + name + "/"}
+          name={name}
+          path={prefix + name}
+          node={child}
+          onOpen={onOpen}
+          activePath={activePath}
+        />
+      ))}
+      {files.map((e) => (
+        <li key={e.path}>
+          <FileEntryRow entry={e} onOpen={onOpen} active={e.path === activePath} stripDir />
+        </li>
+      ))}
+    </>
+  );
+}
+
+function FileTreeFolder({
+  name,
+  path,
+  node,
+  onOpen,
+  activePath,
+}: {
+  name: string;
+  path: string; // full path of this folder, no trailing slash
+  node: FileNode;
+  onOpen: (path: string) => void;
+  activePath?: string;
+}) {
+  // Auto-expand if the currently-open file lives anywhere under this folder.
+  const [open, setOpen] = useState(() => !!activePath && activePath.startsWith(path + "/"));
+  return (
+    <li>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center gap-2 rounded px-1 py-0.5 text-left hover:bg-edge/40"
+        title={`${open ? "Collapse" : "Expand"} ${path}/`}
+      >
+        {open ? <ChevronDown size={13} className="shrink-0 text-muted" /> : <ChevronRight size={13} className="shrink-0 text-muted" />}
+        <Folder size={13} className="shrink-0 text-muted" />
+        <span className="flex-1 truncate font-mono text-xs text-ink">{name}/</span>
+        <span className="shrink-0 font-mono text-[11px] text-muted">{countFiles(node)}</span>
+      </button>
+      {open && (
+        <ul className="ml-4 space-y-0.5 border-l border-edge/60 pl-1">
+          <FileTreeChildren node={node} prefix={path + "/"} onOpen={onOpen} activePath={activePath} />
+        </ul>
+      )}
+    </li>
+  );
+}
+
 function FileBrowser({
   entries,
   loading,
@@ -260,22 +365,7 @@ function FileBrowser({
   onOpen: (path: string) => void;
   activePath?: string;
 }) {
-  const { roots, folders } = useMemo(() => {
-    const roots: FileEntry[] = [];
-    const folders = new Map<string, FileEntry[]>();
-    for (const e of entries) {
-      const slash = e.path.indexOf("/");
-      if (slash === -1) roots.push(e);
-      else {
-        const dir = e.path.slice(0, slash);
-        (folders.get(dir) ?? folders.set(dir, []).get(dir)!).push(e);
-      }
-    }
-    return {
-      roots: roots.sort((a, b) => a.path.localeCompare(b.path)),
-      folders: [...folders.entries()].sort((a, b) => a[0].localeCompare(b[0])),
-    };
-  }, [entries]);
+  const tree = useMemo(() => buildFileTree(entries), [entries]);
 
   return (
     <div className="flex-1 overflow-y-auto p-3">
@@ -289,61 +379,10 @@ function FileBrowser({
         </div>
       ) : (
         <ul className="space-y-0.5">
-          {folders.map(([dir, group]) => (
-            <FileBrowserFolder
-              key={dir}
-              dir={dir}
-              entries={group}
-              onOpen={onOpen}
-              activePath={activePath}
-            />
-          ))}
-          {roots.map((e) => (
-            <li key={e.path}>
-              <FileEntryRow entry={e} onOpen={onOpen} active={e.path === activePath} stripDir={false} />
-            </li>
-          ))}
+          <FileTreeChildren node={tree} prefix="" onOpen={onOpen} activePath={activePath} />
         </ul>
       )}
     </div>
-  );
-}
-
-function FileBrowserFolder({
-  dir,
-  entries,
-  onOpen,
-  activePath,
-}: {
-  dir: string;
-  entries: FileEntry[];
-  onOpen: (path: string) => void;
-  activePath?: string;
-}) {
-  // Auto-expand if the currently-open file lives in this folder.
-  const [open, setOpen] = useState(() => !!activePath && activePath.startsWith(dir + "/"));
-  return (
-    <li>
-      <button
-        onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center gap-2 rounded px-1 py-0.5 text-left hover:bg-edge/40"
-        title={`${open ? "Collapse" : "Expand"} ${dir}/`}
-      >
-        {open ? <ChevronDown size={13} className="shrink-0 text-muted" /> : <ChevronRight size={13} className="shrink-0 text-muted" />}
-        <Folder size={13} className="shrink-0 text-muted" />
-        <span className="flex-1 truncate font-mono text-xs text-ink">{dir}/</span>
-        <span className="shrink-0 font-mono text-[11px] text-muted">{entries.length}</span>
-      </button>
-      {open && (
-        <ul className="ml-4 space-y-0.5 border-l border-edge/60 pl-1">
-          {entries.map((e) => (
-            <li key={e.path}>
-              <FileEntryRow entry={e} onOpen={onOpen} active={e.path === activePath} stripDir />
-            </li>
-          ))}
-        </ul>
-      )}
-    </li>
   );
 }
 

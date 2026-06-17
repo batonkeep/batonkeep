@@ -4,6 +4,19 @@ All notable changes to batonkeep are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (pre-1.0: minor versions may
 add features freely; patch versions are fixes).
 
+## [0.2.2] — 2026-06-17
+
+A patch release fixing Cloudflare Pages publishing for bundled (built) sites.
+
+### Fixed
+
+- **Cloudflare Pages deploys served an un-built site and rendered blank.** For
+  projects with a build step (Vite and similar), the deploy shipped the source
+  tree — whose `index.html` points at a dev entry point a browser can't run —
+  instead of the build output in `dist/`. Cloudflare publishing now ships the
+  built site, matching the in-app share link and download (which were already
+  correct). Re-deploy an affected site once on this version to pick up the fix.
+
 ## [0.2.1] — 2026-06-17
 
 A maintenance release: a critical fix for agent sessions that install dependencies,

@@ -87,14 +87,40 @@ function isCurated(ev: SessionEvent): boolean {
 }
 
 // Animated "generating…" line shown while a turn is in flight. Surfaces the most
-// recent curated step so the user sees forward progress, not a frozen spinner.
+// recent step so the user sees forward progress, not a frozen spinner.
 function GeneratingIndicator({ latest }: { latest?: string }) {
   return (
     <div className="flex items-center gap-2 px-1 text-sm text-live">
-      <Loader2 size={14} className="animate-spin" />
-      <span>Generating…</span>
-      {latest && <span className="truncate font-mono text-[11px] text-muted">{latest}</span>}
+      <Loader2 size={14} className="shrink-0 animate-spin" />
+      <span className="shrink-0">Generating…</span>
+      {latest && <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted">{latest}</span>}
     </div>
+  );
+}
+
+// Small hover-revealed copy button — copies `text` to the clipboard with a brief
+// check-mark confirmation. Used on chat messages (prompt + agent response).
+function CopyButton({ text, title, className = "" }: { text: string; title: string; className?: string }) {
+  const [done, setDone] = useState(false);
+  if (!text) return null;
+  return (
+    <button
+      onClick={async (e) => {
+        e.stopPropagation();
+        try {
+          await navigator.clipboard.writeText(text);
+          setDone(true);
+          setTimeout(() => setDone(false), 1500);
+        } catch {
+          /* clipboard unavailable (e.g. non-secure context) — no-op */
+        }
+      }}
+      title={title}
+      aria-label={title}
+      className={`rounded p-0.5 text-muted hover:bg-edge/40 hover:text-ink ${className}`}
+    >
+      {done ? <Check size={12} className="text-ok" /> : <Copy size={12} />}
+    </button>
   );
 }
 
@@ -1166,6 +1192,15 @@ export default function SessionView({
   const hiddenCount = events.length - curatedEvents.length;
   const shownEvents = rawOpen ? events : curatedEvents;
 
+  // What to show beside "Generating…" so the user sees live progress without
+  // opening the Activity panel. Prefer the agent's streaming narration (its last
+  // non-empty line — the step it's on right now), falling back to the latest
+  // curated step (tool/phase) when the lane emits structured events instead of prose.
+  const latestActivity = useMemo(() => {
+    const line = streamingText.split("\n").map((s) => s.trim()).filter(Boolean).pop();
+    return line || curatedEvents[curatedEvents.length - 1]?.message || undefined;
+  }, [streamingText, curatedEvents]);
+
   // P-0046 slice 3b: a pending code-exec approval (confirmation policy).
   const pendingApproval = useMemo(() => derivePendingApproval(events), [events]);
   const [approvalBusy, setApprovalBusy] = useState(false);
@@ -1694,8 +1729,13 @@ export default function SessionView({
               )}
               {turns.map((t) => (
                 <div key={t.id} className="space-y-1">
-                  <div className="rounded-lg border border-edge bg-base px-3 py-2 text-sm text-ink">
+                  <div className="group relative rounded-lg border border-edge bg-base px-3 py-2 text-sm text-ink">
                     {t.prompt}
+                    <CopyButton
+                      text={t.prompt}
+                      title="Copy message"
+                      className="absolute right-1.5 top-1.5 opacity-0 transition-opacity group-hover:opacity-100"
+                    />
                   </div>
                   <div className="flex items-center gap-2 px-1">
                     <Badge tone={TURN_TONE[t.status]}>{t.status}</Badge>
@@ -1722,15 +1762,22 @@ export default function SessionView({
                     <ArtifactList files={t.changed_files} onOpen={viewFile} />
                   )}
                   {t.response && (
-                    <div
-                      className={`markdown px-1 text-sm ${
-                        t.changed_files && t.changed_files.length > 0
-                          ? "text-muted"
-                          : "text-ink/80"
-                      }`}
-                      onClick={onChatClick}
-                      dangerouslySetInnerHTML={{ __html: renderMarkdown(t.response) }}
-                    />
+                    <div className="group relative">
+                      <div
+                        className={`markdown px-1 text-sm ${
+                          t.changed_files && t.changed_files.length > 0
+                            ? "text-muted"
+                            : "text-ink/80"
+                        }`}
+                        onClick={onChatClick}
+                        dangerouslySetInnerHTML={{ __html: renderMarkdown(t.response) }}
+                      />
+                      <CopyButton
+                        text={t.response}
+                        title="Copy response"
+                        className="absolute right-1 top-0 opacity-0 transition-opacity group-hover:opacity-100"
+                      />
+                    </div>
                   )}
                   {t.error && <div className="px-1 text-sm text-bad">{t.error}</div>}
                 </div>
@@ -1750,9 +1797,7 @@ export default function SessionView({
                   regardless of whether pendingMessage is suppressed by the turn
                   appearing in the DB list. */}
               {turnRunning && (
-                <GeneratingIndicator
-                  latest={curatedEvents[curatedEvents.length - 1]?.message ?? undefined}
-                />
+                <GeneratingIndicator latest={latestActivity} />
               )}
 
               {sendError && (

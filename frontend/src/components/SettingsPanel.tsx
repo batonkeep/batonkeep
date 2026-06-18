@@ -5,7 +5,7 @@
 // D-0027 fix 2: all sections collapsed by default (accordion).
 import { type ReactNode, useState } from "react";
 import { ChevronDown, ChevronRight, KeyRound, Server, ShieldOff, Sliders } from "lucide-react";
-import type { Credential, Mode, ProviderHealth } from "../types";
+import type { Credential, Mode, ProviderHealth, UsageSummary } from "../types";
 import ProvidersPanel from "./ProvidersPanel";
 import SecretsPanel from "./SecretsPanel";
 import { Badge, Card } from "../ui";
@@ -98,6 +98,7 @@ function BudgetContent() {
 interface Props {
   providers: ProviderHealth[];
   credentials: Credential[];
+  usage: UsageSummary | null;
   mode: Mode | null;
   now: number;
   onRefresh: () => void;
@@ -110,6 +111,7 @@ interface Props {
 export default function SettingsPanel({
   providers,
   now,
+  usage,
   onRefresh,
   consoleAvailable,
   consoleToken,
@@ -128,6 +130,7 @@ export default function SettingsPanel({
         <ProvidersPanel
           providers={providers}
           now={now}
+          usage={usage}
           onRefresh={onRefresh}
           consoleAvailable={consoleAvailable}
           consoleToken={consoleToken}

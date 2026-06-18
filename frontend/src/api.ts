@@ -285,11 +285,18 @@ export const api = {
       `/providers/${encodeURIComponent(template)}/catalog/preferred`,
       { method: "PUT", body: JSON.stringify({ capability, model }) }
     ),
-  // Kicks off a background capture (202); the result lands on the providers list.
-  captureSubscriptionUsage: (instanceId: string, token: string) =>
-    req<{ status: string; instance: string }>(
-      `/usage/subscription/${encodeURIComponent(instanceId)}`,
-      { method: "POST", headers: { "X-Console-Token": token } }
+  // Returns the /usage command to pre-fill when the user opens "Check usage → Open terminal"
+  // (D-0049). Owner-scoped, no exec, no console token required.
+  getProviderUsageCommand: (instanceId: string) =>
+    req<{ instance: string; command: string }>(
+      `/providers/${encodeURIComponent(instanceId)}/usage-command`
+    ),
+  // One-shot user-initiated usage capture for the "Capture for me" modal path (D-0049).
+  // Console-gated. Returns { output, truncated } with raw uninterpreted terminal output.
+  captureUsageRaw: (instanceId: string, token: string) =>
+    req<{ instance: string; output: string; truncated: boolean }>(
+      `/providers/${encodeURIComponent(instanceId)}/usage-capture`,
+      { method: "POST", headers: token ? { "X-Console-Token": token } : {} }
     ),
 
   // ── Stats / meta ─────────────────────────────────────────────────────────

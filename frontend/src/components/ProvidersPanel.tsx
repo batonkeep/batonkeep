@@ -1,19 +1,22 @@
 // ProvidersPanel.tsx — provider cockpit (§12 / §4.4): per plan show logged-in/health,
-// cooling-down countdown, an approximate headroom bar (labelled an estimate),
-// tier/mode, and a re-auth shortcut.
+// cooling-down countdown, tier/mode, and routing tags.
+// D-0049: quota % removed; usage zone shows API-path exact cost (D-0042) for API providers
+// and a manual "Check usage" button (with disclaimer modal) for CLI plan providers.
 // D-track: composed from ui/ primitives (Button, Badge, Card, Input, StatusDot).
 // D-0026: custom provider cards + Add/Edit/Delete at bottom of the list.
 import { lazy, Suspense, useEffect, useState } from "react";
-import { Check, KeyRound, Pencil, Plus, Power, RefreshCw, RotateCcw, ShieldCheck, Sliders, Terminal, Trash2 } from "lucide-react";
-import type { CustomProvider, ProviderHealth } from "../types";
+import { Check, DollarSign, KeyRound, Pencil, Plus, Power, RefreshCw, RotateCcw, ShieldCheck, Sliders, Terminal, Trash2 } from "lucide-react";
+import type { CustomProvider, ProviderHealth, UsageSummary } from "../types";
 import { api } from "../api";
-import { countdown, fmtRelative } from "../format";
+import { countdown } from "../format";
 import { Badge, Button, Card, Input, StatusDot } from "../ui";
 import CustomProviderForm from "./CustomProviderForm";
 import ModelCatalogModal from "./ModelCatalogModal";
 import TagEditor from "./TagEditor";
+import UsageCheckModal from "./UsageCheckModal";
 
 const AuthConsole = lazy(() => import("./AuthConsole"));
+const ConsoleTtyConsole = lazy(() => import("./ConsoleTtyConsole"));
 
 // A labelled section inside a provider card — the auth / state / usage zones.
 function Zone({ label, children }: { label: string; children: React.ReactNode }) {
@@ -28,6 +31,7 @@ function Zone({ label, children }: { label: string; children: React.ReactNode })
 interface Props {
   providers: ProviderHealth[];
   now: number;
+  usage: UsageSummary | null; // per-provider cost today (D-0042/D-0049)
   onRefresh: () => void;
   consoleAvailable: boolean;
   consoleToken: string;
@@ -41,12 +45,16 @@ const TIER_LABEL: Record<string, string> = {
   plan: "plan-CLI", api: "API", open: "open-weight", mock: "mock", frontier: "frontier", agent: "agent",
 };
 
-export default function ProvidersPanel({ providers, now, onRefresh, consoleAvailable, consoleToken, onSetConsoleToken, appAuthEnabled }: Props) {
+export default function ProvidersPanel({ providers, now, usage, onRefresh, consoleAvailable, consoleToken, onSetConsoleToken, appAuthEnabled }: Props) {
   // P-0049: the provider template whose model catalog is open in the modal.
   const [manageTemplate, setManageTemplate] = useState<string | null>(null);
   const [editingTags, setEditingTags] = useState<string | null>(null);
   const [tagsDraft, setTagsDraft] = useState<string[]>([]);
   const [authTarget, setAuthTarget] = useState<string | null>(null);
+  // D-0049: usage check modal state (which provider is open).
+  const [usageCheckTarget, setUsageCheckTarget] = useState<ProviderHealth | null>(null);
+  // Sessionless provider terminal from Settings (Open terminal button).
+  const [ttyTarget, setTtyTarget] = useState<ProviderHealth | null>(null);
 
   // ── Custom providers (D-0026) ──────────────────────────────────────────────
   const [customProviders, setCustomProviders] = useState<CustomProvider[]>([]);
@@ -90,25 +98,6 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
     catch { /* surfaced via disabled state */ }
   };
 
-  const [capturing, setCapturing] = useState<string | null>(null);
-  const captureUsage = async (instanceId: string) => {
-    setCapturing(instanceId);
-    // The capture now runs server-side in the background (the full-TTY /usage drive
-    // is slow — a synchronous wait tripped a gateway 504, esp. for grok). Trigger it,
-    // then poll until the freshness stamp advances (the 5s providers refresh updates
-    // the bar in the meantime). Bounded so a stuck capture eventually releases the UI.
-    const before = providers.find((p) => p.name === instanceId)?.usage_seen_at ?? null;
-    try {
-      await api.captureSubscriptionUsage(instanceId, consoleToken);
-      for (let i = 0; i < 24; i++) {
-        await new Promise((r) => setTimeout(r, 2500));
-        const list = await api.listProviders().catch(() => null);
-        const seen = list?.find((p) => p.name === instanceId)?.usage_seen_at ?? null;
-        if (seen && seen !== before) break;
-      }
-    } catch { /* trigger failed (e.g. not authorized) */ }
-    finally { onRefresh(); setCapturing(null); }
-  };
 
   // With app-auth the session is the gate; otherwise the legacy token is required.
   const canConsole = consoleAvailable && (appAuthEnabled || consoleToken.trim().length > 0);
@@ -166,12 +155,6 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
             {group.instances.map((p) => {
               const isExtra = p.name !== p.template;
               const cooling = !!p.cooldown_until && new Date(p.cooldown_until).getTime() > now;
-              const usedPct = p.est_used_pct != null ? Math.round(p.est_used_pct * 100) : null;
-              // The bar fills with *remaining headroom* so a healthy plan reads full,
-              // and drains/reddens as the quota is consumed.
-              const headroomPct = usedPct == null ? null : 100 - usedPct;
-              const barColor = headroomPct == null ? "bg-edge"
-                : headroomPct < 15 ? "bg-bad" : headroomPct < 40 ? "bg-defer" : "bg-brand";
               const healthTone = cooling ? "defer" : p.healthy ? "ok" : "bad";
 
               return (
@@ -237,28 +220,37 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
                     </div>
                   )}
 
-                  {/* USAGE zone — headroom estimate + freshness + manual refresh */}
+                  {/* USAGE zone — API-path cost for API providers; plan-billed label
+                      + manual "Check usage" one-shot for CLI plan providers (D-0049). */}
                   <Zone label="usage">
-                    <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wider text-muted">
-                      <span>headroom (est.)</span>
-                      <span>{headroomPct == null ? "unknown" : `${headroomPct}% left`}</span>
-                    </div>
-                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-base">
-                      <div className={`h-full ${barColor} transition-all`} style={{ width: `${headroomPct == null ? 0 : headroomPct}%` }} />
-                    </div>
-                    {p.kind === "cli" && (
-                      <div className="mt-1.5 flex items-center justify-between">
-                        <span className="font-mono text-[10px] text-muted">
-                          {p.usage_seen_at ? `as of ${fmtRelative(p.usage_seen_at)}` : "not yet captured"}
+                    {p.kind === "cli" ? (
+                      <div className="flex items-center justify-between">
+                        <span className="font-mono text-[11px] text-muted">
+                          Plan-billed — check your provider dashboard for authoritative quota.
                         </span>
                         {canConsole && (
-                          <button onClick={() => captureUsage(p.name)} disabled={capturing === p.name}
-                            title="Drive /usage once via the full-TTY single-shot seam (read-only). Auto-refreshed in the background; this forces it now."
-                            className="flex items-center gap-1 font-mono text-[10px] text-brand hover:text-ink disabled:text-muted">
-                            <RefreshCw size={10} className={capturing === p.name ? "animate-spin" : ""} />
-                            {capturing === p.name ? "capturing…" : "refresh"}
+                          <button
+                            id={`check-usage-${p.name}`}
+                            onClick={() => setUsageCheckTarget(p)}
+                            className="flex items-center gap-1 font-mono text-[10px] text-brand hover:text-ink"
+                            title="One-shot usage check — opens a disclaimer before proceeding"
+                          >
+                            <DollarSign size={10} />
+                            Check usage
                           </button>
                         )}
+                      </div>
+                    ) : (
+                      // API providers: show today's exact cost from Run.cost_usd.
+                      <div className="flex items-center justify-between">
+                        <span className="font-mono text-[11px] text-muted">
+                          {(() => {
+                            const spent = usage?.by_provider_today?.[p.name] ?? null;
+                            if (spent === null) return "no API cost data yet today";
+                            if (spent === 0) return "$0.00 today";
+                            return `$${spent.toFixed(spent < 0.01 ? 4 : 2)} today`;
+                          })()}
+                        </span>
                       </div>
                     )}
                   </Zone>
@@ -293,14 +285,28 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
                     )}
                   </Zone>
 
-                  {/* AUTH zone — re-auth path (plan-CLI only) */}
+                  {/* AUTH zone — re-auth + open interactive terminal (plan-CLI only) */}
                   {p.mode === "plan" && (
                     <Zone label="auth">
                       {canConsole ? (
-                        <button onClick={() => setAuthTarget(p.name)}
-                          className="flex items-center gap-1.5 font-mono text-[11px] text-brand hover:text-ink">
-                          <Terminal size={12} /> re-auth in console
-                        </button>
+                        <div className="flex items-center gap-3">
+                          <button
+                            id={`reauth-${p.name}`}
+                            onClick={() => setAuthTarget(p.name)}
+                            className="flex items-center gap-1.5 font-mono text-[11px] text-brand hover:text-ink"
+                          >
+                            <KeyRound size={12} /> re-auth
+                          </button>
+                          <span className="text-edge">·</span>
+                          <button
+                            id={`open-terminal-${p.name}`}
+                            onClick={() => setTtyTarget(p)}
+                            className="flex items-center gap-1.5 font-mono text-[11px] text-muted hover:text-ink"
+                            title={`Open ${p.name} interactive terminal (no session required)`}
+                          >
+                            <Terminal size={12} /> open terminal
+                          </button>
+                        </div>
                       ) : (
                         <span className="flex items-center gap-1.5 font-mono text-[11px] text-muted">
                           <KeyRound size={12} /> re-auth via `make auth p={p.name}`
@@ -399,6 +405,50 @@ export default function ProvidersPanel({ providers, now, onRefresh, consoleAvail
         <Suspense fallback={null}>
           <AuthConsole target={authTarget} token={consoleToken} onClose={() => { setAuthTarget(null); onRefresh(); }} />
         </Suspense>
+      )}
+
+      {/* D-0049: "Check usage" disclaimer modal for plan-CLI providers. */}
+      {usageCheckTarget && (
+        <UsageCheckModal
+          instanceId={usageCheckTarget.name}
+          instanceLabel={usageCheckTarget.label || usageCheckTarget.name}
+          token={consoleToken}
+          appAuthEnabled={appAuthEnabled}
+          onClose={() => setUsageCheckTarget(null)}
+        />
+      )}
+
+      {/* Settings "Open terminal" — sessionless interactive provider TTY (D-0049). */}
+      {ttyTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="flex h-[80vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-edge bg-base shadow-2xl">
+            <div className="flex items-center justify-between border-b border-edge px-4 py-2.5">
+              <div className="flex items-center gap-2">
+                <Terminal size={14} className="text-brand" />
+                <span className="font-mono text-sm text-ink">
+                  {ttyTarget.label || ttyTarget.name} · terminal
+                </span>
+                <span className="font-mono text-[10px] text-muted">no session context</span>
+              </div>
+              <button
+                onClick={() => setTtyTarget(null)}
+                className="rounded p-1 text-muted hover:text-ink transition-colors"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>
+            <div className="flex-1 overflow-hidden">
+              <Suspense fallback={null}>
+                <ConsoleTtyConsole
+                  instance={ttyTarget.name}
+                  token={consoleToken}
+                  onClose={() => setTtyTarget(null)}
+                  embedded
+                />
+              </Suspense>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* P-0049: model catalog editor for the selected provider template. */}

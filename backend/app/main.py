@@ -14,7 +14,6 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
 from fastapi import (
-    BackgroundTasks,
     Depends,
     FastAPI,
     File,
@@ -2181,22 +2180,20 @@ async def set_provider_enabled_endpoint(
     return {"status": "ok", "provider": instance_id, "enabled": body.enabled}
 
 
-@app.post("/api/usage/subscription/{instance_id}", status_code=202, tags=["console"])
-async def capture_subscription_usage_endpoint(
+@app.get("/api/providers/{instance_id}/usage-command", tags=["providers"])
+async def get_provider_usage_command(
     instance_id: str,
-    background: BackgroundTasks,
-    _: None = Depends(_require_console),
+    owner_id: str = Depends(_owner_id),
 ):
-    """Kick off a plan-CLI /usage capture via the terminal seam (D-0015 #4, P-0009 #2).
+    """Return the interactive /usage command for a plan-CLI provider instance (D-0049).
 
-    Driving the full-TTY /usage panel is slow (grok's redraw-heavy panel especially),
-    so the capture runs in the **background** and this returns 202 immediately — a
-    synchronous wait would otherwise trip an upstream gateway timeout (504). The
-    result lands on `ProviderHealth.usage_seen_at`/`est_used_pct`; the providers
-    list (polled by the UI) reflects it once the capture completes.
+    Used by the 'Check usage → Open terminal' modal path so the frontend knows
+    what command to pre-fill in the web-TTY terminal. Owner-scoped (no exec, no
+    console token required — this is a static config lookup).
     """
     from app.providers.registry import get_instance, get_provider_def
-    from app.subscription_usage import capture_subscription_usage
+    from app.subscription_usage import usage_command_for
+
     inst = get_instance(instance_id)
     if inst is None:
         raise HTTPException(status_code=404, detail="Unknown provider instance")
@@ -2204,10 +2201,85 @@ async def capture_subscription_usage_endpoint(
     if not (pdef and pdef.kind == "cli"):
         raise HTTPException(
             status_code=400,
-            detail="Subscription usage applies to plan-CLI instances only.",
+            detail="Usage command is only applicable to plan-CLI provider instances.",
         )
-    background.add_task(capture_subscription_usage, instance_id)
-    return {"status": "scheduled", "instance": instance_id}
+    return {"instance": instance_id, "command": usage_command_for(instance_id)}
+
+
+@app.post("/api/providers/{instance_id}/usage-capture", tags=["providers"])
+async def capture_provider_usage_oneshot(
+    instance_id: str,
+    _: None = Depends(_require_console),
+):
+    """One-shot, user-initiated usage capture for the 'Check usage → Capture for me' modal
+    path (D-0049). Runs the provider's usage command through the PTY seam and returns the
+    raw terminal output as text — no parsing, no quota % extraction. The user reads it
+    directly in the modal. Console-gated (requires the same auth as re-auth / set-model).
+
+    Unlike the old background poll, this is synchronous (user is waiting) with a short
+    timeout. On success, returns {output, truncated}; on failure, returns HTTP 500 with
+    a message the modal can display directly.
+    """
+    from app.providers.base import EventKind
+    from app.providers.registry import get_instance, get_interactive_executor, get_provider_def
+    from app.subscription_usage import _DEFAULT_USAGE_COMMAND, _USAGE_COMMAND
+
+    inst = get_instance(instance_id)
+    if inst is None:
+        raise HTTPException(status_code=404, detail="Unknown provider instance")
+    pdef = get_provider_def(inst.template)
+    if not (pdef and pdef.kind == "cli"):
+        raise HTTPException(
+            status_code=400,
+            detail="Usage capture is only applicable to plan-CLI provider instances.",
+        )
+
+    executor = get_interactive_executor(instance_id)
+    if executor is None:
+        raise HTTPException(
+            status_code=503,
+            detail="No interactive executor available for this provider instance.",
+        )
+
+    provider = pdef.name
+    command = _USAGE_COMMAND.get(provider, _DEFAULT_USAGE_COMMAND)
+    scraped: list[str] = []
+    err: str | None = None
+
+    try:
+        async for ev in executor.run_stream(
+            "",
+            workdir="/tmp",
+            tools_enabled=False,
+            extra={
+                "control_commands": [command],
+                "idle_timeout": 12.0,
+                # grok's panel never idles; capture as soon as a usage figure is visible.
+                **({"capture_until": r"\d{1,3}\s*%|\d[\d,]*\s*(?:/|of|out of)\s*\d"}
+                   if provider == "grok" else {}),
+            },
+        ):
+            if ev.kind == EventKind.token and ev.text:
+                scraped.append(ev.text)
+            elif ev.kind == EventKind.result and not scraped and ev.text:
+                scraped.append(ev.text)
+            elif ev.kind == EventKind.error:
+                err = ev.message
+    except Exception as exc:
+        logger.exception("[usage-capture] one-shot capture failed for %s", instance_id)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    raw = "\n".join(scraped).strip()
+    if err and not raw:
+        raise HTTPException(status_code=502, detail=err)
+
+    _MAX_OUTPUT = 4000
+    return {
+        "instance": instance_id,
+        "output": raw[:_MAX_OUTPUT],
+        "truncated": len(raw) > _MAX_OUTPUT,
+    }
+
 
 
 @app.websocket("/ws/console")
@@ -2281,6 +2353,91 @@ async def console_websocket(websocket: WebSocket):
         pass
     except Exception as exc:
         logger.debug("console ws error: %s", exc)
+    finally:
+        out_task.cancel()
+        code = session.exit_code()
+        session.close()
+        try:
+            await websocket.send_json({"type": "exit", "code": code})
+            await websocket.close()
+        except Exception:
+            pass
+
+
+@app.websocket("/ws/console-tty")
+async def console_tty_websocket(websocket: WebSocket):
+    """Token-gated PTY bridge for a sessionless provider CLI (D-0049 / Settings terminal).
+
+    Like /ws/tty but does NOT require a build-session workspace. Intended for the
+    Settings-panel "Open terminal" button and the UsageCheckModal "Open terminal" path
+    where the user wants the raw provider CLI (e.g. to run /usage, inspect auth state)
+    without any session context.
+
+    First client message: {"token","instance"}. Thereafter {"type":"input"|"resize",...}.
+    Server emits {"type":"output"|"exit"|"error",...}.
+    """
+    from app.web_tty import WebTtyError, build_console_tty_session
+
+    await websocket.accept()
+    if not settings.web_console_available:
+        await websocket.send_json({"type": "error", "message": "web-tty disabled"})
+        await websocket.close()
+        return
+
+    try:
+        init = await websocket.receive_json()
+    except Exception:
+        await websocket.close()
+        return
+
+    if not _ws_console_authorized(websocket, init):
+        await websocket.send_json({"type": "error", "message": "invalid token"})
+        await websocket.close()
+        return
+
+    try:
+        session = build_console_tty_session(str(init.get("instance", "")))
+    except WebTtyError as exc:
+        await websocket.send_json({"type": "error", "message": str(exc)})
+        await websocket.close()
+        return
+
+    def _dim(key: str, default: int, lo: int, hi: int) -> int:
+        try:
+            return max(lo, min(hi, int(init.get(key, default))))
+        except (TypeError, ValueError):
+            return default
+
+    try:
+        await session.start(rows=_dim("rows", 30, 4, 200), cols=_dim("cols", 100, 20, 400))
+    except sandbox.SandboxUnavailableError as exc:
+        await websocket.send_json({"type": "error", "message": str(exc)})
+        await websocket.close()
+        return
+
+    async def _pump_output() -> None:
+        while True:
+            data = await session.read()
+            if data is None:
+                break
+            await websocket.send_json({"type": "output", "data": data.decode("utf-8", "replace")})
+
+    out_task = asyncio.create_task(_pump_output())
+    try:
+        while True:
+            msg = await websocket.receive_json()
+            mtype = msg.get("type")
+            if mtype == "input":
+                session.write(str(msg.get("data", "")))
+            elif mtype == "resize":
+                try:
+                    session.resize(rows=int(msg["rows"]), cols=int(msg["cols"]))
+                except (KeyError, TypeError, ValueError):
+                    pass
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        logger.debug("console-tty ws error: %s", exc)
     finally:
         out_task.cancel()
         code = session.exit_code()

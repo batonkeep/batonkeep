@@ -490,6 +490,7 @@ function AppShell({ appAuthEnabled, onLogout }: { appAuthEnabled: boolean; onLog
           <SettingsPanel
             providers={providers}
             credentials={credentials}
+            usage={usage}
             mode={mode}
             now={now}
             onRefresh={loadProviders}

@@ -84,3 +84,47 @@ def build_web_tty_session(session_id: str, instance_id: str) -> PtySession:
         instance.id, session_id, pdef.cli_binary,
     )
     return PtySession(argv, cwd=workspace, env=env)
+
+
+def build_console_tty_session(instance_id: str) -> PtySession:
+    """Launch a provider's interactive CLI without requiring a session workspace.
+
+    Used for Settings-panel and UsageCheckModal "Open terminal" paths where no
+    build-session context is appropriate — the user wants the raw provider CLI
+    (e.g. to run /usage or re-auth manually), not in any particular workspace.
+
+    cwd is the sandbox_home directory (/home/agent or equivalent) which is always
+    present. The instance's cli_config_dir is still set so auth state is correct.
+    Raises WebTtyError with a user-facing reason on misconfiguration.
+    """
+    if not _settings.plan_cli_allowed:
+        raise WebTtyError(
+            f"plan-CLI is not available in DEPLOYMENT_MODE={_settings.deployment_mode.value}"
+        )
+
+    instance = get_instance(instance_id)
+    if instance is None:
+        raise WebTtyError(f"unknown provider instance: {instance_id}")
+
+    pdef = get_provider_def(instance.template)
+    if pdef is None or pdef.kind != "cli" or not pdef.cli_binary:
+        raise WebTtyError(f"provider {instance.template} has no interactive CLI")
+
+    import os
+    # Sessionless: use /tmp as cwd. sandbox_home (/home/agent) is owned by the
+    # sandbox user and is not accessible by the batond backend process — using it
+    # as Popen(cwd=) raises PermissionError. /tmp is always world-writable and
+    # present in both dev and production. Provider CLIs don't depend on cwd for
+    # auth state — only the cli_config_dir env var matters for that.
+    cwd = "/tmp"
+
+    env = os.environ.copy()
+    env["TERM"] = "xterm-256color"
+    if instance.cli_config_dir and instance.cli_config_env:
+        env[instance.cli_config_env] = instance.cli_config_dir
+
+    logger.info(
+        "console-tty (sessionless): %s in cwd=%s (%s)",
+        instance.id, cwd, pdef.cli_binary,
+    )
+    return PtySession([pdef.cli_binary], cwd=cwd, env=env)

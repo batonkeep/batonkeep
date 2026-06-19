@@ -140,6 +140,14 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("startup run-reaper failed")
 
+    # P-0057/D-0051: likewise reconcile build-session turns left `running` by a
+    # restart, so the chat shows honest state (no phantom Stop button) from boot.
+    try:
+        from app.sessions.orchestrator import reap_orphaned_turns
+        await reap_orphaned_turns()
+    except Exception:
+        logger.exception("startup turn-reaper failed")
+
     # P-0046: drift-guard the exec-env — confirm the built image's exec venv
     # still matches the manifest (guaranteed code-exec toolchain). Non-strict:
     # logs divergence (skipped on unbuilt images where the venv is absent).

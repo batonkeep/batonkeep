@@ -875,12 +875,13 @@ export default function SessionView({
   // P-0057/D-0051: interrupt the in-flight turn (best-effort). The backend stops the
   // agent and marks the turn "cancelled"; the WS broadcast flips turnRunning off.
   const handleCancel = async () => {
-    if (!selectedId || !lastTurn || lastTurn.status !== "running" || cancelling) return;
+    if (!selectedId || currentTurnId == null || !turnRunning || cancelling) return;
     setCancelling(true);
     setSendError(null);
     try {
-      await api.cancelTurn(selectedId, lastTurn.id);
+      await api.cancelTurn(selectedId, currentTurnId);
       setPendingMessage(null);
+      loadTurns();  // resync persisted status (cancelled) after a switch-back interrupt
     } catch (err) {
       setSendError(err instanceof Error ? err.message : "Could not stop the agent");
     } finally {
@@ -1205,7 +1206,15 @@ export default function SessionView({
       }`
       : null;
 
-  const turnRunning = lastTurn?.status === "running" || sending;
+  // Prefer the live turn.update, but on a fresh session mount lastTurn is null until
+  // the next WS frame — so switching away from a session with a running turn and back
+  // would otherwise drop the in-flight state (and revert Stop→Send). Fall back to the
+  // latest persisted turn (listTurns, ordered by seq) so the running state + Stop
+  // button survive a session switch (P-0057/D-0051).
+  const latestPersistedTurn = turns.length ? turns[turns.length - 1] : null;
+  const currentTurnId = lastTurn?.id ?? latestPersistedTurn?.id ?? null;
+  const currentTurnStatus = lastTurn?.status ?? latestPersistedTurn?.status ?? null;
+  const turnRunning = currentTurnStatus === "running" || sending;
   const curatedEvents = useMemo(() => events.filter(isCurated), [events]);
   const hiddenCount = events.length - curatedEvents.length;
   const shownEvents = rawOpen ? events : curatedEvents;
@@ -2019,7 +2028,7 @@ export default function SessionView({
                     /* P-0057/D-0051: interrupt the in-flight turn (best-effort). */
                     <button
                       onClick={handleCancel}
-                      disabled={cancelling || !lastTurn || lastTurn.status !== "running"}
+                      disabled={cancelling || currentTurnId == null}
                       title="Stop the agent"
                       className="absolute bottom-1.5 right-1.5 flex h-8 w-8 items-center justify-center rounded text-muted transition-colors hover:text-bad disabled:opacity-30 disabled:cursor-not-allowed"
                     >

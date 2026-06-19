@@ -299,6 +299,33 @@ class TestTurnInterrupt:
         assert turn_id not in orch._turn_cancel_handles
 
     @pytest.mark.asyncio
+    async def test_reap_orphaned_turns_marks_running_failed(self, session_env):
+        """A turn left 'running' by a restart is reaped to 'failed' at startup so the
+        chat shows honest state (no phantom Stop button)."""
+        Maker, ws, orch, broadcasts = session_env
+        await _make_session(Maker, ws)
+        from app.models import SessionTurn
+        async with Maker() as db:
+            db.add(SessionTurn(session_id="s1", owner_id="local", seq=0,
+                               provider="mock", prompt="stranded", status="running"))
+            db.add(SessionTurn(session_id="s1", owner_id="local", seq=1,
+                               provider="mock", prompt="done", status="succeeded"))
+            await db.commit()
+
+        reaped = await orch.reap_orphaned_turns()
+        assert reaped == 1
+
+        async with Maker() as db:
+            from sqlalchemy import select
+            rows = (await db.execute(
+                select(SessionTurn).where(SessionTurn.session_id == "s1").order_by(SessionTurn.seq)
+            )).scalars().all()
+            assert rows[0].status == "failed"
+            assert "restart" in (rows[0].error or "")
+            assert rows[0].finished_at is not None
+            assert rows[1].status == "succeeded"  # terminal turns untouched
+
+    @pytest.mark.asyncio
     async def test_cancel_unknown_or_finished_turn_returns_false(self, session_env):
         Maker, ws, orch, broadcasts = session_env
         await _make_session(Maker, ws)

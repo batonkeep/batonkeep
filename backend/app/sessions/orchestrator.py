@@ -114,6 +114,33 @@ def enforce_local_if_confidential(chosen: str, confidential: bool) -> str:
     return locals_[0]
 
 
+async def reap_orphaned_turns() -> int:
+    """Reconcile build-session turns stranded by a backend restart (P-0057/D-0051).
+
+    Turns execute as fire-and-forget asyncio tasks (dispatch_turn), so a crash/restart
+    leaves any `running` turn with no executor — it would sit non-terminal forever and,
+    after the interrupt feature, show a phantom Stop button that can't cancel anything.
+    On startup we mark these `failed` with a clear reason so the state is honest. Mirror
+    of orchestrator.reap_orphaned_runs for task runs.
+    """
+    now = datetime.now(UTC)
+    reaped = 0
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(SessionTurn).where(SessionTurn.status == "running")
+        )
+        for turn in result.scalars().all():
+            turn.status = "failed"
+            turn.error = "interrupted by backend restart (reaped at startup)"
+            turn.finished_at = now
+            reaped += 1
+        if reaped:
+            await db.commit()
+    if reaped:
+        logger.warning("[session] reaped %d orphaned turn(s) on startup", reaped)
+    return reaped
+
+
 async def create_turn_record(
     session_id: str,
     message: str,

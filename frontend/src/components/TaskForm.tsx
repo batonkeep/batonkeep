@@ -89,6 +89,11 @@ export default function TaskForm({ task, initial, providers, onSave, onClose }: 
   );
   const [tagInput, setTagInput] = useState("");
   const [imageModelId, setImageModelId] = useState<string>(src?.image_model_id ?? "");
+  // P-0056/D-0052: per-task run timeout, entered in MINUTES for readability. Empty
+  // string = use the global default (30 min). Stored/sent as seconds.
+  const [timeoutMin, setTimeoutMin] = useState<string>(
+    src?.timeout_seconds ? String(Math.round(src.timeout_seconds / 60)) : ""
+  );
   const [imageModels, setImageModels] = useState<ImageModel[]>([]); // P-0046 slice 6 catalog
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -98,6 +103,7 @@ export default function TaskForm({ task, initial, providers, onSave, onClose }: 
   const hasAdvanced = !!src && (
     Object.keys(src.params ?? {}).length > 0 ||
     src.want_json ||
+    !!src.timeout_seconds ||
     (src.routing && JSON.stringify(src.routing) !== JSON.stringify(DEFAULT_ROUTING))
   );
   const [showAdvanced, setShowAdvanced] = useState(hasAdvanced);
@@ -158,6 +164,19 @@ export default function TaskForm({ task, initial, providers, onSave, onClose }: 
     if (!cronValid) return setError("Invalid crontab expression (need 5 fields).");
     if (!intervalValid) return setError("Interval must be a number of seconds.");
     if (routing.candidates.length === 0) return setError("Add at least one routing candidate.");
+    // P-0056/D-0052: validate the per-task timeout (minutes), 1 min – 6 h.
+    const tmin = timeoutMin.trim();
+    let timeout_seconds: number | null;
+    if (tmin === "") {
+      // No override. When editing a task that had one, send -1 to clear it back to default.
+      timeout_seconds = src?.timeout_seconds ? -1 : null;
+    } else {
+      const mins = Number(tmin);
+      if (!Number.isFinite(mins) || mins < 1 || mins > 360) {
+        return setError("Timeout must be between 1 and 360 minutes (6 hours).");
+      }
+      timeout_seconds = Math.round(mins * 60);
+    }
     const paramObj: Record<string, string> = {};
     for (const { key, value } of params) if (key.trim()) paramObj[key.trim()] = value;
     const input: TaskInput = {
@@ -167,6 +186,7 @@ export default function TaskForm({ task, initial, providers, onSave, onClose }: 
       timezone: scheduleKind === "cron" ? timezone : "UTC",
       want_markdown: wantMarkdown, want_json: wantJson, enabled, routing,
       image_model_id: imageModelId || null,
+      timeout_seconds,
     };
     setSaving(true);
     try { await onSave(input, task?.id); onClose(); }
@@ -338,6 +358,23 @@ export default function TaskForm({ task, initial, providers, onSave, onClose }: 
                   JSON output
                 </label>
               </div>
+
+              {/* Run timeout (P-0056/D-0052) — entered in minutes */}
+              <Field
+                label="Run timeout (minutes)"
+                hint="Maximum elapsed time a single run may take before it's stopped and marked failed. Leave blank for the default (30 min). Max 360 (6 hours)."
+              >
+                <Input
+                  type="number"
+                  min={1}
+                  max={360}
+                  step={1}
+                  className="w-40"
+                  placeholder="30 (default)"
+                  value={timeoutMin}
+                  onChange={(e) => setTimeoutMin(e.target.value)}
+                />
+              </Field>
 
               {/* Image-gen model (P-0046 slice 6) */}
               {imageModels.length > 0 && (

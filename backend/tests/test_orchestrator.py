@@ -532,6 +532,49 @@ class TestOrchestratorSmoke:
             assert "after 1 retry" in (run.error or "")
 
     @pytest.mark.asyncio
+    async def test_per_task_timeout_fails_run(self, fresh_db, monkeypatch):
+        """P-0056/D-0052: a run that exceeds the task's timeout_seconds is stopped
+        and fails honestly with a timeout error (not stuck running/deferred)."""
+        engine, Session, base_path = fresh_db
+        import app.orchestrator as orch_mod
+        from app.providers.mock import MockExecutor
+
+        monkeypatch.setattr(orch_mod, "AsyncSessionLocal", Session)
+        monkeypatch.setitem(orch_mod._settings.__dict__, "outputs_dir", str(base_path / "out"))
+        monkeypatch.setitem(orch_mod._settings.__dict__, "work_dir", str(base_path / "work"))
+        # Global default is generous; the per-task override is what must bite.
+        monkeypatch.setitem(orch_mod._settings.__dict__, "run_timeout_seconds", 1800)
+        # A slow executor whose stream sleeps well past the 1s per-task bound.
+        monkeypatch.setattr(
+            orch_mod, "get_executor", lambda name: MockExecutor(latency_ms=3000)
+        )
+
+        from app.models import Run, Task
+        async with Session() as db:
+            task = Task(owner_id="local", name="Slow task", prompt_template="x",
+                        timeout_seconds=1,
+                        routing={"candidates": ["mock"], "failover": True})
+            db.add(task)
+            await db.commit()
+            await db.refresh(task)
+            task_id = task.id
+
+        run = await orch_mod.enqueue_run(task_id, trigger="test")
+        bg = orch_mod._cancel_handles.get(run.id)
+        if bg:
+            try:
+                await asyncio.wait_for(asyncio.shield(bg), timeout=8.0)
+            except asyncio.TimeoutError:
+                pass
+        await asyncio.sleep(0.2)
+
+        async with Session() as db:
+            run = await db.get(Run, run.id)
+            assert run.status == "failed", f"status={run.status}"
+            assert run.deferred_until is None
+            assert "timed out" in (run.error or "").lower()
+
+    @pytest.mark.asyncio
     async def test_claim_guard_prevents_double_execution(self, fresh_db, monkeypatch):
         """P-0025 #2: execute_run on a run that is no longer 'queued' is a no-op —
         the atomic queued→planning claim guards against double-execution."""

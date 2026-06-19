@@ -384,6 +384,7 @@ async def create_task(
         routing=body.routing.model_dump() if body.routing else None,
         exec_policy=body.exec_policy,
         image_model_id=body.image_model_id,
+        timeout_seconds=body.timeout_seconds,
     )
     db.add(task)
     await db.commit()
@@ -435,6 +436,9 @@ async def update_task(
         task.asset_max_count = None
     if task.asset_max_bytes == -1:
         task.asset_max_bytes = None
+    # -1 sentinel clears the per-task timeout back to the global default (P-0056/D-0052).
+    if task.timeout_seconds == -1:
+        task.timeout_seconds = None
 
     await db.commit()
     await db.refresh(task)

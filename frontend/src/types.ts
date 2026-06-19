@@ -51,6 +51,8 @@ export interface Task {
   routing: RoutingPolicy | null;
   // P-0046 slice 6: image-gen model override (catalog id; null = provider default).
   image_model_id?: string | null;
+  // P-0056/D-0052: per-task run timeout in seconds; null = global default (1800s).
+  timeout_seconds?: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -71,6 +73,9 @@ export interface TaskInput {
   routing?: RoutingPolicy | null;
   // P-0046 slice 6: image-gen model override. "" clears back to provider default.
   image_model_id?: string | null;
+  // P-0056/D-0052: per-task run timeout in seconds. null/omitted = global default;
+  // -1 (PUT only) clears an existing override back to the default.
+  timeout_seconds?: number | null;
 }
 
 export interface RunAttempt {

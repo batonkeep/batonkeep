@@ -79,6 +79,10 @@ class Task(Base):
     # task's total stored asset count / byte size is back under the cap.
     asset_max_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     asset_max_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Per-task run timeout in seconds (P-0056/D-0052). NULL = inherit the global
+    # run_timeout_seconds default (1800s). Bounds elapsed wall-clock time for the
+    # whole run; clamped to a 6h ceiling at the API boundary.
+    timeout_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

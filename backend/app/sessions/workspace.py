@@ -401,6 +401,7 @@ def build_turn_context(
         f"{WORKSPACE_DISCOVERY}\n\n"
         f"{convo}"
         f"{GITIGNORE_GUIDANCE}\n\n"
+        f"{PYTHON_DEPS_GUIDANCE}\n\n"
         f"## User message\n{user_message}\n"
     )
 
@@ -417,6 +418,27 @@ GITIGNORE_GUIDANCE = (
     "`dist/`, `build/`, or any package/dependency directory), add those paths to "
     "`.gitignore` so they are not tracked. Keep only source and content files "
     "tracked — the user's downloads and shared site should not contain dependencies."
+)
+
+
+# Standardised Python-dependency workflow (D-0029 follow-up): without an explicit
+# instruction, some agents (observed: agy) install packages into an ad-hoc directory
+# (e.g. `packages/`) that the gitignore/publish-exclusion lists don't recognise, so it
+# leaks into the file listing and the share/download bundle. Pin everyone to a `.venv`
+# (already on the exclusion lists) installed with uv, recorded in requirements.txt so
+# scheduled re-runs / fresh environments are reproducible.
+PYTHON_DEPS_GUIDANCE = (
+    "## Installing Python packages\n"
+    "If you need Python packages, use a **virtualenv at `.venv/` in the workspace** "
+    "— do not install into a custom directory (e.g. `packages/`) or system-wide:\n"
+    "```\n"
+    "uv venv .venv            # or: python -m venv .venv\n"
+    "source .venv/bin/activate\n"
+    "uv pip install <pkgs>    # or: pip install <pkgs>\n"
+    "```\n"
+    "Record dependencies in `requirements.txt` so the work stays reproducible. The "
+    "`.venv/` is ephemeral and gitignored — if a missing-module error shows the "
+    "environment was reset, recreate it and reinstall from `requirements.txt`."
 )
 
 

@@ -4,7 +4,10 @@ All notable changes to batonkeep are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (pre-1.0: minor versions may
 add features freely; patch versions are fixes).
 
-## [Unreleased]
+## [0.3.0] — 2026-06-19
+
+A feature release: portable backups for self-hosted installs, and a more reliable
+provider-usage display.
 
 ### Added
 

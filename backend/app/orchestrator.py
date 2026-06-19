@@ -402,59 +402,87 @@ async def _do_execute(run_id: int, task: Task) -> None:
                 return "cooling", None
             return "error", last_error
 
+        # Per-task wall-clock timeout (P-0056/D-0052): bound the elapsed time of the
+        # whole candidate/retry drive. A per-task override falls back to the global
+        # run_timeout_seconds default. On expiry the in-flight provider stream is
+        # cancelled (best-effort) and the run fails honestly with a timeout error.
+        # Post-processing (writing outputs) runs *outside* this bound so a finished
+        # agent's deliverables are never lost to a late timeout.
+        effective_timeout = task.timeout_seconds or _settings.run_timeout_seconds
+
         # Retry wrapper: rerun the chain on transient failure with exponential
         # backoff, bounded by max_run_retries. Rate-limit exhaustion ("cooling")
         # is not retried here — it defers and the scheduler's sweep re-enqueues it.
         max_retries = _settings.max_run_retries
         retry_count = run.retry_count or 0
-        while True:
-            outcome, error_msg = await _run_candidates()
+        try:
+            async with asyncio.timeout(effective_timeout):
+                while True:
+                    outcome, error_msg = await _run_candidates()
 
-            if outcome == "success":
-                break
+                    if outcome == "success":
+                        break
 
-            if outcome == "hard_fail":
-                await _fail(db, run, error_msg or "provider error (failover disabled)")
-                return
+                    if outcome == "hard_fail":
+                        await _fail(db, run, error_msg or "provider error (failover disabled)")
+                        return
 
-            if outcome == "cooling":
-                run.status = "deferred"
-                run.deferred_until = quota_tracker.earliest_reset(candidates)
-                run.attempts = attempts
-                await db.commit()
-                await _record_routing_outcome(db, run)  # P-0053 slice 2
-                await _broadcast_run(run)
-                return
+                    if outcome == "cooling":
+                        run.status = "deferred"
+                        run.deferred_until = quota_tracker.earliest_reset(candidates)
+                        run.attempts = attempts
+                        await db.commit()
+                        await _record_routing_outcome(db, run)  # P-0053 slice 2
+                        await _broadcast_run(run)
+                        return
 
-            # outcome == "error" → transient; retry if budget remains.
-            if retry_count < max_retries:
-                retry_count += 1
-                run.retry_count = retry_count
-                delay = _settings.retry_backoff_seconds * (2 ** (retry_count - 1))
-                logger.info(
-                    "[orchestrator] run %d transient failure (%s); retry %d/%d in %.1fs",
-                    run_id, error_msg, retry_count, max_retries, delay,
-                )
-                await _emit_event(
-                    db, run, EventKind.route, "retry_scheduled",
-                    data={"attempt": retry_count, "max_retries": max_retries,
-                          "delay_seconds": delay, "error": error_msg},
-                )
-                run.attempts = attempts
-                await db.commit()
-                await _broadcast_run(run)
-                await asyncio.sleep(delay)
-                continue
+                    # outcome == "error" → transient; retry if budget remains.
+                    if retry_count < max_retries:
+                        retry_count += 1
+                        run.retry_count = retry_count
+                        delay = _settings.retry_backoff_seconds * (2 ** (retry_count - 1))
+                        logger.info(
+                            "[orchestrator] run %d transient failure (%s); retry %d/%d in %.1fs",
+                            run_id, error_msg, retry_count, max_retries, delay,
+                        )
+                        await _emit_event(
+                            db, run, EventKind.route, "retry_scheduled",
+                            data={"attempt": retry_count, "max_retries": max_retries,
+                                  "delay_seconds": delay, "error": error_msg},
+                        )
+                        run.attempts = attempts
+                        await db.commit()
+                        await _broadcast_run(run)
+                        await asyncio.sleep(delay)
+                        continue
 
-            # Retries exhausted → terminal failure (the stuck-deferred bug fix:
-            # a non-cooling exhaustion now fails honestly instead of deferring
-            # with a null deferred_until that the sweep can never pick up).
-            plural = "y" if retry_count == 1 else "ies"
-            run.attempts = attempts
-            await _fail(
-                db, run,
-                f"all candidates failed after {retry_count} retr{plural}: {error_msg}",
+                    # Retries exhausted → terminal failure (the stuck-deferred bug fix:
+                    # a non-cooling exhaustion now fails honestly instead of deferring
+                    # with a null deferred_until that the sweep can never pick up).
+                    plural = "y" if retry_count == 1 else "ies"
+                    run.attempts = attempts
+                    await _fail(
+                        db, run,
+                        f"all candidates failed after {retry_count} retr{plural}: {error_msg}",
+                    )
+                    return
+        except TimeoutError:
+            # The timeout cancelled whatever was in flight; the session may carry a
+            # half-applied transaction, so roll back before recording the failure.
+            minutes = effective_timeout / 60
+            logger.warning(
+                "[orchestrator] run %d exceeded timeout of %ds (%.1f min)",
+                run_id, effective_timeout, minutes,
             )
+            await db.rollback()
+            run = await db.get(Run, run_id)
+            if run is not None and run.status not in _TERMINAL_RUN_STATUSES:
+                run.attempts = attempts
+                await _fail(
+                    db, run,
+                    f"run timed out after {minutes:g} min "
+                    f"({'task limit' if task.timeout_seconds else 'default limit'})",
+                )
             return
 
         # ── 5. Post-process outputs ───────────────────────────────────────────

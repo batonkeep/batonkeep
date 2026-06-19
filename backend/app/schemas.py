@@ -12,6 +12,23 @@ from pydantic import BaseModel, ConfigDict, field_validator
 # P-0046 code-exec execution policies (single source of truth: code_exec.POLICIES).
 from app.providers.tools.code_exec import POLICIES as EXEC_POLICIES
 
+# P-0056/D-0052: bounds for the per-task run-timeout override (seconds). Floor 1 min;
+# ceiling 6h (runaway-cost protection). None means "inherit the global default".
+TIMEOUT_SECONDS_MIN = 60
+TIMEOUT_SECONDS_MAX = 6 * 60 * 60  # 21600
+
+
+def _validate_timeout_seconds(v: int | None) -> int | None:
+    """Validate a per-task run-timeout override (P-0056/D-0052). None = global default."""
+    if v is None:
+        return None
+    if v < TIMEOUT_SECONDS_MIN or v > TIMEOUT_SECONDS_MAX:
+        raise ValueError(
+            f"timeout_seconds must be between {TIMEOUT_SECONDS_MIN} and "
+            f"{TIMEOUT_SECONDS_MAX} (6h), or null for the default"
+        )
+    return v
+
 
 def _validate_image_model_id(v: str | None, *, allow_empty: bool = False) -> str | None:
     """Validate an image-gen model override against the catalog (P-0046 slice 6).
@@ -74,6 +91,9 @@ class TaskCreate(BaseModel):
     # P-0050: per-task generated-asset retention caps. None = unlimited (default).
     asset_max_count: int | None = None
     asset_max_bytes: int | None = None
+    # P-0056/D-0052: per-task run timeout in seconds. None = global default (1800s).
+    # Bounds elapsed wall-clock time; clamped to [60s, 6h].
+    timeout_seconds: int | None = None
 
     @field_validator("exec_policy")
     @classmethod
@@ -93,6 +113,11 @@ class TaskCreate(BaseModel):
         if v is not None and v < 0:
             raise ValueError("retention cap must be >= 0 (None = unlimited)")
         return v
+
+    @field_validator("timeout_seconds")
+    @classmethod
+    def _valid_timeout(cls, v: int | None) -> int | None:
+        return _validate_timeout_seconds(v)
 
 
 class TaskUpdate(BaseModel):
@@ -114,6 +139,9 @@ class TaskUpdate(BaseModel):
     # P-0050 retention caps. -1 clears back to unlimited (None means "unchanged").
     asset_max_count: int | None = None
     asset_max_bytes: int | None = None
+    # P-0056/D-0052 per-task run timeout (seconds). -1 clears back to the global
+    # default; None means "unchanged" (exclude_unset). Bounds elapsed wall-clock time.
+    timeout_seconds: int | None = None
 
     @field_validator("exec_policy")
     @classmethod
@@ -133,6 +161,15 @@ class TaskUpdate(BaseModel):
         if v is not None and v < -1:
             raise ValueError("retention cap must be >= 0, or -1 to clear to unlimited")
         return v
+
+    @field_validator("timeout_seconds")
+    @classmethod
+    def _timeout_range(cls, v: int | None) -> int | None:
+        # -1 is the "clear back to default" sentinel (handled in the route); otherwise
+        # the same [60s, 6h] bound as create applies.
+        if v == -1:
+            return v
+        return _validate_timeout_seconds(v)
 
 
 class TaskOut(BaseModel):
@@ -156,6 +193,7 @@ class TaskOut(BaseModel):
     image_model_id: str | None = None  # P-0046 slice 6: image-gen model override
     asset_max_count: int | None = None  # P-0050 retention cap; None = unlimited
     asset_max_bytes: int | None = None  # P-0050 retention cap; None = unlimited
+    timeout_seconds: int | None = None  # P-0056/D-0052; None = global default (1800s)
     created_at: datetime
     updated_at: datetime
 

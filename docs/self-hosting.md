@@ -138,15 +138,60 @@ Back up your volumes before a major upgrade — see **Data & backups** below.
 ## Data & backups
 
 All of your state lives in two Docker named volumes. **If you lose them, it is gone — there
-is no cloud copy.** Back them up:
+is no cloud copy.**
 
-- **`appdata`** (`/data`) — the SQLite database (tasks, sessions, runs, encrypted credentials)
-  and task outputs. Losing this loses all your work.
-- **`agent_home`** (`/home/agent`) — your plan-CLI OAuth logins. Losing this means re-running
-  the auth step for every provider.
+- **`appdata`** (`/data`) — the SQLite database (tasks, sessions, runs, encrypted credentials),
+  your session workspaces, and task outputs. Losing this loses all your work.
+- **`agent_home`** (`/home/agent`) — your plan-CLI OAuth logins. Losing this just means
+  re-running the auth step for each provider — these are session tokens, not durable data.
 
-A simple snapshot of both (stack can keep running for a consistent-enough SQLite copy, or stop
-it first for a guaranteed-quiet one):
+### Recommended: the `batonkeep-backup` script
+
+The backend ships a backup script that archives only your **durable, user-authored state** —
+the database (including encrypted API keys), session workspaces, task outputs, and published
+bundles. It **excludes regenerable bloat** (`node_modules`, Python virtualenvs, pip/npm caches,
+build outputs — `node_modules` alone is typically the majority of workspace size) so the
+archive stays small and portable. It does **not** prune anything else, so a restore never
+forces you to reinstall a workspace's packages by hand.
+
+Stream a backup straight to a file on your host (no copy step):
+
+```bash
+docker compose exec -T backend bash /app/scripts/batonkeep-backup.sh --stdout > batonkeep-backup.tar.gz
+```
+
+Preview exactly what would be included first with `--dry-run` (drop `-T` and `--stdout`):
+
+```bash
+docker compose exec backend bash /app/scripts/batonkeep-backup.sh --dry-run
+```
+
+To restore (onto a fresh install or new hardware) — **stop the stack first**, then pipe the
+archive back in:
+
+```bash
+docker compose down                                    # stop the stack
+docker compose up -d backend                           # bring just the backend up to restore into
+cat batonkeep-backup.tar.gz | docker compose exec -T backend bash /app/scripts/batonkeep-restore.sh --stdin
+docker compose up -d                                   # start everything
+```
+
+Two things to know about restore:
+
+- **Provider logins are not in the backup.** After restoring, re-auth each plan-CLI provider:
+  `docker compose exec -u sandbox -e HOME=/home/agent backend bash /app/scripts/auth.sh`.
+- **Keep your `APP_SECRET`.** BYO API keys in the database are encrypted with `APP_SECRET` from
+  `.env`. Restore onto an install whose `APP_SECRET` matches the backup-time value, or those
+  keys can't be decrypted and must be re-entered in Settings. (Everything else restores cleanly
+  regardless.)
+
+This is also how you **move Batonkeep to new hardware**: back up on the old host, copy the one
+`.tar.gz`, restore on the new one. (Continuous cross-machine *sync* is not part of self-hosting.)
+
+### Alternative: raw volume snapshot
+
+If you'd rather snapshot the volumes directly (e.g. as part of a host-level backup regime),
+note this captures everything including the regenerable bloat the script skips:
 
 ```bash
 docker run --rm -v batonkeep_appdata:/data -v "$PWD:/backup" alpine \

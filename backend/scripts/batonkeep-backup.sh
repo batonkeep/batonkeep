@@ -174,15 +174,17 @@ if [[ "${STDOUT_MODE}" == true ]]; then
   LOG "Timestamp: ${TS}  Sessions: ${SESSION_COUNT}"
   LOG "Piping tar stream — redirect stdout to a .tar.gz file on the host."
 
+  # `|| TAR_EXIT=$?` keeps `set -e` from aborting before we can report the
+  # failure on stderr with our own exit code.
+  TAR_EXIT=0
   tar \
     "${EXCLUDE_FLAGS[@]}" \
     -cz \
     --transform "s|${MANIFEST_TMP#/}|data/backups/${MANIFEST_NAME}|" \
     "${EXISTING_PATHS[@]}" \
     "${MANIFEST_TMP}" \
-    2>/dev/null
+    2>/dev/null || TAR_EXIT=$?
 
-  TAR_EXIT=$?
   if [[ "${TAR_EXIT}" -ne 0 ]]; then
     LOG "ERROR: tar failed (exit ${TAR_EXIT})"
     exit 4

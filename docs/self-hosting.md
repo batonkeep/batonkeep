@@ -62,7 +62,7 @@ to your real providers (e.g. `claude,grok`) after the auth step below. The in-br
 Pin a release instead of `latest` for production:
 
 ```bash
-TAG=v0.2.0 docker compose up -d
+TAG=v0.3.0 docker compose up -d
 ```
 
 Log in to your subscription-plan CLIs once (auth persists on the `agent_home` volume):

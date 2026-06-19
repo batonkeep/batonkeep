@@ -361,7 +361,7 @@ class SessionTurn(Base):
     model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")
     response: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # "running" | "succeeded" | "failed"
+    # "running" | "succeeded" | "failed" | "cancelled" (P-0057/D-0051: user interrupt)
     status: Mapped[str] = mapped_column(String(16), default="running", index=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     # M1.3 versioning: the workspace commit this turn produced (None if the turn

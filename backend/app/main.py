@@ -964,7 +964,7 @@ async def create_session_turn(
     if not body.message.strip():
         raise HTTPException(status_code=400, detail="message must not be empty")
 
-    from app.sessions.orchestrator import SessionError, create_turn_record, run_turn_background
+    from app.sessions.orchestrator import SessionError, create_turn_record, dispatch_turn
     try:
         turn_id, turn_out = await create_turn_record(
             session_id, body.message, provider=body.provider, model=body.model,
@@ -975,10 +975,45 @@ async def create_session_turn(
 
     # Fire and forget — the orchestrator streams events over WS and persists the
     # turn result. We do NOT await this; the 202 response goes back immediately.
-    import asyncio
-    asyncio.ensure_future(run_turn_background(turn_id, session_id, owner_id=owner_id))
+    # dispatch_turn tracks the task so it can be interrupted (P-0057/D-0051).
+    dispatch_turn(turn_id, session_id, owner_id=owner_id)
 
     return turn_out
+
+
+@app.post("/api/sessions/{session_id}/turns/{turn_id}/cancel",
+          response_model=SessionTurnOut, tags=["sessions"])
+async def cancel_session_turn(
+    session_id: str,
+    turn_id: int,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """
+    Interrupt an in-flight turn (P-0057/D-0051). Best-effort: cancels the running
+    agent and terminates the underlying CLI/API work. The turn is marked
+    "cancelled" with any partial output preserved; the user can continue by sending
+    a new message (a normal next turn seeded with full session history). Idempotent
+    — cancelling a turn that already finished returns its terminal state.
+    """
+    session = await db.get(Session, session_id)
+    if session is None or session.owner_id != owner_id:
+        raise HTTPException(status_code=404, detail="Session not found")
+    turn = await db.get(SessionTurn, turn_id)
+    if turn is None or turn.session_id != session_id:
+        raise HTTPException(status_code=404, detail="Turn not found")
+
+    from app.sessions.orchestrator import cancel_turn
+    signalled = await cancel_turn(turn_id, session_id, owner_id=owner_id)
+    if signalled:
+        # The CancelledError handler in run_turn_background persists status=cancelled
+        # asynchronously; wait briefly for it to land so the response is accurate.
+        for _ in range(50):
+            await asyncio.sleep(0.02)
+            await db.refresh(turn)
+            if turn.status != "running":
+                break
+    return SessionTurnOut.model_validate(turn)
 
 
 @app.post("/api/sessions/{session_id}/capture",

@@ -7,7 +7,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { marked } from "marked";
 import hljs from "highlight.js/lib/common";
 import "highlight.js/styles/github-dark.css";
-import { Activity, Archive, Check, ChevronDown, ChevronLeft, ChevronRight, Cloud, Copy, Download, FileCode, Folder, Globe, History, Link2, Loader2, Lock, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, Shield, SquareTerminal, Trash2, X } from "lucide-react";
+import { Activity, Archive, Check, ChevronDown, ChevronLeft, ChevronRight, Cloud, Copy, Download, FileCode, Folder, Globe, History, Link2, Loader2, Lock, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, Shield, Square, SquareTerminal, Trash2, X } from "lucide-react";
 import type { CloudflareStatus, ExecPolicy, FileChange, FileEntry, ImageModel, ProviderCatalog, ProviderHealth, Publish, Session, SessionTemplate, SessionTurn, Version } from "../types";
 import { api } from "../api";
 import { useSessionEvents, type SessionEvent } from "../useLiveFeed";
@@ -432,6 +432,7 @@ const TURN_TONE: Record<SessionTurn["status"], Tone> = {
   running: "live",
   succeeded: "ok",
   failed: "bad",
+  cancelled: "neutral",  // P-0057/D-0051: user-interrupted turn
 };
 
 const KIND_COLOR: Record<string, string> = {
@@ -495,6 +496,7 @@ export default function SessionView({
   const [modelSwitch, setModelSwitch] = useState("");
   const [sessionCatalog, setSessionCatalog] = useState<ProviderCatalog | null>(null);
   const [sending, setSending] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [creating, setCreating] = useState(false);
   const [confidentialDraft, setConfidentialDraft] = useState(false); // new-session local-only pin
   const [previewNonce, setPreviewNonce] = useState(0);
@@ -867,6 +869,22 @@ export default function SessionView({
       // Clear the HTTP-level 'sending' flag. The WS-driven turnRunning keeps the
       // "generating…" indicator alive until the agent finishes.
       setSending(false);
+    }
+  };
+
+  // P-0057/D-0051: interrupt the in-flight turn (best-effort). The backend stops the
+  // agent and marks the turn "cancelled"; the WS broadcast flips turnRunning off.
+  const handleCancel = async () => {
+    if (!selectedId || !lastTurn || lastTurn.status !== "running" || cancelling) return;
+    setCancelling(true);
+    setSendError(null);
+    try {
+      await api.cancelTurn(selectedId, lastTurn.id);
+      setPendingMessage(null);
+    } catch (err) {
+      setSendError(err instanceof Error ? err.message : "Could not stop the agent");
+    } finally {
+      setCancelling(false);
     }
   };
 
@@ -1997,14 +2015,26 @@ export default function SessionView({
                     placeholder={isMobile ? "Describe the next change…" : "Describe the next change…  (drop files here · ⌘/Ctrl+Enter to send)"}
                     className="w-full resize-none rounded-md border border-edge bg-base py-2 pl-3 pr-12 text-sm text-ink placeholder:text-muted focus-visible:border-brand/60 focus-visible:outline-none"
                   />
-                  <button
-                    onClick={handleSend}
-                    disabled={!message.trim() || sending}
-                    title="Send (⌘/Ctrl+Enter)"
-                    className="absolute bottom-1.5 right-1.5 flex h-8 w-8 items-center justify-center rounded text-muted transition-colors hover:text-brand disabled:opacity-30 disabled:cursor-not-allowed"
-                  >
-                    {sending ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
-                  </button>
+                  {turnRunning ? (
+                    /* P-0057/D-0051: interrupt the in-flight turn (best-effort). */
+                    <button
+                      onClick={handleCancel}
+                      disabled={cancelling || !lastTurn || lastTurn.status !== "running"}
+                      title="Stop the agent"
+                      className="absolute bottom-1.5 right-1.5 flex h-8 w-8 items-center justify-center rounded text-muted transition-colors hover:text-bad disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      {cancelling ? <Loader2 size={16} className="animate-spin" /> : <Square size={15} className="fill-current" />}
+                    </button>
+                  ) : (
+                    <button
+                      onClick={handleSend}
+                      disabled={!message.trim() || sending}
+                      title="Send (⌘/Ctrl+Enter)"
+                      className="absolute bottom-1.5 right-1.5 flex h-8 w-8 items-center justify-center rounded text-muted transition-colors hover:text-brand disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      {sending ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+                    </button>
+                  )}
                 </div>
               )}
             </div>

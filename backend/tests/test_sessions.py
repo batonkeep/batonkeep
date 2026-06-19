@@ -119,6 +119,9 @@ class TestWorkspace:
         assert "built hero section" in ctx     # from SESSION.md brief
         assert "SESSION.md" in ctx              # discovery pointer names the brief file
         assert "make the hero bigger" in ctx    # the new user message
+        # Standardised Python-dependency workflow: install into `.venv`, not a stray
+        # `packages/` dir (the agy behaviour this guidance corrects).
+        assert "Installing Python packages" in ctx and ".venv" in ctx
 
     async def test_turn_context_includes_recent_dialogue(self, tmp_path, monkeypatch):
         # A short follow-up keeps its referent via the replayed dialogue tail.

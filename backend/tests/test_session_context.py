@@ -46,6 +46,17 @@ def test_seed_writes_brief_and_discovery_pointer(tmp_path):
     assert sc._BEGIN in text and sc._END in text
 
 
+def test_seed_includes_python_venv_guidance(tmp_path):
+    # Standardised venv workflow must reach the terminal lane so agents install into
+    # `.venv` (gitignored/excluded) rather than an ad-hoc `packages/` dir.
+    ws = _ws(tmp_path)
+    sc.seed_provider_context(ws, "claude")
+    text = (tmp_path / "ws" / "CLAUDE.md").read_text(encoding="utf-8")
+    assert "Installing Python packages" in text
+    assert ".venv" in text
+    assert "requirements.txt" in text
+
+
 def test_seed_does_not_enumerate_files(tmp_path):
     # No static file list is emitted — not even for source files — so nothing can
     # blow the launch past ARG_MAX regardless of workspace size.

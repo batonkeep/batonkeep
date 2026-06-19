@@ -26,6 +26,7 @@ import os
 from app.sessions.workspace import (
     BRIEF_FILENAME,
     GITIGNORE_GUIDANCE,
+    PYTHON_DEPS_GUIDANCE,
     WORKSPACE_DISCOVERY,
     read_brief,
 )
@@ -88,7 +89,8 @@ def render_session_context(workspace: str) -> str:
         "## Brief\n"
         f"{brief or '_(no brief recorded yet)_'}\n\n"
         f"{WORKSPACE_DISCOVERY}\n\n"
-        f"{GITIGNORE_GUIDANCE}\n"
+        f"{GITIGNORE_GUIDANCE}\n\n"
+        f"{PYTHON_DEPS_GUIDANCE}\n"
     )
 
 

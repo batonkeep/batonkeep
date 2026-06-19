@@ -4,6 +4,32 @@ All notable changes to batonkeep are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (pre-1.0: minor versions may
 add features freely; patch versions are fixes).
 
+## [Unreleased]
+
+### Added
+
+- **`batonkeep-backup` / `batonkeep-restore` scripts for portable backups.** A
+  backup script baked into the backend archives only your durable state — the
+  database (including encrypted API keys), session workspaces, task outputs, and
+  published bundles — while excluding regenerable bloat (`node_modules`,
+  virtualenvs, package caches, build output). The result is a small, inspectable
+  `.tar.gz` you can stream straight to your host, use to move Batonkeep to new
+  hardware, or keep as a snapshot. Restore pipes it back in. See
+  [self-hosting → Data & backups](docs/self-hosting.md). Provider OAuth logins are
+  deliberately excluded (re-auth after restore); keep your `APP_SECRET` to decrypt
+  stored API keys.
+
+### Changed
+
+- **Provider usage display now leans on data we can measure reliably.** The
+  background scrape of each plan-CLI's `/usage` panel has been removed — provider
+  terminal formats change without notice, which made the quota percentage
+  unreliable (and outright broken for some providers). API-key providers now show
+  exact spend from recorded run costs; plan-billed providers show a "Plan-billed"
+  label with a **Check usage** button that either runs the provider's own usage
+  command once and shows the raw output, or drops you into the terminal to read it
+  live.
+
 ## [0.2.2] — 2026-06-17
 
 A patch release fixing Cloudflare Pages publishing for bundled (built) sites.

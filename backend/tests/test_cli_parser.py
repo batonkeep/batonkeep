@@ -136,6 +136,25 @@ class TestGrokJSON:
         assert ev.data.get("type") == "end"
         assert ev.data.get("stopReason") == "EndTurn"
 
+    def test_max_turns_reached_is_detectable_log(self):
+        """type:'max_turns_reached' must surface as a log with data intact so the
+        executor can flag the run as truncated (not falsely 'complete')."""
+        buf: list[str] = []
+        ev = parse_line('{"type":"max_turns_reached"}', buf)
+        assert ev is not None
+        assert ev.kind == EventKind.log
+        assert ev.data.get("type") == "max_turns_reached"
+        assert buf == []  # must not pollute the deliverable text
+
+    def test_cancelled_end_carries_stop_reason(self):
+        """A cancelled run's terminal 'end' must expose stopReason so the executor
+        treats it as truncated rather than a normal completion."""
+        buf: list[str] = []
+        ev = parse_line('{"type":"end","stopReason":"Cancelled"}', buf)
+        assert ev is not None
+        assert ev.kind == EventKind.log
+        assert ev.data.get("stopReason") == "Cancelled"
+
 
 class TestAgySingleJSON:
     def test_single_json_blob_is_result(self):

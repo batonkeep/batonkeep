@@ -18,7 +18,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
+import signal
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -35,6 +37,29 @@ from app.providers.base import (
 from app.providers.registry import ProviderDef, ProviderInstance
 
 logger = logging.getLogger(__name__)
+
+
+def _terminate_sandbox_proc(proc: asyncio.subprocess.Process | None) -> None:
+    """Best-effort kill of a still-running CLI subprocess (P-0057/D-0051).
+
+    The CLI runs as the low-priv `sandbox` user, so `batond` cannot signal it
+    cross-user — a bare ``proc.kill()`` raises ``EPERM`` ("[Errno 1] Operation not
+    permitted"). On an interrupt that EPERM would surface inside the teardown
+    ``finally`` and *mask* the ``CancelledError``, turning a clean cancel into a
+    failed turn. Reap the whole process group through the setuid helper (pgid == pid
+    via ``start_new_session``), then fall back to direct signals for the
+    un-split/local-dev case. Swallows the expected errors so teardown never raises.
+    """
+    if proc is None or proc.returncode is not None:
+        return
+    sandbox.reap(proc.pid)
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.kill()
+        except (ProcessLookupError, PermissionError):
+            pass
 _settings = get_settings()
 
 # ── Rate-limit patterns ───────────────────────────────────────────────────────
@@ -441,7 +466,6 @@ class CLIExecutor(Executor):
             # subscriptions of the same provider keep independent auth (Phase B).
             env = None
             if self._instance and self._instance.cli_config_dir and self._instance.cli_config_env:
-                import os
                 env = os.environ.copy()
                 env[self._instance.cli_config_env] = self._instance.cli_config_dir
                 yield ExecEvent(
@@ -458,6 +482,10 @@ class CLIExecutor(Executor):
                 stderr=asyncio.subprocess.PIPE,
                 cwd=workdir,
                 env=env,
+                # Own process group (pgid == pid) so an interrupt can reap the whole
+                # agent tree via the setuid helper — batond cannot signal the
+                # `sandbox`-uid process cross-user (P-0057/D-0051).
+                start_new_session=True,
             )
 
             assert proc.stdout is not None
@@ -530,8 +558,7 @@ class CLIExecutor(Executor):
                                     truncated_reason = truncated_reason or f"stopReason={stop}"
                                 break
             except TimeoutError:
-                if proc.returncode is None:
-                    proc.kill()
+                _terminate_sandbox_proc(proc)
                 yield ExecEvent(
                     kind=EventKind.error,
                     message=f"[{self.name}] timeout after {timeout}s",
@@ -612,5 +639,6 @@ class CLIExecutor(Executor):
             logger.exception("[%s] unexpected error", self.name)
             yield ExecEvent(kind=EventKind.error, message=f"[{self.name}] {exc}")
         finally:
-            if proc and proc.returncode is None:
-                proc.kill()
+            # Teardown must never raise — a bare proc.kill() on the sandbox-uid CLI
+            # would EPERM and mask an in-flight CancelledError (P-0057/D-0051).
+            _terminate_sandbox_proc(proc)

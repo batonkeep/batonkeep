@@ -4,6 +4,42 @@ All notable changes to batonkeep are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (pre-1.0: minor versions may
 add features freely; patch versions are fixes).
 
+## [0.4.0] — 2026-06-19
+
+A feature release centred on build-session control: you can now stop a running
+turn mid-flight and keep going, set per-task run timeouts, and trust failed runs
+to report honestly.
+
+### Added
+
+- **Stop a running build-session turn.** While a turn is in flight, the Send
+  button becomes a **Stop** button. Stopping cancels the underlying CLI run,
+  preserves whatever was streamed so far, and marks the turn cancelled without
+  committing the workspace. The running state (and the Stop button) now survives
+  switching between sessions, and your next message simply continues from the
+  workspace and recent dialogue — so you can continue even after switching to a
+  different provider.
+- **Per-task run timeout.** Tasks have an optional **Run timeout (minutes)** field
+  in the form's Advanced section (1–360 min) that overrides the global 30-minute
+  default. On expiry the in-flight run is cancelled and fails honestly with a
+  timeout error; already-finished deliverables are never lost to a late timeout.
+- **Standardised Python dependency workflow for agents.** Session context now
+  guides agents to install custom Python packages into a `.venv` at the workspace
+  root (via `uv`, falling back to `pip`) and record them in `requirements.txt`.
+  Because `.venv` is already excluded from share/download bundles, this keeps
+  generated bundles clean and reproducible.
+
+### Fixed
+
+- **Truncated grok runs are now reported as failures.** When the grok CLI hit its
+  turn cap or was cancelled mid-research, the run was previously reported as a
+  successful "plain-text fallback" from partial output. It now detects the
+  truncation and records a real failure, so the orchestrator can fail over instead
+  of returning an incomplete result.
+- **Stranded turns are cleaned up on restart.** Session turns left running by a
+  backend restart are now marked failed at startup instead of sitting non-terminal
+  forever (and showing a phantom Stop button).
+
 ## [0.3.0] — 2026-06-19
 
 A feature release: portable backups for self-hosted installs, and a more reliable

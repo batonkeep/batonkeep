@@ -17,6 +17,7 @@ API (see main.py /versions, /diff, /restore).
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import UTC, datetime
@@ -49,6 +50,50 @@ _settings = get_settings()
 # always-on default. A session budget (opt-in) replaces this with cumulative-remaining.
 _DEFAULT_TURN_BUDGET_USD = 1.0
 
+# In-flight turn background tasks, keyed by turn_id, so an interrupt can cancel the
+# running agent (P-0057/D-0051). Mirrors the orchestrator's _cancel_handles for task
+# runs. Cancelling the task raises CancelledError into run_turn_background's stream
+# loop; the executor's `finally: proc.kill()` terminates the underlying CLI process
+# (and the API-lane stream is aborted), so the interrupt is best-effort but real.
+_turn_cancel_handles: dict[int, asyncio.Task] = {}
+
+
+def dispatch_turn(turn_id: int, session_id: str, *, owner_id: str = "local") -> asyncio.Task:
+    """Fire-and-forget run_turn_background as a tracked task so it can be cancelled.
+
+    Returns the asyncio.Task. Registers it in _turn_cancel_handles and clears the
+    handle on completion. Use this instead of a bare asyncio.ensure_future so an
+    interrupt (cancel_turn) has a handle to cancel.
+    """
+    bg_task = asyncio.ensure_future(
+        run_turn_background(turn_id, session_id, owner_id=owner_id)
+    )
+    _turn_cancel_handles[turn_id] = bg_task
+
+    def _on_done(t: asyncio.Task) -> None:
+        _turn_cancel_handles.pop(turn_id, None)
+        if not t.cancelled():
+            exc = t.exception()
+            if exc is not None:
+                logger.error("[session] turn %d background task failed: %r", turn_id, exc)
+
+    bg_task.add_done_callback(_on_done)
+    return bg_task
+
+
+async def cancel_turn(turn_id: int, session_id: str, *, owner_id: str = "local") -> bool:
+    """Best-effort interrupt of an in-flight turn (P-0057/D-0051).
+
+    Cancels the background task if it is still running; run_turn_background's
+    CancelledError handler persists the partial output and marks the turn
+    "cancelled". Returns True if a running turn was signalled, else False.
+    """
+    task = _turn_cancel_handles.get(turn_id)
+    if task and not task.done():
+        task.cancel()
+        return True
+    return False
+
 
 class SessionError(Exception):
     """Raised for caller-facing problems (unknown session/provider)."""
@@ -67,6 +112,33 @@ def enforce_local_if_confidential(chosen: str, confidential: bool) -> str:
             "configure a local model (e.g. ollama) to run it"
         )
     return locals_[0]
+
+
+async def reap_orphaned_turns() -> int:
+    """Reconcile build-session turns stranded by a backend restart (P-0057/D-0051).
+
+    Turns execute as fire-and-forget asyncio tasks (dispatch_turn), so a crash/restart
+    leaves any `running` turn with no executor — it would sit non-terminal forever and,
+    after the interrupt feature, show a phantom Stop button that can't cancel anything.
+    On startup we mark these `failed` with a clear reason so the state is honest. Mirror
+    of orchestrator.reap_orphaned_runs for task runs.
+    """
+    now = datetime.now(UTC)
+    reaped = 0
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(SessionTurn).where(SessionTurn.status == "running")
+        )
+        for turn in result.scalars().all():
+            turn.status = "failed"
+            turn.error = "interrupted by backend restart (reaped at startup)"
+            turn.finished_at = now
+            reaped += 1
+        if reaped:
+            await db.commit()
+    if reaped:
+        logger.warning("[session] reaped %d orphaned turn(s) on startup", reaped)
+    return reaped
 
 
 async def create_turn_record(
@@ -234,6 +306,9 @@ async def run_turn_background(
 
     final_result: ExecResult | None = None
     error_msg: str | None = None
+    # Accumulate streamed token text so an interrupt (P-0057/D-0051) can persist
+    # whatever the agent produced before it was stopped.
+    partial_chunks: list[str] = []
 
     async def _approve(code: str, label: str | None) -> bool:
         """P-0046 slice 3b: drive the code-exec `confirmation` round-trip — emit an
@@ -278,6 +353,8 @@ async def run_turn_background(
             ev_text = ev.text
             if ev.kind == EventKind.result and ev_text:
                 ev_text = rewrite_workspace_file_links(ev_text, session_id, workspace)
+            elif ev.kind == EventKind.token and ev.text:
+                partial_chunks.append(ev.text)
             await _broadcast_event(session_id, turn_id, seq, ev.kind,
                                    message=ev.message, text=ev_text, phase=ev.phase, data=ev.data)
             if ev.kind == EventKind.result:
@@ -285,6 +362,27 @@ async def run_turn_background(
             elif ev.kind == EventKind.error:
                 error_msg = ev.message or "executor error"
                 break
+    except asyncio.CancelledError:
+        # User interrupt (P-0057/D-0051): best-effort cancel. The executor's
+        # `finally: proc.kill()` has terminated the underlying CLI/API work; persist
+        # whatever was streamed so the UI shows the partial output, mark the turn
+        # "cancelled", and re-raise so the task ends cancelled. No workspace commit —
+        # any partial edits are left as-is (best-effort, not transactional).
+        partial = "".join(partial_chunks).strip()
+        logger.info("[session] turn %d cancelled by user (interrupt)", turn_id)
+        async with AsyncSessionLocal() as db:
+            t = await db.get(SessionTurn, turn_id)
+            if t is not None and t.status == "running":
+                t.status = "cancelled"
+                t.response = (
+                    rewrite_workspace_file_links(partial, session_id, workspace)
+                    if partial else None
+                )
+                t.finished_at = datetime.now(UTC)
+                await db.commit()
+        await _broadcast_turn(turn_id, session_id, seq, chosen, "cancelled",
+                              extra={"partial": bool(partial)})
+        raise
     except Exception as exc:  # pragma: no cover - defensive
         logger.exception("[session] turn %d executor error", turn_id)
         error_msg = str(exc)

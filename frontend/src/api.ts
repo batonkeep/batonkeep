@@ -138,6 +138,10 @@ export const api = {
   listTurns: (id: string) => req<SessionTurn[]>(`/sessions/${id}/turns`),
   createTurn: (id: string, body: TurnInput) =>
     req<SessionTurn>(`/sessions/${id}/turns`, { method: "POST", body: JSON.stringify(body) }),
+  // P-0057/D-0051: best-effort interrupt of an in-flight turn. Returns the turn in
+  // its resolved (cancelled / already-terminal) state.
+  cancelTurn: (id: string, turnId: number) =>
+    req<SessionTurn>(`/sessions/${id}/turns/${turnId}/cancel`, { method: "POST" }),
   // D-0017 thread 2: capture the web-TTY terminal lane's workspace edits as a
   // version + artifact turn. Returns the new turn, or null if nothing changed.
   captureTerminal: (id: string, instance?: string) =>

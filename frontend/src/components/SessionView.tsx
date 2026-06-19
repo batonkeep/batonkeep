@@ -7,7 +7,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { marked } from "marked";
 import hljs from "highlight.js/lib/common";
 import "highlight.js/styles/github-dark.css";
-import { Activity, Archive, Check, ChevronDown, ChevronLeft, ChevronRight, Cloud, Copy, Download, FileCode, Folder, Globe, History, Link2, Loader2, Lock, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, Shield, SquareTerminal, Trash2, X } from "lucide-react";
+import { Activity, Archive, Check, ChevronDown, ChevronLeft, ChevronRight, Cloud, Copy, Download, FileCode, Folder, Globe, History, Link2, Loader2, Lock, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, Shield, Square, SquareTerminal, Trash2, X } from "lucide-react";
 import type { CloudflareStatus, ExecPolicy, FileChange, FileEntry, ImageModel, ProviderCatalog, ProviderHealth, Publish, Session, SessionTemplate, SessionTurn, Version } from "../types";
 import { api } from "../api";
 import { useSessionEvents, type SessionEvent } from "../useLiveFeed";
@@ -432,6 +432,7 @@ const TURN_TONE: Record<SessionTurn["status"], Tone> = {
   running: "live",
   succeeded: "ok",
   failed: "bad",
+  cancelled: "neutral",  // P-0057/D-0051: user-interrupted turn
 };
 
 const KIND_COLOR: Record<string, string> = {
@@ -495,6 +496,7 @@ export default function SessionView({
   const [modelSwitch, setModelSwitch] = useState("");
   const [sessionCatalog, setSessionCatalog] = useState<ProviderCatalog | null>(null);
   const [sending, setSending] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [creating, setCreating] = useState(false);
   const [confidentialDraft, setConfidentialDraft] = useState(false); // new-session local-only pin
   const [previewNonce, setPreviewNonce] = useState(0);
@@ -870,6 +872,23 @@ export default function SessionView({
     }
   };
 
+  // P-0057/D-0051: interrupt the in-flight turn (best-effort). The backend stops the
+  // agent and marks the turn "cancelled"; the WS broadcast flips turnRunning off.
+  const handleCancel = async () => {
+    if (!selectedId || currentTurnId == null || !turnRunning || cancelling) return;
+    setCancelling(true);
+    setSendError(null);
+    try {
+      await api.cancelTurn(selectedId, currentTurnId);
+      setPendingMessage(null);
+      loadTurns();  // resync persisted status (cancelled) after a switch-back interrupt
+    } catch (err) {
+      setSendError(err instanceof Error ? err.message : "Could not stop the agent");
+    } finally {
+      setCancelling(false);
+    }
+  };
+
   const handleUpload = async (files: FileList | null) => {
     if (!selectedId || !files || files.length === 0 || uploading) return;
     setSendError(null);
@@ -1187,7 +1206,15 @@ export default function SessionView({
       }`
       : null;
 
-  const turnRunning = lastTurn?.status === "running" || sending;
+  // Prefer the live turn.update, but on a fresh session mount lastTurn is null until
+  // the next WS frame — so switching away from a session with a running turn and back
+  // would otherwise drop the in-flight state (and revert Stop→Send). Fall back to the
+  // latest persisted turn (listTurns, ordered by seq) so the running state + Stop
+  // button survive a session switch (P-0057/D-0051).
+  const latestPersistedTurn = turns.length ? turns[turns.length - 1] : null;
+  const currentTurnId = lastTurn?.id ?? latestPersistedTurn?.id ?? null;
+  const currentTurnStatus = lastTurn?.status ?? latestPersistedTurn?.status ?? null;
+  const turnRunning = currentTurnStatus === "running" || sending;
   const curatedEvents = useMemo(() => events.filter(isCurated), [events]);
   const hiddenCount = events.length - curatedEvents.length;
   const shownEvents = rawOpen ? events : curatedEvents;
@@ -1997,14 +2024,26 @@ export default function SessionView({
                     placeholder={isMobile ? "Describe the next change…" : "Describe the next change…  (drop files here · ⌘/Ctrl+Enter to send)"}
                     className="w-full resize-none rounded-md border border-edge bg-base py-2 pl-3 pr-12 text-sm text-ink placeholder:text-muted focus-visible:border-brand/60 focus-visible:outline-none"
                   />
-                  <button
-                    onClick={handleSend}
-                    disabled={!message.trim() || sending}
-                    title="Send (⌘/Ctrl+Enter)"
-                    className="absolute bottom-1.5 right-1.5 flex h-8 w-8 items-center justify-center rounded text-muted transition-colors hover:text-brand disabled:opacity-30 disabled:cursor-not-allowed"
-                  >
-                    {sending ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
-                  </button>
+                  {turnRunning ? (
+                    /* P-0057/D-0051: interrupt the in-flight turn (best-effort). */
+                    <button
+                      onClick={handleCancel}
+                      disabled={cancelling || currentTurnId == null}
+                      title="Stop the agent"
+                      className="absolute bottom-1.5 right-1.5 flex h-8 w-8 items-center justify-center rounded text-muted transition-colors hover:text-bad disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      {cancelling ? <Loader2 size={16} className="animate-spin" /> : <Square size={15} className="fill-current" />}
+                    </button>
+                  ) : (
+                    <button
+                      onClick={handleSend}
+                      disabled={!message.trim() || sending}
+                      title="Send (⌘/Ctrl+Enter)"
+                      className="absolute bottom-1.5 right-1.5 flex h-8 w-8 items-center justify-center rounded text-muted transition-colors hover:text-brand disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      {sending ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+                    </button>
+                  )}
                 </div>
               )}
             </div>

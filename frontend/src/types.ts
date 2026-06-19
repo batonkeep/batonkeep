@@ -290,7 +290,7 @@ export interface Mode {
 // Mirrors SessionOut / SessionTurnOut in backend/app/schemas.py.
 
 export type SessionStatus = "active" | "archived";
-export type TurnStatus = "running" | "succeeded" | "failed";
+export type TurnStatus = "running" | "succeeded" | "failed" | "cancelled";
 
 export interface Session {
   id: string;

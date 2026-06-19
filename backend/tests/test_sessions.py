@@ -9,6 +9,7 @@ Verify gate (PLAN §M1.1):
 """
 from __future__ import annotations
 
+import asyncio
 import os
 
 import pytest
@@ -260,6 +261,105 @@ class TestSessionTurns:
         orch.get_executor = lambda name: None  # nothing available
         with pytest.raises(orch.SessionError):
             await orch.run_turn("s1", "hello", provider="nope", owner_id="local")
+
+
+class TestTurnInterrupt:
+    """P-0057/D-0051: best-effort interrupt of an in-flight turn."""
+
+    @pytest.mark.asyncio
+    async def test_cancel_marks_turn_cancelled(self, session_env):
+        Maker, ws, orch, broadcasts = session_env
+        await _make_session(Maker, ws)
+        # A slow executor so the turn is still streaming when we interrupt it.
+        orch.get_executor = lambda name: MockExecutor(name=name, latency_ms=3000)
+
+        from app.models import SessionTurn
+        turn_id, _ = await orch.create_turn_record(
+            "s1", "build something large", owner_id="local"
+        )
+        task = orch.dispatch_turn(turn_id, "s1", owner_id="local")
+        await asyncio.sleep(0.1)  # let the stream start
+
+        signalled = await orch.cancel_turn(turn_id, "s1", owner_id="local")
+        assert signalled is True
+
+        # The background task ends cancelled.
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        async with Maker() as db:
+            turn = await db.get(SessionTurn, turn_id)
+            assert turn.status == "cancelled"
+            assert turn.finished_at is not None
+
+        # A cancelled turn-update was broadcast, and the handle was cleaned up.
+        assert any(
+            b.get("turn", {}).get("status") == "cancelled" for b in broadcasts
+        )
+        assert turn_id not in orch._turn_cancel_handles
+
+    @pytest.mark.asyncio
+    async def test_reap_orphaned_turns_marks_running_failed(self, session_env):
+        """A turn left 'running' by a restart is reaped to 'failed' at startup so the
+        chat shows honest state (no phantom Stop button)."""
+        Maker, ws, orch, broadcasts = session_env
+        await _make_session(Maker, ws)
+        from app.models import SessionTurn
+        async with Maker() as db:
+            db.add(SessionTurn(session_id="s1", owner_id="local", seq=0,
+                               provider="mock", prompt="stranded", status="running"))
+            db.add(SessionTurn(session_id="s1", owner_id="local", seq=1,
+                               provider="mock", prompt="done", status="succeeded"))
+            await db.commit()
+
+        reaped = await orch.reap_orphaned_turns()
+        assert reaped == 1
+
+        async with Maker() as db:
+            from sqlalchemy import select
+            rows = (await db.execute(
+                select(SessionTurn).where(SessionTurn.session_id == "s1").order_by(SessionTurn.seq)
+            )).scalars().all()
+            assert rows[0].status == "failed"
+            assert "restart" in (rows[0].error or "")
+            assert rows[0].finished_at is not None
+            assert rows[1].status == "succeeded"  # terminal turns untouched
+
+    @pytest.mark.asyncio
+    async def test_cancel_unknown_or_finished_turn_returns_false(self, session_env):
+        Maker, ws, orch, broadcasts = session_env
+        await _make_session(Maker, ws)
+        # No in-flight task registered for this id → nothing to signal.
+        signalled = await orch.cancel_turn(424242, "s1", owner_id="local")
+        assert signalled is False
+
+    @pytest.mark.asyncio
+    async def test_continue_after_cancel_seeds_next_turn(self, session_env):
+        """B (cross-provider continue): after an interrupt, the next message is a
+        normal turn that succeeds — continuation is prompt-driven and provider-
+        agnostic (history + workspace replay), not a special resume."""
+        Maker, ws, orch, broadcasts = session_env
+        await _make_session(Maker, ws)
+        orch.get_executor = lambda name: MockExecutor(name=name, latency_ms=3000)
+
+        from app.models import SessionTurn
+        turn_id, _ = await orch.create_turn_record("s1", "start a big build", owner_id="local")
+        task = orch.dispatch_turn(turn_id, "s1", owner_id="local")
+        await asyncio.sleep(0.1)
+        await orch.cancel_turn(turn_id, "s1", owner_id="local")
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        # Continue on a DIFFERENT provider with a fast executor — a plain next turn.
+        orch.get_executor = lambda name: MockExecutor(name=name, latency_ms=1)
+        next_id = await orch.run_turn(
+            "s1", "continue where you left off", provider="grok-mock", owner_id="local"
+        )
+        async with Maker() as db:
+            nxt = await db.get(SessionTurn, next_id)
+            assert nxt.status == "succeeded"
+            assert nxt.provider == "grok-mock"
+            assert nxt.seq > 0  # appended after the cancelled turn
 
 
 # ── Rename endpoint (HTTP) ────────────────────────────────────────────────────

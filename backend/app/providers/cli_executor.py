@@ -160,6 +160,11 @@ def parse_line(line: str, accumulated_text: list[str]) -> ExecEvent | None:
                 accumulated_text.append(t)
                 return ExecEvent(kind=EventKind.token, text=t)
 
+        # Grok turn-cap abort {"type":"max_turns_reached"}. Surface as a log with data
+        # intact so the executor loop can flag the run as truncated (not completed).
+        if obj_type == "max_turns_reached":
+            return ExecEvent(kind=EventKind.log, message="[max_turns_reached]", data=obj)
+
         # Claude end-of-stream signal {"type":"end","stopReason":"..."}
         # Return as a log event with full data so the executor loop can detect it.
         if obj_type == "end":
@@ -326,8 +331,10 @@ def _build_cmd(
             cmd += ["--model", model]
         if auto_approve:
             cmd += ["--always-approve"]
-        if max_rounds:
-            cmd += ["--max-turns", str(max_rounds)]
+        # No --max-turns: grok counts each reasoning/tool step as a turn, so a low cap
+        # (the orchestrator's max_rounds=10) gets exhausted mid-research and grok aborts
+        # with max_turns_reached / stopReason:"Cancelled" before writing the report. Match
+        # claude (no turn cap) and let run_timeout_seconds bound any runaway run instead.
 
     elif binary == "agy":
         # Verified: agy 1.0.3 — no --output-format or --no-plan flag; plain text via -p.
@@ -492,6 +499,10 @@ class CLIExecutor(Executor):
             # Track whether we yielded a proper result event (with ExecResult in data).
             # If so, the fallback synthesis below must NOT fire.
             had_terminal_result = False
+            # Set when the agent aborted before producing a deliverable (grok turn-cap
+            # or a non-EndTurn stop reason). The fallback below must report a failure,
+            # not "complete", even if partial reasoning text was accumulated.
+            truncated_reason: str | None = None
 
             try:
                 async with asyncio.timeout(timeout):
@@ -504,11 +515,20 @@ class CLIExecutor(Executor):
                             if item.kind == EventKind.result:
                                 had_terminal_result = True
                             break
-                        # Grok/Claude end-of-stream signal
-                        if (item.kind == EventKind.log
-                                and isinstance(item.data, dict)
-                                and item.data.get("type") == "end"):
-                            break
+                        if item.kind == EventKind.log and isinstance(item.data, dict):
+                            itype = item.data.get("type")
+                            if itype == "max_turns_reached":
+                                truncated_reason = "max turns reached"
+                                continue  # the terminating 'end' event still follows
+                            # Grok/Claude end-of-stream signal
+                            if itype == "end":
+                                stop = str(item.data.get("stopReason", ""))
+                                # Anything other than a normal completion means the run
+                                # was cut short (e.g. grok emits stopReason:"Cancelled"
+                                # after max_turns_reached).
+                                if stop and stop.lower() not in ("endturn", "end_turn", "stop"):
+                                    truncated_reason = truncated_reason or f"stopReason={stop}"
+                                break
             except TimeoutError:
                 if proc.returncode is None:
                     proc.kill()
@@ -535,6 +555,20 @@ class CLIExecutor(Executor):
                         "rate_limit": True,
                         "reset_at": reset_at.isoformat() if reset_at else None,
                     },
+                )
+                return
+
+            # Truncated/cancelled run: the agent aborted before finishing (e.g. grok
+            # exhausted its turns and emitted stopReason:"Cancelled"). Any accumulated
+            # text is partial reasoning, not the deliverable — report an honest failure
+            # so the orchestrator can fail over instead of storing an empty result.
+            if not had_terminal_result and truncated_reason:
+                yield ExecEvent(
+                    kind=EventKind.error,
+                    message=(
+                        f"[{self.name}] run did not complete ({truncated_reason}); "
+                        "no final output produced"
+                    ),
                 )
                 return
 

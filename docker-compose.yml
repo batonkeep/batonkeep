@@ -21,7 +21,7 @@
 # WEB_BIND  — host interface for the web port. Default 0.0.0.0 (LAN/VPS reachable).
 #             Set WEB_BIND=127.0.0.1 to expose only to a local tunnel (cloudflared).
 # WEB_PORT  — host port for the web UI (default 8080).
-# TAG       — image tag to run (default latest; pin to e.g. v0.4.0 in production).
+# TAG       — image tag to run (default latest; pin to a specific release tag in production).
 #
 # Project name is pinned via COMPOSE_PROJECT_NAME in .env (default batonkeep) so
 # container + volume names are deterministic regardless of the install folder.

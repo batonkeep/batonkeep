@@ -4,6 +4,20 @@ All notable changes to batonkeep are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (pre-1.0: minor versions may
 add features freely; patch versions are fixes).
 
+## [0.5.0] — 2026-06-20
+
+A small release that makes your install's version visible.
+
+### Added
+
+- **Version display.** batonkeep now shows which version you're running — in
+  Settings → About and, on desktop, at the bottom of the left navigation rail —
+  with a link to the matching release notes on GitHub. When a newer release is
+  available, an unobtrusive indicator appears next to the version; there is no
+  pop-up or nag. The update check reads a small static file published on the
+  batonkeep website (not the GitHub API), sends no information about your
+  instance, and can be disabled by setting `VERSION_CHECK_URL` to an empty value.
+
 ## [0.4.0] — 2026-06-19
 
 A feature release centred on build-session control: you can now stop a running

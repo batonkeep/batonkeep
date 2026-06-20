@@ -14,7 +14,6 @@ import app.main as main
 from app import version as appversion
 from app.config import get_settings
 
-
 # ── update_available semantics ──────────────────────────────────────────────
 
 @pytest.mark.parametrize(

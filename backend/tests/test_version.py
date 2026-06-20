@@ -12,7 +12,6 @@ from fastapi.testclient import TestClient
 
 import app.main as main
 from app import version as appversion
-from app.config import get_settings
 
 # ── update_available semantics ──────────────────────────────────────────────
 
@@ -124,14 +123,12 @@ def test_health_reports_version():
 
 
 def test_version_endpoint_disabled_check(monkeypatch):
-    s = get_settings()
-    saved = s.version_check_url
-    s.version_check_url = ""
-    appversion._cache = None
-    try:
-        body = TestClient(main.app).get("/api/version").json()
-    finally:
-        s.version_check_url = saved
+    # Patch the settings object main actually reads (it binds `settings` at import;
+    # an earlier cache_clear can make get_settings() a different instance). Also
+    # neutralise the check so the assertion never depends on live network.
+    monkeypatch.setattr(main.settings, "version_check_url", "", raising=False)
+    monkeypatch.setattr(appversion, "_cache", None, raising=False)
+    body = TestClient(main.app).get("/api/version").json()
     assert body["version"] == appversion.APP_VERSION
     assert body["latest"] is None
     assert body["update_available"] is False

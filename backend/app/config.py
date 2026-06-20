@@ -134,6 +134,14 @@ class Settings(BaseSettings):
     # deliberately long; 0 disables the poll (manual refresh still works).
     subscription_usage_poll_seconds: int = 3600  # 1h; 0 = off
 
+    # ── Update check (D-0053) ──────────────────────────────────────────────────
+    # The static latest-version.json served by our own public site. The instance
+    # reads it to show an inline "update available" hint next to its running
+    # version — our CDN, not the GitHub API (no anon rate limits, no instance data
+    # sent). Empty string disables the check (version still displays).
+    version_check_url: str = "https://batonkeep.com/latest-version.json"
+    version_check_ttl_seconds: int = 6 * 3600  # 6h; result cached this long
+
     @property
     def web_console_available(self) -> bool:
         # The console exists when explicitly enabled and not in managed mode.

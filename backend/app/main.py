@@ -30,7 +30,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.datastructures import Headers
 
-from app import approvals, sandbox
+from app import approvals, sandbox, version as appversion
 from app.auth import SESSION_COOKIE, issue_session, password_matches, verify_session
 from app.config import get_settings
 from app.db import get_db, init_db
@@ -198,7 +198,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="batonkeep",
     description="Cross-provider plan orchestrator",
-    version="0.1.0",
+    version=appversion.APP_VERSION,
     lifespan=lifespan,
 )
 
@@ -2609,4 +2609,28 @@ async def websocket_endpoint(websocket: WebSocket):
 
 @app.get("/health", tags=["meta"])
 async def health():
-    return {"status": "ok", "deployment_mode": settings.deployment_mode}
+    return {
+        "status": "ok",
+        "deployment_mode": settings.deployment_mode,
+        "version": appversion.APP_VERSION,
+    }
+
+
+@app.get("/api/version", tags=["meta"])
+async def app_version():
+    """Running version + best-effort latest-release hint (D-0053).
+
+    `version` is stamped at image build time. `latest`/`update_available` come
+    from the static latest-version.json on our own site (settings.version_check_url);
+    they are best-effort and simply absent when the check is disabled or fails.
+    """
+    current = appversion.APP_VERSION
+    latest, release_url = await appversion.latest_release(
+        settings.version_check_url, settings.version_check_ttl_seconds
+    )
+    return {
+        "version": current,
+        "latest": latest,
+        "update_available": appversion.update_available(current, latest),
+        "release_url": release_url,
+    }

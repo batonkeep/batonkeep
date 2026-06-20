@@ -66,5 +66,10 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Stamp the running version into the backend image from the git tag
+          # (e.g. "v0.4.0") so /api/version + the UI report it (D-0053). The
+          # frontend Dockerfile ignores the unused arg.
+          build-args: |
+            BATONKEEP_VERSION=${{ github.ref_name }}
           cache-from: type=gha,scope=${{ matrix.component }}
           cache-to: type=gha,mode=max,scope=${{ matrix.component }}

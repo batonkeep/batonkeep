@@ -39,6 +39,7 @@ import type {
   Upload,
   Version,
   VersionDiff,
+  VersionInfo,
 } from "./types";
 
 const BASE = "/api";
@@ -84,6 +85,10 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  // ── Meta ───────────────────────────────────────────────────────────────
+  // Running version + best-effort latest-release hint (D-0053).
+  getVersion: () => req<VersionInfo>("/version"),
+
   // ── Tasks ──────────────────────────────────────────────────────────────
   listTasks: () => req<Task[]>("/tasks"),
   listTaskTemplates: () => req<TaskTemplate[]>("/task-templates"),

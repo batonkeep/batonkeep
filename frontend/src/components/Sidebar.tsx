@@ -3,6 +3,7 @@
 // Cockpit → Analytics; sub-labels on desktop; human labels; mobile unchanged.
 import { Gauge, Hammer, ListChecks, Settings2 } from "lucide-react";
 import Logo from "../ui/Logo";
+import VersionBadge from "./VersionBadge";
 import type { WsStatus } from "../useLiveFeed";
 
 // "Live" (runs) is folded into the Tasks pane as a sub-tab, keeping the bottom
@@ -90,6 +91,9 @@ export default function Sidebar({ view, onChange, wsStatus, activeRuns, immersiv
           {wsStatus === "open" ? "connected" : wsStatus === "connecting" ? "connecting…" : "offline"}
         </span>
       </div>
+
+      {/* Running version + update hint — desktop only (D-0053) */}
+      <VersionBadge compact />
     </nav>
   );
 }

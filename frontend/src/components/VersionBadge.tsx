@@ -11,13 +11,27 @@ export default function VersionBadge({ compact = false }: { compact?: boolean })
   const info = useVersion();
   if (!info) return null;
 
-  const running = info.version.startsWith("v") || info.version === "dev"
-    ? info.version
-    : `v${info.version}`;
+  const isDev = info.version === "dev";
+  const running = isDev || info.version.startsWith("v") ? info.version : `v${info.version}`;
   const releaseUrl = info.release_url || RELEASES_URL;
 
+  // Status hint, computed once for both layouts:
+  // - real release behind latest      → "vY available" (brand, actionable)
+  // - dev/unstamped build, latest known → "latest vY" (neutral reference: a dev
+  //   build may be ahead OR behind, so it's information, not a nag)
+  // - real release, current            → "up to date"
+  // - latest unknown (check off/down)  → nothing
+  let hint: { text: string; tone: "brand" | "muted" } | null = null;
+  if (info.update_available && info.latest) {
+    hint = { text: `${info.latest} available`, tone: "brand" };
+  } else if (isDev && info.latest) {
+    hint = { text: `latest ${info.latest}`, tone: "muted" };
+  } else if (!isDev && info.latest) {
+    hint = { text: "up to date", tone: "muted" };
+  }
+
   if (compact) {
-    // Desktop nav footer: single muted line, version links to releases.
+    // Desktop nav footer: single line, version links to releases.
     return (
       <div className="hidden md:flex md:items-center md:gap-1.5 md:px-3 md:pb-1 md:text-[10px] md:text-muted">
         <a
@@ -29,15 +43,15 @@ export default function VersionBadge({ compact = false }: { compact?: boolean })
         >
           {running}
         </a>
-        {info.update_available && info.latest && (
+        {hint && (
           <a
-            href={info.release_url || RELEASES_URL}
+            href={releaseUrl}
             target="_blank"
             rel="noreferrer"
-            className="text-brand hover:underline"
-            title={`Update available: ${info.latest}`}
+            className={`${hint.tone === "brand" ? "text-brand hover:underline" : "hover:text-ink transition-colors"}`}
+            title={hint.tone === "brand" ? `Update available: ${info.latest}` : `Latest release: ${info.latest}`}
           >
-            · {info.latest} available
+            · {hint.text}
           </a>
         )}
       </div>
@@ -49,12 +63,11 @@ export default function VersionBadge({ compact = false }: { compact?: boolean })
     <div className="flex items-center justify-between gap-3 text-sm">
       <div className="flex items-center gap-2">
         <span className="font-mono text-ink">{running}</span>
-        {info.update_available && info.latest ? (
-          <span className="text-[11px] text-brand">{info.latest} available</span>
-        ) : (
-          info.version !== "dev" && (
-            <span className="text-[11px] text-muted">up to date</span>
-          )
+        {isDev && <span className="text-[11px] text-muted">(local build)</span>}
+        {hint && (
+          <span className={`text-[11px] ${hint.tone === "brand" ? "text-brand" : "text-muted"}`}>
+            {hint.text}
+          </span>
         )}
       </div>
       <a

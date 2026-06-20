@@ -72,20 +72,20 @@ async def latest_release(
     now = time.monotonic()
     if not force and _cache is not None and (now - _cache.at) < ttl_seconds:
         return _cache.latest, _cache.release_url
-    latest: str | None = None
-    release_url: str | None = None
     try:
         async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
             resp = await client.get(url, headers={"Accept": "application/json"})
             resp.raise_for_status()
             data = resp.json()
-        if isinstance(data, dict):
-            latest = (data.get("latest") or "").strip() or None
-            release_url = (data.get("release_url") or "").strip() or None
     except Exception:
-        # Stale cache is better than nothing on a transient failure.
-        if _cache is not None:
-            return _cache.latest, _cache.release_url
-        latest, release_url = None, None
+        # Don't cache failures for the full TTL — a transient error or a
+        # not-yet-deployed endpoint would otherwise poison the result for hours.
+        # Serve a prior good value if we have one; otherwise just report unknown
+        # and let the next call retry.
+        return (_cache.latest, _cache.release_url) if _cache is not None else (None, None)
+    latest = release_url = None
+    if isinstance(data, dict):
+        latest = (data.get("latest") or "").strip() or None
+        release_url = (data.get("release_url") or "").strip() or None
     _cache = _Cached(at=now, latest=latest, release_url=release_url)
     return latest, release_url

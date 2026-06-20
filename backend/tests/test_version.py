@@ -40,6 +40,47 @@ async def test_latest_release_disabled_returns_none():
 
 
 @pytest.mark.asyncio
+async def test_latest_release_failure_is_not_cached(monkeypatch):
+    """A failed lookup must not poison the cache for the full TTL — the next
+    call retries (covers the endpoint-not-yet-deployed case)."""
+    appversion._cache = None
+    calls = {"n": 0}
+
+    class _OkResp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"latest": "v1.2.3", "release_url": "https://example/r"}
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, *a, **k):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("endpoint 404 / network down")
+            return _OkResp()
+
+    monkeypatch.setattr(appversion.httpx, "AsyncClient", _Client)
+    assert await appversion.latest_release("https://x/latest.json", 3600) == (None, None)
+    # Not cached as None → second call actually retries and now succeeds.
+    assert await appversion.latest_release("https://x/latest.json", 3600) == (
+        "v1.2.3",
+        "https://example/r",
+    )
+    assert calls["n"] == 2
+    appversion._cache = None
+
+
+@pytest.mark.asyncio
 async def test_latest_release_caches(monkeypatch):
     appversion._cache = None
     calls = {"n": 0}

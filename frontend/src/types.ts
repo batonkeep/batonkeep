@@ -574,3 +574,12 @@ export interface CustomProviderUpdate {
   cost_in_per_mtok?: number | null;
   cost_out_per_mtok?: number | null;
 }
+
+// Running version + best-effort latest-release hint (D-0053). `latest`/`release_url`
+// are null when the update check is disabled or unreachable.
+export interface VersionInfo {
+  version: string;
+  latest: string | null;
+  update_available: boolean;
+  release_url: string | null;
+}

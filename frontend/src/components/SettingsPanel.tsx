@@ -4,10 +4,11 @@
 // Wraps ProvidersPanel + SecretsPanel; adds the telemetry-consent placeholder (D-0022 level 2).
 // D-0027 fix 2: all sections collapsed by default (accordion).
 import { type ReactNode, useState } from "react";
-import { ChevronDown, ChevronRight, KeyRound, Server, ShieldOff, Sliders } from "lucide-react";
+import { ChevronDown, ChevronRight, Info, KeyRound, Server, ShieldOff, Sliders } from "lucide-react";
 import type { Credential, Mode, ProviderHealth, UsageSummary } from "../types";
 import ProvidersPanel from "./ProvidersPanel";
 import SecretsPanel from "./SecretsPanel";
+import VersionBadge from "./VersionBadge";
 import { Badge, Card } from "../ui";
 
 // ─── Collapsible section shell ────────────────────────────────────────────────
@@ -167,6 +168,18 @@ export default function SettingsPanel({
         defaultOpen={false}
       >
         <TelemetryContent />
+      </Section>
+
+      {/* ── About / version ──────────────────────────────────────────────── */}
+      <Section
+        icon={<Info size={16} />}
+        title="About"
+        sub="Running version and updates"
+        defaultOpen={false}
+      >
+        <Card className="px-4 py-3">
+          <VersionBadge />
+        </Card>
       </Section>
     </div>
   );

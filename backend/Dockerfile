@@ -119,6 +119,11 @@ COPY --chown=batond:batond alembic/ alembic/
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x scripts/*.sh /usr/local/bin/entrypoint.sh
 
+# Running version, stamped from the `v*` git tag by the release CI (D-0053).
+# Defaults to `dev` for local/untagged builds; surfaced via /health + /api/version.
+ARG BATONKEEP_VERSION=dev
+ENV BATONKEEP_VERSION=${BATONKEEP_VERSION}
+
 # Start as root so the entrypoint can run the one-shot volume-ownership migration
 # (P-0022/D-0020), then it execs the backend as the non-root `batond` via gosu.
 # Only this brief init is privileged; the network-facing process never is.

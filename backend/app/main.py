@@ -1950,7 +1950,15 @@ def _set_session_cookie(resp: Response) -> None:
         SESSION_COOKIE,
         issue_session(),
         max_age=settings.app_session_ttl_seconds,
+        # Also emit an absolute Expires: Safari (iOS + macOS) ignores Max-Age and
+        # treats a Max-Age-only cookie as session-only, so it gets dropped when the
+        # browser reaps the tab (≈daily on iOS, hours on desktop). Expires makes the
+        # cookie persistent across all browsers for the full TTL.
+        expires=settings.app_session_ttl_seconds,
         httponly=True,
+        # Secure is opt-in (COOKIE_SECURE): on for TLS deployments (cloudflared /
+        # reverse proxy), off for plain-http LAN self-hosting where it'd break login.
+        secure=settings.cookie_secure,
         samesite="lax",
         path="/",
     )
@@ -2599,11 +2607,26 @@ async def get_mode():
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await ws_manager.connect(websocket)
+
+    async def _heartbeat() -> None:
+        # App-level ping so an idle live feed isn't reaped by an upstream proxy
+        # (Cloudflare drops idle WebSockets at ~100s). The client ignores unknown
+        # frame types, so this is a no-op for the UI beyond keeping the link warm.
+        try:
+            while True:
+                await asyncio.sleep(settings.ws_heartbeat_seconds)
+                await websocket.send_json({"type": "ping"})
+        except (WebSocketDisconnect, RuntimeError):
+            pass
+
+    hb = asyncio.create_task(_heartbeat())
     try:
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
         await ws_manager.disconnect(websocket)
+    finally:
+        hb.cancel()
 
 
 # ── Health ────────────────────────────────────────────────────────────────────

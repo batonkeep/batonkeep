@@ -117,7 +117,20 @@ cloudflared tunnel --url http://localhost:8080
 ```
 
 WebSockets (live runs, build-session streaming) pass through cloudflared unchanged; nginx
-forwards the `X-Forwarded-Proto` / `X-Forwarded-For` headers to the backend.
+forwards the `X-Forwarded-Proto` / `X-Forwarded-For` headers to the backend. The live feed
+sends an application-level heartbeat (`WS_HEARTBEAT_SECONDS`, default 30s) so the connection
+isn't dropped by Cloudflare's ~100s idle timeout.
+
+Because the browser reaches batonkeep over TLS here (the edge terminates it), set
+`COOKIE_SECURE=true` so the login session cookie is only ever sent over HTTPS:
+
+```bash
+# .env
+COOKIE_SECURE=true
+```
+
+Leave it unset for plain-http LAN access — a `Secure` cookie would never be sent over http
+and login would silently fail.
 
 ### Your own reverse proxy (Caddy / nginx / Traefik)
 

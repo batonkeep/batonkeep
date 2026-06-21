@@ -25,7 +25,7 @@ def settings_env():
     s = get_settings()
     fields = (
         "app_secret", "app_password", "app_session_ttl_seconds",
-        "enable_web_console", "web_console_token",
+        "enable_web_console", "web_console_token", "cookie_secure",
     )
     saved = {f: getattr(s, f) for f in fields}
     s.app_secret = "unit-test-secret"
@@ -116,6 +116,34 @@ def test_login_logout_flow(settings_env):
 
     client.post("/api/auth/logout")
     assert client.get("/api/providers").status_code == 401
+
+
+def test_login_cookie_is_persistent(settings_env):
+    # The session cookie must carry an absolute Expires, not just Max-Age: Safari
+    # ignores Max-Age and would otherwise treat it as a session cookie and drop it.
+    _enable_auth(settings_env)
+    client = TestClient(main.app)
+    r = client.post("/api/auth/login", json={"password": "s3cret"})
+    set_cookie = r.headers["set-cookie"]
+    assert "bk_session=" in set_cookie
+    assert "expires=" in set_cookie.lower()
+    assert "max-age=" in set_cookie.lower()
+
+
+def test_login_cookie_secure_opt_in(settings_env):
+    # COOKIE_SECURE flips the Secure attribute (off by default for http LAN hosts).
+    _enable_auth(settings_env)
+    settings_env.cookie_secure = False
+    plain = TestClient(main.app).post(
+        "/api/auth/login", json={"password": "s3cret"}
+    ).headers["set-cookie"]
+    assert "secure" not in plain.lower()
+
+    settings_env.cookie_secure = True
+    secured = TestClient(main.app).post(
+        "/api/auth/login", json={"password": "s3cret"}
+    ).headers["set-cookie"]
+    assert "secure" in secured.lower()
 
 
 def test_ws_rejected_without_session(settings_env):

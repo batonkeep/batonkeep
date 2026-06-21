@@ -116,6 +116,16 @@ class Settings(BaseSettings):
     # default). Multi-user accounts are a managed concern (P-0013/P-0015).
     app_password: str = ""
     app_session_ttl_seconds: int = 60 * 60 * 24 * 14  # 14 days
+    # Mark the session cookie Secure (HTTPS-only). Leave false for plain-http LAN
+    # self-hosting (the default); set true when the app is reached over TLS —
+    # e.g. behind a cloudflared tunnel or a TLS-terminating reverse proxy — so the
+    # session cookie is never sent in cleartext. The app can't auto-detect this
+    # because TLS is terminated upstream and the backend speaks plain http.
+    cookie_secure: bool = False
+    # App-level WebSocket heartbeat. The /ws live feed sends a ping frame on this
+    # interval so an idle connection isn't reaped by an upstream proxy during quiet
+    # periods (Cloudflare drops idle WebSockets at ~100s). Keep it well under that.
+    ws_heartbeat_seconds: int = 30
 
     @property
     def app_auth_enabled(self) -> bool:

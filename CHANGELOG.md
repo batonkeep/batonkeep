@@ -4,6 +4,30 @@ All notable changes to batonkeep are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (pre-1.0: minor versions may
 add features freely; patch versions are fixes).
 
+## [0.5.1] — 2026-06-21
+
+A fix release: stay logged in.
+
+### Fixed
+
+- **Sessions no longer expire early.** The login session cookie was missing an
+  absolute expiry, so some browsers — notably Safari on iOS and macOS — treated
+  it as a session-only cookie and dropped it well before its 14-day lifetime,
+  forcing a re-login after a few hours on desktop or roughly daily on mobile. The
+  cookie now carries an explicit expiry and persists for the full session
+  lifetime across all browsers.
+
+### Added
+
+- **`COOKIE_SECURE` setting.** When you reach batonkeep over TLS — a cloudflared
+  tunnel or a TLS-terminating reverse proxy — set `COOKIE_SECURE=true` so the
+  login session cookie is only ever sent over HTTPS. Leave it unset for plain-http
+  LAN access, where a `Secure` cookie would never be sent and login would fail.
+- **Live-feed keepalive.** The live activity WebSocket now sends a periodic
+  heartbeat so it isn't dropped by an upstream proxy's idle timeout (e.g.
+  Cloudflare's ~100s limit) during quiet periods — which previously made the
+  dashboard briefly show "offline" when left idle.
+
 ## [0.5.0] — 2026-06-20
 
 A small release that makes your install's version visible.

@@ -109,6 +109,21 @@ class Settings(BaseSettings):
     # ── Security ──────────────────────────────────────────────────────────────
     app_secret: str = ""
 
+    # CORS origin allowlist (comma-separated). Default "*" preserves the shipped
+    # behaviour: reflect any Origin with credentials allowed, which the hosted-
+    # control-plane path relies on (a public-origin page + PNA preflight reaching
+    # a loopback/LAN backend — see test_pna.py). The SPA itself is same-origin
+    # (nginx/Vite proxy /api), so self-hosters who don't use a public control
+    # plane can pin this to their UI origin(s) and close the reflected-origin
+    # surface. With app-auth on, the SameSite=Lax session cookie already blocks
+    # credentialed cross-site reads; this knob matters most when APP_PASSWORD is
+    # unset (no auth gate — see the startup warning in main.py).
+    cors_allow_origins: str = "*"
+
+    @property
+    def cors_allow_origins_list(self) -> list[str]:
+        return [o.strip() for o in self.cors_allow_origins.split(",") if o.strip()]
+
     # ── App-level auth (D-0023, resolves P-0026) ──────────────────────────────
     # Single-operator login gate for personal/oss. When APP_PASSWORD is set the
     # whole API requires a signed session cookie (see auth.py) — this protects

@@ -4,6 +4,7 @@
 // D-track: composed from ui/ primitives (Button, Badge, Card, StatusDot, Tabs).
 import { useEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
+import DOMPurify from "dompurify";
 import { Ban, Download, RotateCw, X } from "lucide-react";
 import type { Run, RunAsset, RunEvent } from "../types";
 import { api } from "../api";
@@ -121,7 +122,11 @@ export default function RunViewer({ run, taskName, now, onRequeue, onCancel, onC
     // e.g. an agy-generated image pulled in at capture time). Resolve those against
     // this run's asset route so they render inline. Absolute/http srcs are untouched.
     const base = api.runAssetBase(run.id);
-    return html.replace(/(src|href)="(assets|data)\//g, `$1="${base}$2/`);
+    const withAssets = html.replace(/(src|href)="(assets|data)\//g, `$1="${base}$2/`);
+    // Report text is model-generated and may echo scraped web content; marked does
+    // NOT sanitize, so strip injection vectors before it hits dangerouslySetInnerHTML.
+    // Sanitize last so the asset-path rewrite above is vetted too.
+    return DOMPurify.sanitize(withAssets);
   }, [reportMd, streamingText, active, run.summary, run.id]);
 
   return (

@@ -115,6 +115,18 @@ async def lifespan(app: FastAPI):
     configure_logging(settings.log_level)
     logger.info("Starting batonkeep backend (DEPLOYMENT_MODE=%s)", settings.deployment_mode)
 
+    # Wildcard CORS reflects any Origin with credentials; with no app-auth gate
+    # that lets any web page the operator visits read this API cross-origin
+    # (loopback/LAN included, via the PNA preflight we deliberately answer).
+    # Not fatal — dev and the hosted-control-plane path rely on it — but it must
+    # never be an *unnoticed* posture.
+    if "*" in settings.cors_allow_origins_list and not settings.app_auth_enabled:
+        logger.warning(
+            "CORS_ALLOW_ORIGINS is '*' and APP_PASSWORD is unset — any website the "
+            "operator visits can read this API cross-origin. Set APP_PASSWORD "
+            "and/or pin CORS_ALLOW_ORIGINS to your UI origin(s)."
+        )
+
     await init_db()
 
     from app.db import AsyncSessionLocal
@@ -279,9 +291,14 @@ app.add_middleware(AppAuthMiddleware)
 # the PNA preflight (Chrome sends it when a public-origin page connects to this
 # backend on a loopback/LAN address). Native in starlette >=1.0; before that we
 # wrapped CORS with a hand-rolled PrivateNetworkAccessMiddleware (removed).
+#
+# Origins come from CORS_ALLOW_ORIGINS (default "*"). Note starlette treats
+# "*" + allow_credentials=True as *reflect the caller's Origin* — required by
+# the hosted-control-plane path (test_pna.py) but a wide surface when the API
+# has no auth gate; the lifespan warning below flags that combination.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_allow_origins_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

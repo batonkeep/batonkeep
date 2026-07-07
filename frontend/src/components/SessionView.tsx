@@ -5,6 +5,7 @@
 // D-track: composed from ui/ primitives (Button, Badge, Card, StatusDot, Select).
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
+import DOMPurify from "dompurify";
 import hljs from "highlight.js/lib/common";
 import "highlight.js/styles/github-dark.css";
 import { Activity, Archive, Check, ChevronDown, ChevronLeft, ChevronRight, Cloud, Copy, Download, FileCode, Folder, Globe, History, Link2, Loader2, Lock, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, Shield, Square, SquareTerminal, Trash2, X } from "lucide-react";
@@ -15,7 +16,10 @@ import { fmtTime } from "../format";
 import { Badge, Button, Card, Field, Input, Modal, Select, StatusDot, Tabs, type Tone } from "../ui";
 
 function renderMarkdown(src: string): string {
-  return marked.parse(src, { async: false }) as string;
+  // Sanitize: turn responses/file content contain model- and web-sourced text
+  // that ends up in dangerouslySetInnerHTML. marked does NOT sanitize, so run
+  // its HTML through DOMPurify to strip <script>/on* and other injection vectors.
+  return DOMPurify.sanitize(marked.parse(src, { async: false }) as string);
 }
 
 // Map a filename extension to a highlight.js language; fall back to auto-detect.

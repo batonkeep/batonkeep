@@ -93,9 +93,10 @@ def build_console_tty_session(instance_id: str) -> PtySession:
     build-session context is appropriate — the user wants the raw provider CLI
     (e.g. to run /usage or re-auth manually), not in any particular workspace.
 
-    cwd is the sandbox_home directory (/home/agent or equivalent) which is always
-    present. The instance's cli_config_dir is still set so auth state is correct.
-    Raises WebTtyError with a user-facing reason on misconfiguration.
+    cwd is /tmp (sandbox_home is owned by the sandbox user and not traversable by
+    the backend — see the note at the assignment below). The instance's
+    cli_config_dir is still set so auth state is correct. Raises WebTtyError with
+    a user-facing reason on misconfiguration.
     """
     if not _settings.plan_cli_allowed:
         raise WebTtyError(

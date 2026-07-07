@@ -86,7 +86,7 @@ class Executor(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def run_stream(
+    def run_stream(
         self,
         prompt: str,
         *,
@@ -101,6 +101,13 @@ class Executor(ABC):
         carries an ExecResult in data["result"] or the error message.
 
         Must never block the event loop.
+
+        Declared as a plain ``def`` returning ``AsyncIterator`` (not ``async
+        def``): implementations are ``async def`` generators, whose static type
+        is ``def(...) -> AsyncIterator[ExecEvent]``. Typing the ABC as ``async
+        def`` instead makes mypy read it as a coroutine returning an iterator, so
+        every override looked incompatible and callers looked "not async
+        iterable" — this is the correct way to type an abstract async generator.
         """
         ...  # pragma: no cover
 

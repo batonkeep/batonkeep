@@ -137,6 +137,12 @@ class Settings(BaseSettings):
     # session cookie is never sent in cleartext. The app can't auto-detect this
     # because TLS is terminated upstream and the backend speaks plain http.
     cookie_secure: bool = False
+    # TOTP break-glass (D-0056, resolves P-0062). When an enrolled operator loses
+    # their authenticator, set TOTP_DISABLED=1 in the deployment env to skip the
+    # second factor (password-only login) until they re-enroll or unset it. This
+    # is the only recovery path — no recovery codes in V1 (self-hosted operators
+    # always have host access, so the env var is reachable exactly when needed).
+    totp_disabled: bool = False
     # App-level WebSocket heartbeat. The /ws live feed sends a ping frame on this
     # interval so an idle connection isn't reaped by an upstream proxy during quiet
     # periods (Cloudflare drops idle WebSockets at ~100s). Keep it well under that.

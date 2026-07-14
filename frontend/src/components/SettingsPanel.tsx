@@ -4,10 +4,11 @@
 // Wraps ProvidersPanel + SecretsPanel; adds the telemetry-consent placeholder (D-0022 level 2).
 // D-0027 fix 2: all sections collapsed by default (accordion).
 import { type ReactNode, useState } from "react";
-import { ChevronDown, ChevronRight, Info, KeyRound, Server, ShieldOff, Sliders } from "lucide-react";
+import { ChevronDown, ChevronRight, Info, KeyRound, Server, ShieldCheck, ShieldOff, Sliders } from "lucide-react";
 import type { Credential, Mode, ProviderHealth, UsageSummary } from "../types";
 import ProvidersPanel from "./ProvidersPanel";
 import SecretsPanel from "./SecretsPanel";
+import TotpPanel from "./TotpPanel";
 import VersionBadge from "./VersionBadge";
 import { Badge, Card } from "../ui";
 
@@ -148,6 +149,16 @@ export default function SettingsPanel({
         defaultOpen={false}
       >
         <SecretsPanel />
+      </Section>
+
+      {/* ── Security / 2FA (D-0056) ──────────────────────────────────────── */}
+      <Section
+        icon={<ShieldCheck size={16} />}
+        title="Security"
+        sub="Two-factor authentication for the workspace login"
+        defaultOpen={false}
+      >
+        <TotpPanel appAuthEnabled={appAuthEnabled} />
       </Section>
 
       {/* ── Budget ───────────────────────────────────────────────────────── */}

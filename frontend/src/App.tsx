@@ -48,20 +48,20 @@ export default function App() {
 // render the app. `appAuthEnabled` flows down so the providers console folds the
 // legacy token into the session (no separate token entry when auth is on).
 function AuthGate() {
-  const [status, setStatus] = useState<{ enabled: boolean; authed: boolean } | null>(null);
+  const [status, setStatus] = useState<{ enabled: boolean; authed: boolean; totp: boolean } | null>(null);
 
   const refresh = useCallback(() => {
     api
       .getAuthStatus()
-      .then((s) => setStatus({ enabled: s.auth_enabled, authed: s.authenticated }))
+      .then((s) => setStatus({ enabled: s.auth_enabled, authed: s.authenticated, totp: s.totp_enabled }))
       // On a network/whatever failure, fail open to the app (it will surface its
       // own load errors) rather than trapping the user on a blank gate.
-      .catch(() => setStatus({ enabled: false, authed: true }));
+      .catch(() => setStatus({ enabled: false, authed: true, totp: false }));
   }, []);
   useEffect(refresh, [refresh]);
 
   if (status === null) return null; // brief pre-resolve; avoids a login flash
-  if (status.enabled && !status.authed) return <LoginPage onAuthed={refresh} />;
+  if (status.enabled && !status.authed) return <LoginPage onAuthed={refresh} totpEnabled={status.totp} />;
   return <AppShell appAuthEnabled={status.enabled} onLogout={refresh} />;
 }
 

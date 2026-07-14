@@ -24,6 +24,7 @@ def _db_override(tmp_path):
     """auth_status/auth_login read TOTP state (D-0056), so the endpoints need a
     working DB — give every test here a fresh sqlite file."""
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
     from app.db import Base, get_db
     from app.models import Owner
 

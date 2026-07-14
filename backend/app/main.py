@@ -30,8 +30,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.datastructures import Headers
 
-from app import approvals, sandbox
-from app import totp
+from app import approvals, sandbox, totp
 from app import version as appversion
 from app.auth import SESSION_COOKIE, issue_session, password_matches, verify_session
 from app.config import get_settings

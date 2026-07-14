@@ -52,6 +52,7 @@ def settings_env():
 def client(settings_env, tmp_path):
     """TestClient over a fresh sqlite DB with the local owner seeded."""
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
     from app.db import Base, get_db
     from app.models import Owner
 

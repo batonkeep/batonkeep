@@ -61,7 +61,9 @@ def hotp(secret_b32: str, counter: int) -> str:
     return str(code % 10 ** DIGITS).zfill(DIGITS)
 
 
-def verify_code(secret_b32: str, code: str, last_counter: int, now: float | None = None) -> int | None:
+def verify_code(
+    secret_b32: str, code: str, last_counter: int, now: float | None = None
+) -> int | None:
     """Return the matched time-step counter, or None.
 
     Constant-time digit comparison; only counters strictly greater than

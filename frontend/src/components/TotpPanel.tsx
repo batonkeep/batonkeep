@@ -138,6 +138,7 @@ export default function TotpPanel({ appAuthEnabled }: { appAuthEnabled: boolean 
             <Button
               variant="outline"
               size="sm"
+              className="shrink-0 whitespace-nowrap px-4"
               icon={<ShieldOff size={13} />}
               onClick={disable}
               disabled={busy || (!status.break_glass && code.length !== 6)}
@@ -176,6 +177,7 @@ export default function TotpPanel({ appAuthEnabled }: { appAuthEnabled: boolean 
                 <Button
                   variant="primary"
                   size="sm"
+                  className="shrink-0 whitespace-nowrap px-4"
                   onClick={activate}
                   disabled={busy || code.length !== 6}
                 >

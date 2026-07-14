@@ -30,7 +30,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.datastructures import Headers
 
-from app import approvals, sandbox
+from app import approvals, sandbox, totp
 from app import version as appversion
 from app.auth import SESSION_COOKIE, issue_session, password_matches, verify_session
 from app.config import get_settings
@@ -96,6 +96,9 @@ from app.schemas import (
     TaskOut,
     TaskTemplateOut,
     TaskUpdate,
+    TotpCode,
+    TotpSetupOut,
+    TotpStatus,
     TurnCreate,
     UploadOut,
     UsageSummaryOut,
@@ -218,7 +221,12 @@ app = FastAPI(
 # Paths reachable without an app-auth session: the login/status endpoints
 # themselves, and the already-token-authenticated public surfaces (published
 # share bundles + the per-session live-preview, each carrying its own path token).
-_AUTH_PUBLIC_PREFIXES = ("/api/auth/", "/api/share/")
+# Exact login-gate endpoints only — NOT an /api/auth/ prefix: the TOTP
+# management routes (D-0056) live under /api/auth/totp and must stay behind
+# the session gate (an anonymous caller must never enroll/disable the second
+# factor or read its state).
+_AUTH_PUBLIC_PATHS = frozenset({"/api/auth/status", "/api/auth/login", "/api/auth/logout"})
+_AUTH_PUBLIC_PREFIXES = ("/api/share/",)
 
 
 def _http_path_is_public(path: str) -> bool:
@@ -226,7 +234,7 @@ def _http_path_is_public(path: str) -> bool:
     # answer 200 even with app-auth on, or the stack never reports healthy.
     if path == "/health":
         return True
-    if path.startswith(_AUTH_PUBLIC_PREFIXES):
+    if path in _AUTH_PUBLIC_PATHS or path.startswith(_AUTH_PUBLIC_PREFIXES):
         return True
     # /api/sessions/{id}/preview/{token}[/...] — own token, loaded in an iframe.
     return path.startswith("/api/sessions/") and "/preview/" in path
@@ -1981,23 +1989,51 @@ def _set_session_cookie(resp: Response) -> None:
     )
 
 
+async def _totp_active(db: AsyncSession) -> bool:
+    """Whether login must carry a TOTP code: enrolled+activated, app-auth on,
+    and the TOTP_DISABLED break-glass not set (D-0056)."""
+    if not settings.app_auth_enabled or settings.totp_disabled:
+        return False
+    return await totp.is_active(db, settings.owner_id)
+
+
 @app.get("/api/auth/status", response_model=AuthStatus, tags=["auth"])
-async def auth_status(request: Request):
+async def auth_status(request: Request, db: AsyncSession = Depends(get_db)):
     """Whether app-auth is on and whether this request carries a valid session.
     Public — the login gate needs it before a session exists."""
     enabled = settings.app_auth_enabled
     authed = (not enabled) or verify_session(request.cookies.get(SESSION_COOKIE))
-    return AuthStatus(auth_enabled=enabled, authenticated=authed)
+    return AuthStatus(
+        auth_enabled=enabled, authenticated=authed,
+        totp_enabled=await _totp_active(db),
+    )
 
 
 @app.post("/api/auth/login", response_model=AuthStatus, tags=["auth"])
-async def auth_login(body: LoginRequest):
-    """Exchange the operator password for a signed session cookie."""
+async def auth_login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
+    """Exchange the operator password (+ TOTP code when enrolled, D-0056) for a
+    signed session cookie."""
     if not settings.app_auth_enabled:
         return AuthStatus(auth_enabled=False, authenticated=True)
     if not password_matches(body.password):
         raise HTTPException(status_code=401, detail="Invalid password")
-    resp = JSONResponse(AuthStatus(auth_enabled=True, authenticated=True).model_dump())
+    totp_on = await _totp_active(db)
+    if totp_on:
+        if not totp.throttle_check():
+            raise HTTPException(status_code=429, detail="Too many code attempts — wait a minute")
+        state = await totp.load_state(db, settings.owner_id)
+        matched = totp.verify_code(
+            state["secret"], body.totp_code or "", int(state.get("last_counter", 0))
+        )
+        if matched is None:
+            totp.throttle_record_failure()
+            raise HTTPException(status_code=401, detail="Invalid or missing TOTP code")
+        state["last_counter"] = matched  # replay guard: each step accepted once
+        await totp.save_state(db, settings.owner_id, state)
+        totp.throttle_reset()
+    resp = JSONResponse(
+        AuthStatus(auth_enabled=True, authenticated=True, totp_enabled=totp_on).model_dump()
+    )
     _set_session_cookie(resp)
     return resp
 
@@ -2010,6 +2046,90 @@ async def auth_logout():
     )
     resp.delete_cookie(SESSION_COOKIE, path="/")
     return resp
+
+
+# ── TOTP second factor (D-0056, resolves P-0062) ───────────────────────────────
+# Management endpoints sit behind the app-auth middleware like any other route:
+# only a logged-in operator can enroll, activate, or disable. Recovery from a
+# lost authenticator is the TOTP_DISABLED env break-glass (see config.py).
+
+def _require_app_auth() -> None:
+    if not settings.app_auth_enabled:
+        raise HTTPException(
+            status_code=400,
+            detail="TOTP requires app-level auth — set APP_PASSWORD first",
+        )
+
+
+@app.get("/api/auth/totp", response_model=TotpStatus, tags=["auth"])
+async def totp_status(db: AsyncSession = Depends(get_db)):
+    """Enrollment state for the Settings → Security panel."""
+    state = await totp.load_state(db, settings.owner_id)
+    return TotpStatus(
+        enabled=bool(state and state.get("activated")),
+        pending=bool(state and not state.get("activated")),
+        break_glass=settings.totp_disabled,
+    )
+
+
+@app.post("/api/auth/totp/setup", response_model=TotpSetupOut, tags=["auth"])
+async def totp_setup(db: AsyncSession = Depends(get_db)):
+    """Generate a fresh (pending) secret and return the enrollment material.
+    Re-running replaces an unconfirmed pending secret; an *active* enrollment
+    must be disabled first so a stale QR can't silently displace the live one."""
+    _require_app_auth()
+    state = await totp.load_state(db, settings.owner_id)
+    if state and state.get("activated"):
+        raise HTTPException(status_code=409, detail="TOTP is already active — disable it first")
+    secret = totp.generate_secret()
+    await totp.save_state(
+        db, settings.owner_id, {"secret": secret, "activated": False, "last_counter": 0}
+    )
+    return TotpSetupOut(secret=secret, otpauth_uri=totp.provisioning_uri(secret))
+
+
+@app.post("/api/auth/totp/activate", response_model=TotpStatus, tags=["auth"])
+async def totp_activate(body: TotpCode, db: AsyncSession = Depends(get_db)):
+    """Confirm enrollment with one live code; only then does login require TOTP."""
+    _require_app_auth()
+    if not totp.throttle_check():
+        raise HTTPException(status_code=429, detail="Too many code attempts — wait a minute")
+    state = await totp.load_state(db, settings.owner_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="No pending TOTP setup — run setup first")
+    if state.get("activated"):
+        raise HTTPException(status_code=409, detail="TOTP is already active")
+    matched = totp.verify_code(state["secret"], body.code, int(state.get("last_counter", 0)))
+    if matched is None:
+        totp.throttle_record_failure()
+        raise HTTPException(status_code=401, detail="Invalid TOTP code")
+    totp.throttle_reset()
+    state.update(activated=True, last_counter=matched)
+    await totp.save_state(db, settings.owner_id, state)
+    logger.info("[totp] second factor activated for owner=%s", settings.owner_id)
+    return TotpStatus(enabled=True, pending=False, break_glass=settings.totp_disabled)
+
+
+@app.post("/api/auth/totp/disable", response_model=TotpStatus, tags=["auth"])
+async def totp_disable(body: TotpCode, db: AsyncSession = Depends(get_db)):
+    """Turn the second factor off. Requires a current code when active (a
+    walk-up session alone shouldn't weaken the login gate); a pending, never-
+    activated setup can be discarded without one."""
+    _require_app_auth()
+    state = await totp.load_state(db, settings.owner_id)
+    if not state:
+        return TotpStatus(enabled=False, pending=False, break_glass=settings.totp_disabled)
+    if state.get("activated") and not settings.totp_disabled:
+        if not totp.throttle_check():
+            raise HTTPException(status_code=429, detail="Too many code attempts — wait a minute")
+        matched = totp.verify_code(state["secret"], body.code, int(state.get("last_counter", 0)))
+        if matched is None:
+            totp.throttle_record_failure()
+            raise HTTPException(status_code=401, detail="Invalid TOTP code")
+        totp.throttle_reset()
+    await totp.clear_state(db, settings.owner_id)
+    logger.info("[totp] second factor disabled for owner=%s", settings.owner_id)
+    return TotpStatus(enabled=False, pending=False, break_glass=settings.totp_disabled)
 
 
 # ── In-UI console (scoped actions: set model, run auth) ────────────────────────

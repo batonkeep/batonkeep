@@ -669,14 +669,36 @@ class ConsoleConfig(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    """App-level login (D-0023). Single-operator password check."""
+    """App-level login (D-0023). Single-operator password check; when TOTP is
+    enrolled (D-0056) a valid 6-digit code must accompany the password."""
     password: str
+    totp_code: str | None = None
 
 
 class AuthStatus(BaseModel):
-    """Whether app-auth is enabled and whether the caller is authenticated."""
+    """Whether app-auth is enabled and whether the caller is authenticated.
+    ``totp_enabled`` tells the login page to show the code field (D-0056)."""
     auth_enabled: bool
     authenticated: bool
+    totp_enabled: bool = False
+
+
+class TotpStatus(BaseModel):
+    """Settings → Security panel state (D-0056)."""
+    enabled: bool          # enrolled + activated → login requires a code
+    pending: bool          # secret generated but not yet confirmed with a live code
+    break_glass: bool      # TOTP_DISABLED=1 is set — second factor skipped
+
+
+class TotpSetupOut(BaseModel):
+    """Enrollment material — shown once; the QR is rendered client-side."""
+    secret: str            # base32, for manual key entry
+    otpauth_uri: str       # for the QR code
+
+
+class TotpCode(BaseModel):
+    """A 6-digit code from the authenticator app."""
+    code: str
 
 
 # ── Stats ─────────────────────────────────────────────────────────────────────

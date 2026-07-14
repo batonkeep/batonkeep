@@ -32,6 +32,8 @@ import type {
   Task,
   TaskInput,
   TaskTemplate,
+  TotpSetup,
+  TotpStatus,
   TurnInput,
   Publish,
   SessionTemplate,
@@ -249,9 +251,19 @@ export const api = {
 
   // App-level auth (D-0023). Status is public; login/logout set/clear the cookie.
   getAuthStatus: () => req<AuthStatus>("/auth/status"),
-  login: (password: string) =>
-    req<AuthStatus>("/auth/login", { method: "POST", body: JSON.stringify({ password }) }),
+  login: (password: string, totpCode?: string) =>
+    req<AuthStatus>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ password, totp_code: totpCode || null }),
+    }),
   logout: () => req<AuthStatus>("/auth/logout", { method: "POST" }),
+  // TOTP second factor (D-0056). Management routes require a session.
+  getTotpStatus: () => req<TotpStatus>("/auth/totp"),
+  totpSetup: () => req<TotpSetup>("/auth/totp/setup", { method: "POST" }),
+  totpActivate: (code: string) =>
+    req<TotpStatus>("/auth/totp/activate", { method: "POST", body: JSON.stringify({ code }) }),
+  totpDisable: (code: string) =>
+    req<TotpStatus>("/auth/totp/disable", { method: "POST", body: JSON.stringify({ code }) }),
   // Owner-scoped (model-set is no longer console-gated for API providers); the
   // optional token is kept for the ProvidersPanel call sites and is harmless if sent.
   setProviderModel: (

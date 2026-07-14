@@ -8,8 +8,16 @@ import { api } from "../api";
 import { BatonMark } from "../ui/Logo";
 import { Button, Input } from "../ui";
 
-export default function LoginPage({ onAuthed }: { onAuthed: () => void }) {
+export default function LoginPage({
+  onAuthed,
+  totpEnabled = false,
+}: {
+  onAuthed: () => void;
+  /** TOTP second factor is active (D-0056) — show the code field. */
+  totpEnabled?: boolean;
+}) {
   const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -18,11 +26,12 @@ export default function LoginPage({ onAuthed }: { onAuthed: () => void }) {
     setBusy(true);
     setError(null);
     try {
-      await api.login(password);
+      await api.login(password, totpEnabled ? code : undefined);
       onAuthed();
     } catch {
-      setError("Incorrect password.");
+      setError(totpEnabled ? "Incorrect password or code." : "Incorrect password.");
       setPassword("");
+      setCode("");
     } finally {
       setBusy(false);
     }
@@ -68,6 +77,18 @@ export default function LoginPage({ onAuthed }: { onAuthed: () => void }) {
             placeholder="Workspace password"
             aria-label="Password"
           />
+          {totpEnabled && (
+            <Input
+              type="text"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              maxLength={6}
+              value={code}
+              onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
+              placeholder="Authenticator code"
+              aria-label="TOTP code"
+            />
+          )}
           {error && <p className="text-xs text-bad">{error}</p>}
         </div>
         <Button
@@ -75,7 +96,7 @@ export default function LoginPage({ onAuthed }: { onAuthed: () => void }) {
           variant="primary"
           icon={<Lock size={14} />}
           className="w-full"
-          disabled={busy || password.length === 0}
+          disabled={busy || password.length === 0 || (totpEnabled && code.length !== 6)}
         >
           {busy ? "Signing in…" : "Sign in"}
         </Button>

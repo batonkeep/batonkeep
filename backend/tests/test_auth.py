@@ -8,6 +8,7 @@ surfaces stay open), login/logout, and the web-console token fold-in
 """
 from __future__ import annotations
 
+import asyncio
 import time
 
 import pytest
@@ -16,6 +17,39 @@ from starlette.websockets import WebSocketDisconnect
 
 import app.main as main
 from app.config import get_settings
+
+
+@pytest.fixture(autouse=True)
+def _db_override(tmp_path):
+    """auth_status/auth_login read TOTP state (D-0056), so the endpoints need a
+    working DB — give every test here a fresh sqlite file."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from app.db import Base, get_db
+    from app.models import Owner
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/auth.db")
+
+    async def _setup():
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        Maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with Maker() as db:
+            db.add(Owner(id="local", label="Me"))
+            await db.commit()
+        return Maker
+
+    Maker = asyncio.get_event_loop().run_until_complete(_setup())
+
+    async def _override_db():
+        async with Maker() as db:
+            yield db
+
+    main.app.dependency_overrides[get_db] = _override_db
+    try:
+        yield
+    finally:
+        main.app.dependency_overrides.pop(get_db, None)
 
 
 @pytest.fixture
@@ -82,7 +116,7 @@ def test_disabled_is_passthrough(settings_env):
     r = client.get("/api/auth/status")
     assert r.status_code == 200
     body = r.json()
-    assert body == {"auth_enabled": False, "authenticated": True}
+    assert body == {"auth_enabled": False, "authenticated": True, "totp_enabled": False}
     # A normal protected route is reachable.
     assert client.get("/api/providers").status_code == 200
 
@@ -94,7 +128,7 @@ def test_protected_route_401_without_session(settings_env):
     # status endpoint stays public (login gate needs it pre-session).
     s = client.get("/api/auth/status")
     assert s.status_code == 200
-    assert s.json() == {"auth_enabled": True, "authenticated": False}
+    assert s.json() == {"auth_enabled": True, "authenticated": False, "totp_enabled": False}
     # /health is the container liveness probe — must answer 200 without a session
     # or the docker healthcheck fails and the frontend never starts.
     h = client.get("/health")

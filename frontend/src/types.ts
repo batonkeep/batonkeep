@@ -193,6 +193,19 @@ export interface ConsoleConfig {
 export interface AuthStatus {
   auth_enabled: boolean;
   authenticated: boolean;
+  /** TOTP second factor enrolled + active — login needs a code (D-0056). */
+  totp_enabled: boolean;
+}
+
+export interface TotpStatus {
+  enabled: boolean;
+  pending: boolean;
+  break_glass: boolean;
+}
+
+export interface TotpSetup {
+  secret: string;
+  otpauth_uri: string;
 }
 
 export interface Stats {

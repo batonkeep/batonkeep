@@ -4,6 +4,37 @@ All notable changes to batonkeep are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (pre-1.0: minor versions may
 add features freely; patch versions are fixes).
 
+## [0.6.0] — 2026-07-14
+
+A security-and-polish release: add a second factor to your login, and a cleaner
+build view on mobile.
+
+### Added
+
+- **Two-factor authentication (TOTP).** When you protect batonkeep with a login
+  password (`APP_PASSWORD`), you can now add an authenticator-app second factor
+  from **Settings → Security**. Scan the QR code (or type the key) into Google
+  Authenticator, Aegis, 1Password, or any TOTP app, confirm once, and login then
+  asks for a 6-digit code alongside your password. It's entirely optional and off
+  until you enrol. Lost your device? Set `TOTP_DISABLED=1` in your deployment
+  environment to sign in with the password alone, then re-enrol.
+
+### Changed
+
+- **Tighter cross-origin defaults.** A new `CORS_ALLOW_ORIGINS` setting lets you
+  pin the API to your own UI origin(s) instead of reflecting any origin — worth
+  setting if you don't run batonkeep behind its own login gate.
+- **Safer rendering of model output.** Markdown produced during a build session
+  is now sanitised before display, closing an avenue for embedded scripts in
+  agent- or file-sourced content to run in the dashboard.
+
+### Fixed
+
+- **Build-session header no longer overflows on phones.** Once a site was built
+  and Cloudflare was configured, the action buttons — including Cloudflare and
+  Publish — could run off the right edge on a narrow screen. The header now
+  collapses those actions to icons on mobile so every one stays reachable.
+
 ## [0.5.1] — 2026-06-21
 
 A fix release: stay logged in.

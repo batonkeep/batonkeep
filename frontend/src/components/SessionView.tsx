@@ -1477,7 +1477,7 @@ export default function SessionView({
                     <Select
                       value={detail.exec_policy}
                       onChange={(e) => handleSetExecPolicy(e.target.value as ExecPolicy)}
-                      className="h-8 w-auto py-0 text-[11px]"
+                      className="h-8 w-auto max-w-24 py-0 text-[11px] sm:max-w-none"
                       title="Code execution policy — when the agent may run code (P-0046)"
                     >
                       <option value="off">Code: off</option>
@@ -1490,7 +1490,7 @@ export default function SessionView({
                     <Select
                       value={detail.image_model_id ?? ""}
                       onChange={(e) => handleSetImageModel(e.target.value)}
-                      className="h-8 w-auto py-0 text-[11px]"
+                      className="h-8 w-auto max-w-24 py-0 text-[11px] sm:max-w-none"
                       title="Image model — which model the agent uses to generate images. Default follows the provider; you can pick any connected model, including cross-provider (P-0046)."
                     >
                       <option value="">Image: default</option>
@@ -1509,7 +1509,7 @@ export default function SessionView({
                     onClick={toggleHistory}
                     title="Undo / History — previous versions of this build"
                   >
-                    <span className="text-[11px]">History</span>
+                    <span className="hidden text-[11px] sm:inline">History</span>
                   </Button>
                   <Button
                     variant={activityOpen ? "outline" : "ghost"}
@@ -2080,7 +2080,8 @@ export default function SessionView({
                 className="inline-flex"
               >
                 <Button variant="ghost" size="sm" className="gap-1 px-2" icon={<Download size={13} />}>
-                  <span className="text-[11px]">Download</span>
+                  {/* Icon-only below sm so the action row fits a phone width (D-0055) */}
+                  <span className="hidden text-[11px] sm:inline">Download</span>
                 </Button>
               </a>
             )}
@@ -2095,7 +2096,7 @@ export default function SessionView({
                 ? "Deploy this session to Cloudflare Pages"
                 : "Set up Cloudflare Pages publishing"}
             >
-              <span className="text-[11px]">Cloudflare</span>
+              <span className="hidden text-[11px] sm:inline">Cloudflare</span>
             </Button>
             {cf?.configured && (
               <Button
@@ -2116,7 +2117,7 @@ export default function SessionView({
               disabled={!selectedId || publishing}
               title={publish?.published ? "Re-publish — refresh the live site to the latest build" : "Publish to a public share link"}
             >
-              <span className="text-[11px]">{publish?.published ? "Update" : "Publish"}</span>
+              <span className="hidden text-[11px] sm:inline">{publish?.published ? "Update" : "Publish"}</span>
             </Button>
           </div>
         </div>

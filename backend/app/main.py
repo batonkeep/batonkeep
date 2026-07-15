@@ -38,6 +38,8 @@ from app.db import get_db, init_db
 from app.logging_config import configure_logging, owner_id_var, request_id_var
 from app.models import (
     Artifact,
+    ContextReceipt,
+    ContextSource,
     Credential,
     Owner,
     Project,
@@ -47,8 +49,13 @@ from app.models import (
     Session,
     SessionTurn,
     Task,
+    WorkItem,
 )
-from app.projects import get_or_create_default_project, resolve_project_id
+from app.projects import (
+    get_or_create_default_project,
+    resolve_project_id,
+    resolve_work_item_id,
+)
 from app.schemas import (
     ApprovalDecision,
     AuthStatus,
@@ -61,6 +68,10 @@ from app.schemas import (
     CloudflareStatusOut,
     CockpitOut,
     ConsoleConfig,
+    ContextReceiptOut,
+    ContextSourceDeclare,
+    ContextSourceOut,
+    ContextSourcesOut,
     CredentialCreate,
     CredentialOut,
     CustomProviderCreate,
@@ -108,6 +119,9 @@ from app.schemas import (
     UsageSummaryOut,
     VersionDiffOut,
     VersionOut,
+    WorkItemCreate,
+    WorkItemOut,
+    WorkItemPatch,
 )
 from app.ws import ws_manager
 
@@ -431,6 +445,318 @@ async def get_project(
     return ProjectOut.model_validate(project)
 
 
+async def _get_owned_project(db: AsyncSession, owner_id: str, project_id: str) -> Project:
+    project = await db.get(Project, project_id)
+    if project is None or project.owner_id != owner_id:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return project
+
+
+# ── /api/projects/{id}/work-items (S0 substrate) ─────────────────────────────
+
+@app.get(
+    "/api/projects/{project_id}/work-items",
+    response_model=list[WorkItemOut],
+    tags=["projects"],
+)
+async def list_work_items(
+    project_id: str,
+    state: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    await _get_owned_project(db, owner_id, project_id)
+    query = select(WorkItem).where(WorkItem.project_id == project_id).order_by(WorkItem.id)
+    if state is not None:
+        query = query.where(WorkItem.state == state)
+    result = await db.execute(query)
+    return [WorkItemOut.model_validate(w) for w in result.scalars().all()]
+
+
+@app.post(
+    "/api/projects/{project_id}/work-items",
+    response_model=WorkItemOut,
+    status_code=201,
+    tags=["projects"],
+)
+async def create_work_item(
+    project_id: str,
+    body: WorkItemCreate,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    await _get_owned_project(db, owner_id, project_id)
+    if body.parent_id is not None:
+        parent = await db.get(WorkItem, body.parent_id)
+        if parent is None or parent.owner_id != owner_id or parent.project_id != project_id:
+            raise HTTPException(status_code=404, detail="Parent work item not found")
+    work_item = WorkItem(
+        owner_id=owner_id,
+        project_id=project_id,
+        kind=body.kind,
+        title=body.title,
+        objective=body.objective,
+        next_action=body.next_action,
+        risk=body.risk,
+        parent_id=body.parent_id,
+        signal=body.signal,
+    )
+    db.add(work_item)
+    await db.commit()
+    await db.refresh(work_item)
+    return WorkItemOut.model_validate(work_item)
+
+
+@app.get("/api/work-items/{item_id}", response_model=WorkItemOut, tags=["projects"])
+async def get_work_item(
+    item_id: int,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    work_item = await db.get(WorkItem, item_id)
+    if work_item is None or work_item.owner_id != owner_id:
+        raise HTTPException(status_code=404, detail="Work item not found")
+    return WorkItemOut.model_validate(work_item)
+
+
+@app.patch("/api/work-items/{item_id}", response_model=WorkItemOut, tags=["projects"])
+async def update_work_item(
+    item_id: int,
+    body: WorkItemPatch,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """Update a work item. State transitions are validated against the S0 state
+    machine; done/dropped stamp closed_at, reopening clears it. `add_decision`
+    appends to the append-only decisions list (big content → Evidence)."""
+    from app.schemas import WORK_ITEM_TRANSITIONS
+
+    work_item = await db.get(WorkItem, item_id)
+    if work_item is None or work_item.owner_id != owner_id:
+        raise HTTPException(status_code=404, detail="Work item not found")
+
+    if body.state is not None and body.state != work_item.state:
+        allowed = WORK_ITEM_TRANSITIONS.get(work_item.state, set())
+        if body.state not in allowed:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"invalid state transition {work_item.state!r} → {body.state!r}"
+                    f" (allowed: {sorted(allowed)})"
+                ),
+            )
+        work_item.state = body.state
+        if body.state in {"done", "dropped"}:
+            work_item.closed_at = datetime.now(UTC)
+        else:
+            work_item.closed_at = None
+
+    if body.title is not None:
+        title = body.title.strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="title must not be empty")
+        work_item.title = title[:256]
+    if body.objective is not None:
+        work_item.objective = body.objective
+    if body.next_action is not None:
+        work_item.next_action = body.next_action or None
+    if body.risk is not None:
+        work_item.risk = body.risk
+    if body.kind is not None:
+        work_item.kind = body.kind[:64]
+    if body.add_decision:
+        # Reassign (never mutate in place) so the JSON column change is tracked.
+        work_item.decisions = [
+            *(work_item.decisions or []),
+            {
+                "ts": datetime.now(UTC).isoformat(),
+                "actor": body.decision_actor[:96],
+                "text": body.add_decision,
+            },
+        ]
+
+    await db.commit()
+    await db.refresh(work_item)
+    return WorkItemOut.model_validate(work_item)
+
+
+# ── /api/projects/{id}/context-sources (S0 substrate) ────────────────────────
+
+@app.get(
+    "/api/projects/{project_id}/context-sources",
+    response_model=list[ContextSourceOut],
+    tags=["projects"],
+)
+async def list_context_sources(
+    project_id: str,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    await _get_owned_project(db, owner_id, project_id)
+    result = await db.execute(
+        select(ContextSource)
+        .where(ContextSource.project_id == project_id)
+        .order_by(
+            ContextSource.bootstrap_order.is_(None),
+            ContextSource.bootstrap_order,
+            ContextSource.id,
+        )
+    )
+    return [ContextSourceOut.model_validate(s) for s in result.scalars().all()]
+
+
+@app.post(
+    "/api/projects/{project_id}/context-sources",
+    response_model=ContextSourcesOut,
+    status_code=201,
+    tags=["projects"],
+)
+async def declare_context_sources(
+    project_id: str,
+    body: ContextSourceDeclare,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """Declare one source (rel_path given), or import every source the project
+    manifest declares (rel_path omitted). Idempotent upsert on rel_path; hashes
+    are refreshed immediately so freshness is visible without a second call."""
+    from app import project_context
+
+    project = await _get_owned_project(db, owner_id, project_id)
+
+    if body.rel_path is None:
+        try:
+            touched, warnings = await project_context.sync_sources_from_manifest(db, project)
+            await project_context.refresh_sources(db, project)
+        except project_context.ManifestError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        await db.commit()
+        for s in touched:
+            await db.refresh(s)
+        return ContextSourcesOut(
+            sources=[ContextSourceOut.model_validate(s) for s in touched],
+            warnings=warnings,
+        )
+
+    try:
+        rel = project_context._validate_rel(body.rel_path)
+    except project_context.ManifestError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+    existing = (
+        await db.execute(
+            select(ContextSource).where(
+                ContextSource.project_id == project_id,
+                ContextSource.rel_path == rel,
+            )
+        )
+    ).scalars().first()
+    kind = body.kind or (
+        project_context.detect_kind(project.root_path, rel) if project.root_path else "file"
+    )
+    if existing is None:
+        source = ContextSource(
+            owner_id=owner_id,
+            project_id=project_id,
+            kind=kind,
+            rel_path=rel,
+            bootstrap_order=body.bootstrap_order,
+            domain=body.domain,
+            sensitivity=body.sensitivity,
+        )
+        db.add(source)
+    else:
+        source = existing
+        source.kind = kind
+        source.bootstrap_order = body.bootstrap_order
+        source.domain = body.domain
+        source.sensitivity = body.sensitivity
+    if project.root_path:
+        revision = project_context.compute_revision(project.root_path, rel, kind)
+        if revision is not None:
+            source.last_revision = revision
+        source.last_checked_at = datetime.now(UTC)
+    await db.commit()
+    await db.refresh(source)
+    return ContextSourcesOut(sources=[ContextSourceOut.model_validate(source)])
+
+
+@app.post(
+    "/api/projects/{project_id}/context/refresh",
+    response_model=list[ContextSourceOut],
+    tags=["projects"],
+)
+async def refresh_project_context(
+    project_id: str,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """Re-hash every declared source's revision and update freshness. Staleness
+    is surfaced to humans — nothing here rewrites source content."""
+    from app import project_context
+
+    project = await _get_owned_project(db, owner_id, project_id)
+    sources = await project_context.refresh_sources(db, project)
+    await db.commit()
+    for s in sources:
+        await db.refresh(s)
+    return [ContextSourceOut.model_validate(s) for s in sources]
+
+
+# ── Context receipts (S0 substrate) ──────────────────────────────────────────
+
+@app.get("/api/runs/{run_id}/receipt", response_model=ContextReceiptOut, tags=["runs"])
+async def get_run_receipt(
+    run_id: int,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    run = await db.get(Run, run_id)
+    if run is None or run.owner_id != owner_id:
+        raise HTTPException(status_code=404, detail="Run not found")
+    receipt = (
+        await db.execute(
+            select(ContextReceipt)
+            .where(ContextReceipt.run_id == run_id)
+            .order_by(ContextReceipt.id.desc())
+            .limit(1)
+        )
+    ).scalars().first()
+    if receipt is None:
+        raise HTTPException(status_code=404, detail="No context receipt for this run")
+    return ContextReceiptOut.model_validate(receipt)
+
+
+@app.get(
+    "/api/sessions/{session_id}/turns/{turn_id}/receipt",
+    response_model=ContextReceiptOut,
+    tags=["sessions"],
+)
+async def get_turn_receipt(
+    session_id: str,
+    turn_id: int,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    session = await db.get(Session, session_id)
+    if session is None or session.owner_id != owner_id:
+        raise HTTPException(status_code=404, detail="Session not found")
+    turn = await db.get(SessionTurn, turn_id)
+    if turn is None or turn.session_id != session_id:
+        raise HTTPException(status_code=404, detail="Turn not found")
+    receipt = (
+        await db.execute(
+            select(ContextReceipt)
+            .where(ContextReceipt.session_turn_id == turn_id)
+            .order_by(ContextReceipt.id.desc())
+            .limit(1)
+        )
+    ).scalars().first()
+    if receipt is None:
+        raise HTTPException(status_code=404, detail="No context receipt for this turn")
+    return ContextReceiptOut.model_validate(receipt)
+
+
 # ── /api/tasks ────────────────────────────────────────────────────────────────
 
 @app.get("/api/task-templates", response_model=list[TaskTemplateOut], tags=["tasks"])
@@ -468,12 +794,14 @@ async def create_task(
 ):
     try:
         project_id = await resolve_project_id(db, owner_id, body.project_id)
+        work_item_id = await resolve_work_item_id(db, owner_id, project_id, body.work_item_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from None
 
     task = Task(
         owner_id=owner_id,
         project_id=project_id,
+        work_item_id=work_item_id,
         name=body.name,
         description=body.description,
         category=body.category,
@@ -840,6 +1168,7 @@ async def create_session(
 
     try:
         project_id = await resolve_project_id(db, owner_id, body.project_id)
+        work_item_id = await resolve_work_item_id(db, owner_id, project_id, body.work_item_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from None
 
@@ -855,6 +1184,7 @@ async def create_session(
         id=session_id,
         owner_id=owner_id,
         project_id=project_id,
+        work_item_id=work_item_id,
         title=title,
         provider=body.provider,
         workspace_path=workspace_path,

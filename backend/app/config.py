@@ -232,6 +232,12 @@ class Settings(BaseSettings):
     # artifact (named by its share token); served publicly at /api/share/{token}.
     publish_dir: str = "/data/publish"
 
+    # ── Project context projection (S0 substrate) ───────────────────────────────
+    # Byte budget for one execution's read-only `context/` projection. Sources
+    # beyond it are excluded (recorded on the receipt, surfaced not silent) —
+    # a mis-declared giant source must not balloon every run's workspace.
+    context_projection_max_bytes: int = 10 * 1024 * 1024  # 10 MiB
+
     # ── Asset upload-in (M1.5, D-0010) ──────────────────────────────────────────
     # Files dropped into the chat land as real workspace files; limits are
     # env-configurable (D-0008 B). Extension allowlist (lowercased, no dots) and a

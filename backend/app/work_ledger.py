@@ -1,0 +1,100 @@
+"""
+work_ledger.py — the deterministic working ledger (S0 substrate).
+
+WORKITEM.md is the durable working memory an actor receives for a run/turn:
+objective, state, decisions, pending approvals, changed files, the evidence
+index, and the single honest next action. It is rendered from structured DB
+fields only — never from transcripts — and is **byte-stable given equal
+inputs**: that is the property `ContextReceipt.ledger_sha` pins, and what the
+cross-provider cold-handoff proof relies on (a fresh provider continues from
+projection + ledger alone).
+
+Determinism rules: no wall-clock reads, no row timestamps (two identical work
+items created at different times must hash identically), stored iteration
+order only (decision `ts` values appear because they are stored facts, not
+render-time state). Agents may *propose* ledger fields; the orchestrator
+writes them — this module only renders what the DB already says.
+"""
+from __future__ import annotations
+
+import hashlib
+from collections.abc import Mapping, Sequence
+from typing import Any
+
+from app.models import WorkItem
+
+LEDGER_FILENAME = "WORKITEM.md"
+
+
+def sha256_text(text: str) -> str:
+    """sha256 hex of the exact ledger bytes (utf-8)."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _line(value: str | None, fallback: str) -> str:
+    value = (value or "").strip()
+    return value if value else fallback
+
+
+def _decision_lines(decisions: Sequence[Mapping[str, Any]] | None) -> list[str]:
+    lines = []
+    for d in decisions or []:
+        ts = str(d.get("ts", "") or "").strip()
+        actor = str(d.get("actor", "") or "").strip()
+        text = str(d.get("text", "") or "").strip()
+        prefix = " — ".join(p for p in (ts, actor) if p)
+        lines.append(f"- {prefix}: {text}" if prefix else f"- {text}")
+    return lines or ["- (none)"]
+
+
+def render_ledger(
+    *,
+    project_name: str,
+    work_item: WorkItem | None,
+    changed_files: Sequence[str] = (),
+    evidence_index: Sequence[Mapping[str, Any]] = (),
+    pending_approvals: Sequence[str] = (),
+) -> str:
+    """Render the working ledger. Pure function of its inputs — same inputs,
+    same bytes (see module docstring for what must stay out of here)."""
+    out: list[str] = []
+    if work_item is not None:
+        out.append(f"# Work ledger — {work_item.title}")
+        out.append("")
+        out.append(f"Project: {project_name}")
+        out.append(f"Kind: {work_item.kind} · State: {work_item.state} · Risk: {work_item.risk}")
+        out.append("")
+        out.append("## Objective")
+        out.append(_line(work_item.objective, "(no objective recorded)"))
+        out.append("")
+        out.append("## Decisions")
+        out.extend(_decision_lines(work_item.decisions))
+    else:
+        # No work item attached: still emit a deterministic ledger so every
+        # receipt carries a ledger_sha and the projection shape is uniform.
+        out.append(f"# Work ledger — {project_name}")
+        out.append("")
+        out.append("No work item is attached to this run/turn. Durable intent lives in")
+        out.append("the project's work items; this execution runs against the project only.")
+    out.append("")
+    out.append("## Pending approvals")
+    out.extend([f"- {p}" for p in pending_approvals] or ["- (none)"])
+    out.append("")
+    out.append("## Changed files")
+    out.extend([f"- {f}" for f in changed_files] or ["- (none)"])
+    out.append("")
+    out.append("## Evidence")
+    out.extend(
+        [
+            f"- {e.get('kind', '?')}: {e.get('rel_path', '?')} (sha256 {e.get('digest') or '—'})"
+            for e in evidence_index
+        ]
+        or ["- (none)"]
+    )
+    out.append("")
+    out.append("## Next action")
+    out.append(
+        _line(work_item.next_action if work_item is not None else None, "(none recorded)")
+    )
+    out.append("")
+    return "\n".join(out)

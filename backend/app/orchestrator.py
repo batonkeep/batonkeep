@@ -654,6 +654,10 @@ async def enqueue_run(
         run = Run(
             owner_id=task.owner_id,
             task_id=task_id,
+            # S0 substrate: inherit the task's project/work-item so run history
+            # stays project-queryable even if the task is later moved.
+            project_id=task.project_id,
+            work_item_id=task.work_item_id,
             trigger=trigger,
             status="queued",
             idempotency_key=idempotency_key,
@@ -848,6 +852,7 @@ async def _record_routing_decision(db, run: Run, trace) -> None:
             owner_id=run.owner_id,
             run_id=run.id,
             task_id=run.task_id,
+            project_id=run.project_id,  # S0: content-free project correlation
             policy_version=t.get("policy_version", "rule-v1"),
             strategy=t.get("strategy", ""),
             confidential=bool(t.get("confidential")),

@@ -40,6 +40,7 @@ from app.models import (
     Artifact,
     Credential,
     Owner,
+    Project,
     Run,
     RunAsset,
     RunEvent,
@@ -47,6 +48,7 @@ from app.models import (
     SessionTurn,
     Task,
 )
+from app.projects import get_or_create_default_project, resolve_project_id
 from app.schemas import (
     ApprovalDecision,
     AuthStatus,
@@ -71,6 +73,8 @@ from app.schemas import (
     LoginRequest,
     ModelPricingOut,
     ModeOut,
+    ProjectCreate,
+    ProjectOut,
     ProviderCatalogOut,
     ProviderEnabledUpdate,
     ProviderHealth,
@@ -139,6 +143,10 @@ async def lifespan(app: FastAPI):
             session.add(Owner(id=settings.owner_id, label="Local operator"))
             await session.commit()
             logger.info("Seeded owner: %s", settings.owner_id)
+        # S0 substrate: every owner has a default Project (backfill covers
+        # migrated DBs; this covers fresh installs and metadata-built test DBs).
+        await get_or_create_default_project(session, settings.owner_id)
+        await session.commit()
 
     # P7: seed representative tasks (insert-only-if-empty, §14)
     if settings.seed_examples:
@@ -369,6 +377,60 @@ def _run_to_out(run: Run) -> RunOut:
     return RunOut.model_validate(run)
 
 
+# ── /api/projects (S0 substrate) ──────────────────────────────────────────────
+
+@app.get("/api/projects", response_model=list[ProjectOut], tags=["projects"])
+async def list_projects(
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """The owner's Projects, default first. Ensures the default exists so a
+    fresh install always lists at least "Personal workspace"."""
+    await get_or_create_default_project(db, owner_id)
+    await db.commit()
+    result = await db.execute(
+        select(Project)
+        .where(Project.owner_id == owner_id)
+        .order_by(Project.is_default.desc(), Project.created_at)
+    )
+    return [ProjectOut.model_validate(p) for p in result.scalars().all()]
+
+
+@app.post("/api/projects", response_model=ProjectOut, status_code=201, tags=["projects"])
+async def create_project(
+    body: ProjectCreate,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    import uuid
+
+    project = Project(
+        id=uuid.uuid4().hex,
+        owner_id=owner_id,
+        name=body.name.strip()[:256],
+        kind=body.kind,
+        sensitivity=body.sensitivity,
+        root_path=body.root_path,
+        description=body.description,
+    )
+    db.add(project)
+    await db.commit()
+    await db.refresh(project)
+    return ProjectOut.model_validate(project)
+
+
+@app.get("/api/projects/{project_id}", response_model=ProjectOut, tags=["projects"])
+async def get_project(
+    project_id: str,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    project = await db.get(Project, project_id)
+    if project is None or project.owner_id != owner_id:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return ProjectOut.model_validate(project)
+
+
 # ── /api/tasks ────────────────────────────────────────────────────────────────
 
 @app.get("/api/task-templates", response_model=list[TaskTemplateOut], tags=["tasks"])
@@ -387,12 +449,14 @@ async def list_task_templates():
 
 @app.get("/api/tasks", response_model=list[TaskOut], tags=["tasks"])
 async def list_tasks(
+    project_id: str | None = None,
     db: AsyncSession = Depends(get_db),
     owner_id: str = Depends(_owner_id),
 ):
-    result = await db.execute(
-        select(Task).where(Task.owner_id == owner_id).order_by(Task.id)
-    )
+    query = select(Task).where(Task.owner_id == owner_id).order_by(Task.id)
+    if project_id is not None:
+        query = query.where(Task.project_id == project_id)
+    result = await db.execute(query)
     return [_task_to_out(t) for t in result.scalars().all()]
 
 
@@ -402,8 +466,14 @@ async def create_task(
     db: AsyncSession = Depends(get_db),
     owner_id: str = Depends(_owner_id),
 ):
+    try:
+        project_id = await resolve_project_id(db, owner_id, body.project_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+
     task = Task(
         owner_id=owner_id,
+        project_id=project_id,
         name=body.name,
         description=body.description,
         category=body.category,
@@ -511,6 +581,7 @@ async def delete_task(
 async def list_runs(
     task_id: int | None = None,
     status: str | None = None,
+    project_id: str | None = None,
     limit: int = 50,
     db: AsyncSession = Depends(get_db),
     owner_id: str = Depends(_owner_id),
@@ -520,6 +591,8 @@ async def list_runs(
         q = q.where(Run.task_id == task_id)
     if status is not None:
         q = q.where(Run.status == status)
+    if project_id is not None:
+        q = q.where(Run.project_id == project_id)
     q = q.order_by(Run.id.desc()).limit(limit)
     result = await db.execute(q)
     return [_run_to_out(r) for r in result.scalars().all()]
@@ -765,6 +838,11 @@ async def create_session(
     if body.template and tpl is None:
         raise HTTPException(status_code=400, detail=f"unknown template {body.template!r}")
 
+    try:
+        project_id = await resolve_project_id(db, owner_id, body.project_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+
     session_id = uuid.uuid4().hex
     default_title = tpl.label if tpl else "Untitled session"
     title = (body.title or default_title).strip()[:256]
@@ -776,6 +854,7 @@ async def create_session(
     session = Session(
         id=session_id,
         owner_id=owner_id,
+        project_id=project_id,
         title=title,
         provider=body.provider,
         workspace_path=workspace_path,
@@ -793,12 +872,14 @@ async def create_session(
 
 @app.get("/api/sessions", response_model=list[SessionOut], tags=["sessions"])
 async def list_sessions(
+    project_id: str | None = None,
     db: AsyncSession = Depends(get_db),
     owner_id: str = Depends(_owner_id),
 ):
-    result = await db.execute(
-        select(Session).where(Session.owner_id == owner_id).order_by(Session.created_at.desc())
-    )
+    query = select(Session).where(Session.owner_id == owner_id)
+    if project_id is not None:
+        query = query.where(Session.project_id == project_id)
+    result = await db.execute(query.order_by(Session.created_at.desc()))
     sessions = result.scalars().all()
     ids = [s.id for s in sessions]
 

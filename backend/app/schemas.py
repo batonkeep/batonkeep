@@ -69,7 +69,45 @@ class RoutingPolicy(BaseModel):
 
 # ── Task ─────────────────────────────────────────────────────────────────────
 
+# ── Projects (S0 substrate) ─────────────────────────────────────────────────────
+
+class ProjectCreate(BaseModel):
+    name: str
+    # Free-form label (general | infra | research | …); engine never branches on it.
+    kind: str = "general"
+    sensitivity: str = "normal"
+    root_path: str | None = None
+    description: str | None = None
+
+    @field_validator("sensitivity")
+    @classmethod
+    def _valid_sensitivity(cls, v: str) -> str:
+        if v not in {"normal", "confidential"}:
+            raise ValueError("sensitivity must be 'normal' or 'confidential'")
+        return v
+
+
+class ProjectOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    owner_id: str
+    name: str
+    kind: str
+    status: str
+    sensitivity: str
+    is_default: bool
+    root_path: str | None
+    manifest_rel: str | None
+    description: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
 class TaskCreate(BaseModel):
+    # S0 substrate: the Project this task belongs to. None = the owner's default
+    # ("Personal workspace") — existing clients keep working unchanged.
+    project_id: str | None = None
     name: str
     description: str | None = None
     category: str | None = None
@@ -177,6 +215,8 @@ class TaskOut(BaseModel):
 
     id: int
     owner_id: str
+    project_id: str | None = None  # S0 substrate; always set on new creates
+    work_item_id: int | None = None  # S0 substrate; wired in a later slice
     name: str
     description: str | None
     category: str | None
@@ -226,6 +266,8 @@ class RunOut(BaseModel):
     id: int
     owner_id: str
     task_id: int
+    project_id: str | None = None  # S0 substrate; inherited from the task at enqueue
+    work_item_id: int | None = None  # S0 substrate; wired in a later slice
     trigger: str
     status: str
     summary: str | None
@@ -269,6 +311,8 @@ class RunEventOut(BaseModel):
 # ── Build sessions (M1.1) ───────────────────────────────────────────────────
 
 class SessionCreate(BaseModel):
+    # S0 substrate: the Project this session belongs to. None = the owner's default.
+    project_id: str | None = None
     title: str | None = None
     goal: str | None = None
     # initial provider instance id (e.g. "grok", "agy", "mock")
@@ -531,6 +575,8 @@ class SessionOut(BaseModel):
 
     id: str
     owner_id: str
+    project_id: str | None = None  # S0 substrate; always set on new creates
+    work_item_id: int | None = None  # S0 substrate; wired in a later slice
     title: str
     provider: str | None
     workspace_path: str

@@ -278,6 +278,45 @@ async def run_turn_background(
                 db, owner_id, _start_of_today()))
             turn_budget = min(turn_budget, daily_remaining)
 
+        # S0 substrate: refresh the read-only `context/` projection + working
+        # ledger in the workspace and persist the ContextReceipt before the
+        # executor starts (the receipt must survive a crashed turn). The previous
+        # turn's changed-files list feeds the ledger; failures are loud but never
+        # block the turn.
+        try:
+            from app import project_context
+
+            last_changed = (await db.execute(
+                select(SessionTurn.changed_files)
+                .where(
+                    SessionTurn.session_id == session_id,
+                    SessionTurn.seq < seq,
+                    SessionTurn.status == "succeeded",
+                    SessionTurn.changed_files.is_not(None),
+                )
+                .order_by(SessionTurn.seq.desc())
+                .limit(1)
+            )).scalar_one_or_none()
+            changed: list[str] = []
+            if last_changed:
+                changed = [
+                    str(f.get("path", "?")) if isinstance(f, dict) else str(f)
+                    for f in json.loads(last_changed)
+                ]
+            await project_context.project_for_execution(
+                db,
+                owner_id=owner_id,
+                project_id=session.project_id,
+                work_item_id=session.work_item_id,
+                workdir=workspace,
+                session_turn_id=turn_id,
+                changed_files=changed,
+            )
+        except Exception:
+            logger.exception(
+                "[session] turn %d context projection failed — continuing", turn_id
+            )
+
     # Ledger pre-switch summary (best-effort, only if provider changed — we detect by
     # comparing to the previous turn's provider; approximate but good enough here).
     if _settings.ledger_summary_enabled:

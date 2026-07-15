@@ -14,7 +14,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Project
+from app.models import Project, WorkItem
 
 DEFAULT_PROJECT_NAME = "Personal workspace"
 
@@ -57,3 +57,23 @@ async def resolve_project_id(
     if project is None or project.owner_id != owner_id:
         raise ValueError(f"Project {requested!r} not found")
     return project.id
+
+
+async def resolve_work_item_id(
+    db: AsyncSession, owner_id: str, project_id: str, requested: int | None
+) -> int | None:
+    """Validate an optional WorkItem attachment on task/session create.
+
+    It must exist, belong to the owner, and live in the resolved project —
+    otherwise ValueError (mapped to 404 by the route, same non-leaking posture
+    as resolve_project_id)."""
+    if requested is None:
+        return None
+    work_item = await db.get(WorkItem, requested)
+    if (
+        work_item is None
+        or work_item.owner_id != owner_id
+        or work_item.project_id != project_id
+    ):
+        raise ValueError(f"Work item {requested!r} not found")
+    return work_item.id

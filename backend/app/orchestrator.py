@@ -213,6 +213,36 @@ async def _do_execute(run_id: int, task: Task) -> None:
         outputs_dir = os.path.join(_settings.outputs_dir, f"run_{run_id}")
         os.makedirs(outputs_dir, exist_ok=True)
 
+        # S0 substrate: project the declared context read-only into the workspace
+        # and persist the ContextReceipt before any executor starts (the receipt
+        # must survive a crashed run). Per-source problems are recorded as receipt
+        # exclusions; an unexpected failure here is loud but doesn't kill the run.
+        try:
+            from app import project_context
+
+            receipt = await project_context.project_for_execution(
+                db,
+                owner_id=run.owner_id,
+                project_id=run.project_id,
+                work_item_id=run.work_item_id,
+                workdir=workdir,
+                run_id=run_id,
+            )
+            if receipt is not None:
+                await _emit_event(
+                    db, run, EventKind.phase, "context_projected",
+                    data={
+                        "receipt_id": receipt.id,
+                        "sources": len(receipt.sources or []),
+                        "excluded": len(receipt.exclusions or []),
+                        "ledger_sha": receipt.ledger_sha,
+                    },
+                )
+        except Exception:
+            logger.exception(
+                "[orchestrator] run %d context projection failed — continuing", run_id
+            )
+
         async def _run_candidates() -> tuple[str, str | None]:
             """Run the candidate chain (+ overflow) once.
 

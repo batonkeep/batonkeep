@@ -104,10 +104,170 @@ class ProjectOut(BaseModel):
     updated_at: datetime
 
 
+# Valid WorkItem state machine (S0): validated on PATCH; closed_at is stamped on
+# done/dropped and cleared on reopen. Free transitions would let a client silently
+# resurrect closed work without the reopen event being visible in history.
+WORK_ITEM_TRANSITIONS: dict[str, set[str]] = {
+    "open": {"in_progress", "blocked", "done", "dropped"},
+    "in_progress": {"open", "awaiting_approval", "blocked", "done", "dropped"},
+    "awaiting_approval": {"in_progress", "blocked", "done", "dropped"},
+    "blocked": {"open", "in_progress", "dropped"},
+    "done": {"reopened"},
+    "dropped": {"reopened"},
+    "reopened": {"in_progress", "blocked", "done", "dropped"},
+}
+
+_WORK_ITEM_RISKS = {"low", "medium", "high"}
+
+
+class WorkItemCreate(BaseModel):
+    # Free taxonomy (task | incident | change | investigation | review | chore | …);
+    # engine code never branches on it.
+    kind: str = "task"
+    title: str
+    # Durable intent — what "done" means, independent of any transcript.
+    objective: str = ""
+    next_action: str | None = None
+    risk: str = "low"
+    parent_id: int | None = None
+    # Content-safe origin reference: {source, kind, external_id, ts}.
+    signal: dict[str, Any] | None = None
+
+    @field_validator("risk")
+    @classmethod
+    def _valid_risk(cls, v: str) -> str:
+        if v not in _WORK_ITEM_RISKS:
+            raise ValueError(f"risk must be one of {sorted(_WORK_ITEM_RISKS)}")
+        return v
+
+    @field_validator("title")
+    @classmethod
+    def _title_nonempty(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("title must not be empty")
+        return v[:256]
+
+
+class WorkItemPatch(BaseModel):
+    title: str | None = None
+    objective: str | None = None
+    # The single honest next step — agents propose it, the orchestrator writes it.
+    next_action: str | None = None
+    state: str | None = None
+    risk: str | None = None
+    kind: str | None = None
+    # Appends {ts, actor, text} to the append-only decisions list.
+    add_decision: str | None = None
+    decision_actor: str = "human"
+
+    @field_validator("risk")
+    @classmethod
+    def _valid_risk(cls, v: str | None) -> str | None:
+        if v is not None and v not in _WORK_ITEM_RISKS:
+            raise ValueError(f"risk must be one of {sorted(_WORK_ITEM_RISKS)}")
+        return v
+
+    @field_validator("state")
+    @classmethod
+    def _valid_state(cls, v: str | None) -> str | None:
+        if v is not None and v not in WORK_ITEM_TRANSITIONS:
+            raise ValueError(f"unknown state {v!r}")
+        return v
+
+
+class WorkItemOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    owner_id: str
+    project_id: str
+    kind: str
+    state: str
+    title: str
+    objective: str
+    next_action: str | None
+    risk: str
+    parent_id: int | None
+    signal: dict[str, Any] | None
+    decisions: list[Any] | None
+    created_at: datetime
+    updated_at: datetime
+    closed_at: datetime | None
+
+
+class ContextSourceDeclare(BaseModel):
+    """POST /api/projects/{id}/context-sources body. rel_path=None imports every
+    source the project manifest declares; an explicit rel_path declares one."""
+
+    rel_path: str | None = None
+    # git | dir | file; None → auto-detected from the filesystem.
+    kind: str | None = None
+    bootstrap_order: int | None = None
+    domain: str | None = None
+    sensitivity: str = "inherit"
+
+    @field_validator("kind")
+    @classmethod
+    def _valid_kind(cls, v: str | None) -> str | None:
+        if v is not None and v not in {"git", "dir", "file"}:
+            raise ValueError("kind must be git, dir, or file")
+        return v
+
+    @field_validator("sensitivity")
+    @classmethod
+    def _valid_sensitivity(cls, v: str) -> str:
+        if v not in {"inherit", "normal", "confidential"}:
+            raise ValueError("sensitivity must be inherit, normal, or confidential")
+        return v
+
+
+class ContextSourceOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    owner_id: str
+    project_id: str
+    kind: str
+    rel_path: str
+    bootstrap_order: int | None
+    domain: str | None
+    sensitivity: str
+    last_revision: str | None
+    last_checked_at: datetime | None
+
+
+class ContextSourcesOut(BaseModel):
+    """Declare/import result: the touched sources + manifest warnings (unknown
+    keys etc. — surfaced, never silently dropped)."""
+
+    sources: list[ContextSourceOut]
+    warnings: list[str] = []
+
+
+class ContextReceiptOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    owner_id: str
+    project_id: str
+    work_item_id: int | None
+    run_id: int | None
+    session_turn_id: int | None
+    projection_version: str
+    sources: list[Any] | None
+    ledger_sha: str | None
+    exclusions: list[Any] | None
+    approx_bytes: int
+    created_at: datetime
+
+
 class TaskCreate(BaseModel):
     # S0 substrate: the Project this task belongs to. None = the owner's default
     # ("Personal workspace") — existing clients keep working unchanged.
     project_id: str | None = None
+    # Optional WorkItem this task serves; must belong to the resolved project.
+    work_item_id: int | None = None
     name: str
     description: str | None = None
     category: str | None = None
@@ -313,6 +473,8 @@ class RunEventOut(BaseModel):
 class SessionCreate(BaseModel):
     # S0 substrate: the Project this session belongs to. None = the owner's default.
     project_id: str | None = None
+    # Optional WorkItem this session serves; must belong to the resolved project.
+    work_item_id: int | None = None
     title: str | None = None
     goal: str | None = None
     # initial provider instance id (e.g. "grok", "agy", "mock")

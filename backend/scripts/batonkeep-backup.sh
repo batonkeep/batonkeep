@@ -36,7 +36,11 @@
 set -euo pipefail
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
-OUTPUT_DIR="/data/backups"
+# BATONKEEP_DATA_DIR overrides the data root (default /data) so the backup→
+# restore roundtrip is testable outside the container. Archive entries are
+# normalized to the "data/…" prefix either way, so restore behaves identically.
+DATA_DIR="${BATONKEEP_DATA_DIR:-/data}"
+OUTPUT_DIR="${DATA_DIR}/backups"
 LABEL=""
 DRY_RUN=false
 STDOUT_MODE=false
@@ -69,20 +73,20 @@ fi
 
 # ── What to back up ───────────────────────────────────────────────────────────
 INCLUDE_PATHS=(
-  "/data/batonkeep.db"
-  "/data/sessions"
-  "/data/outputs"
-  "/data/publish"
+  "${DATA_DIR}/batonkeep.db"
+  "${DATA_DIR}/sessions"
+  "${DATA_DIR}/outputs"
+  "${DATA_DIR}/publish"
   # Substrate evidence store — append-only files indexed by the evidence table;
-  # digests re-verify content on restore.
-  "/data/evidence"
-  "/data/custom-providers.json"
-  "/data/provider-instances.json"
-  "/data/provider-enabled.json"
-  "/data/exec-seam-overrides.json"
-  "/data/model-catalog.json"
-  "/data/model-overrides.json"
-  "/data/model-pricing.json"
+  # digests re-verify content on restore (scripts/verify_restore.py).
+  "${DATA_DIR}/evidence"
+  "${DATA_DIR}/custom-providers.json"
+  "${DATA_DIR}/provider-instances.json"
+  "${DATA_DIR}/provider-enabled.json"
+  "${DATA_DIR}/exec-seam-overrides.json"
+  "${DATA_DIR}/model-catalog.json"
+  "${DATA_DIR}/model-overrides.json"
+  "${DATA_DIR}/model-pricing.json"
 )
 EXISTING_PATHS=()
 for p in "${INCLUDE_PATHS[@]}"; do
@@ -147,7 +151,7 @@ fi
 
 # ── Build manifest JSON (written to a temp file, embedded in the archive) ─────
 SESSION_COUNT=0
-[[ -d /data/sessions ]] && SESSION_COUNT=$(find /data/sessions -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+[[ -d "${DATA_DIR}/sessions" ]] && SESSION_COUNT=$(find "${DATA_DIR}/sessions" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
 
 EXISTING_JSON=$(printf '"%s",' "${EXISTING_PATHS[@]}")
 EXISTING_JSON="[${EXISTING_JSON%,}]"
@@ -185,6 +189,7 @@ if [[ "${STDOUT_MODE}" == true ]]; then
     "${EXCLUDE_FLAGS[@]}" \
     -cz \
     --transform "s|${MANIFEST_TMP#/}|data/backups/${MANIFEST_NAME}|" \
+    --transform "s|^${DATA_DIR#/}|data|" \
     "${EXISTING_PATHS[@]}" \
     "${MANIFEST_TMP}" \
     2>/dev/null || TAR_EXIT=$?
@@ -214,6 +219,7 @@ tar \
   "${EXCLUDE_FLAGS[@]}" \
   --exclude="${ARCHIVE_PATH}" \
   --exclude="${MANIFEST_PATH}" \
+  --transform "s|^${DATA_DIR#/}|data|" \
   -czf "${ARCHIVE_PATH}" \
   "${EXISTING_PATHS[@]}" \
   2>&1 | grep -v "^tar: Removing leading" || true

@@ -1,5 +1,5 @@
 // Sidebar.tsx — primary nav. Left rail on desktop (with sub-labels), bottom
-// tab bar on mobile (4 items, same tap targets). D-0027: Providers → Settings,
+// tab bar on mobile (5 items, same tap targets). D-0027: Providers → Settings,
 // Cockpit → Analytics; sub-labels on desktop; human labels; mobile unchanged.
 import { FolderKanban, Gauge, Hammer, ListChecks, Settings2 } from "lucide-react";
 import Logo from "../ui/Logo";

@@ -40,6 +40,7 @@ from app.providers.registry import (
     is_local_instance,
     local_candidate_ids,
 )
+from app.redact import redact_text
 from app.sessions import workspace as ws
 from app.sessions.preview import rewrite_workspace_file_links
 from app.ws import ws_manager
@@ -480,7 +481,8 @@ async def run_turn_background(
                 turn.cache_write_tokens = usage.cache_write_tokens
             else:
                 turn.status = "failed"
-                turn.error = error_msg or "no result produced"
+                # error text often embeds provider stderr (A6 secrets wall)
+                turn.error = redact_text(error_msg) if error_msg else "no result produced"
             if version is not None:
                 turn.commit_sha = version["commit"]
                 turn.diffstat = version["diffstat"]

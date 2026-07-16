@@ -159,6 +159,14 @@ is no cloud copy.**
 - **`agent_home`** (`/home/agent`) — your plan-CLI OAuth logins. Losing this just means
   re-running the auth step for each provider — these are session tokens, not durable data.
 
+> **Keep `/data` on a local disk.** The SQLite database runs in WAL mode, which is unsafe on
+> network filesystems (NFS/CIFS/SSHFS) — their shared-memory and locking guarantees aren't
+> sufficient, and a second host touching the same file can corrupt it. Batonkeep detects a
+> network-mounted data dir and falls back to a slower, safe journal mode (override with
+> `SQLITE_JOURNAL_MODE=wal|truncate|delete`), but a local volume is the supported setup. If
+> your homelab keeps homes on NFS, bind `/data` to a local path and back it up with the
+> script below instead of relying on the network mount.
+
 ### Recommended: the `batonkeep-backup` script
 
 The backend ships a backup script that archives only your **durable, user-authored state** —

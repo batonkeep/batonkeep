@@ -29,6 +29,7 @@ from app.config import get_settings
 from app.db import AsyncSessionLocal
 from app.logging_config import bind_run
 from app.models import RoutingDecision, Run, RunEvent, Task
+from app.policy import resolve_effective_policy
 from app.providers.base import EventKind, ExecEvent, ExecResult, Usage
 from app.providers.registry import get_executor
 from app.quota import quota_tracker
@@ -110,6 +111,11 @@ async def _do_execute(run_id: int, task: Task) -> None:
             return
         await db.refresh(run)
         await _broadcast_run(run)
+
+        # Effective declared policy for this run (D-0058 seam 1): every constraint
+        # read below goes through the one resolver so Phase C PolicySet inheritance
+        # is an implementation swap, not a call-site rewrite.
+        policy = resolve_effective_policy(task=task)
 
         # ── 2. Route ─────────────────────────────────────────────────────────
         routing = task.routing or {}
@@ -292,7 +298,7 @@ async def _do_execute(run_id: int, task: Task) -> None:
                             # P-0046: unattended task — no human to confirm, so
                             # code-exec runs only if the task carries allow-safe/auto.
                             extra={
-                                "task": True, "exec_policy": task.exec_policy,
+                                "task": True, "exec_policy": policy.exec_policy,
                                 "human_in_loop": False,
                                 # P-0046 slice 6: image-gen model override (None → default).
                                 "image_model_id": task.image_model_id,
@@ -405,7 +411,7 @@ async def _do_execute(run_id: int, task: Task) -> None:
                                 tools_enabled=_settings.autonomous_tools,
                                 max_rounds=10, budget_usd=1.0,
                                 extra={
-                                    "task": True, "exec_policy": task.exec_policy,
+                                    "task": True, "exec_policy": policy.exec_policy,
                                     "human_in_loop": False,
                                     "image_model_id": task.image_model_id,
                                 }):
@@ -438,7 +444,7 @@ async def _do_execute(run_id: int, task: Task) -> None:
         # cancelled (best-effort) and the run fails honestly with a timeout error.
         # Post-processing (writing outputs) runs *outside* this bound so a finished
         # agent's deliverables are never lost to a late timeout.
-        effective_timeout = task.timeout_seconds or _settings.run_timeout_seconds
+        effective_timeout = policy.timeout_seconds
 
         # Retry wrapper: rerun the chain on transient failure with exponential
         # backoff, bounded by max_run_retries. Rate-limit exhaustion ("cooling")

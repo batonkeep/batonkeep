@@ -33,6 +33,7 @@ from app.config import get_settings
 from app.db import AsyncSessionLocal
 from app.logging_config import owner_id_var, session_id_var
 from app.models import Session, SessionTurn
+from app.policy import resolve_effective_policy
 from app.providers.base import EventKind, ExecResult
 from app.providers.registry import (
     get_executor,
@@ -168,7 +169,8 @@ async def create_turn_record(
         chosen = provider or session.provider
         if not chosen:
             raise SessionError("no provider selected for this session")
-        chosen = enforce_local_if_confidential(chosen, session.confidential)
+        policy = resolve_effective_policy(session=session)  # D-0058 seam 1
+        chosen = enforce_local_if_confidential(chosen, policy.confidential)
 
         executor = get_executor(chosen)
         if executor is None:
@@ -236,7 +238,11 @@ async def run_turn_background(
             logger.error("[session] run_turn_background: session %s not found", session_id)
             return
         workspace = session.workspace_path
-        exec_policy = session.exec_policy
+        # Effective declared policy for this turn (D-0058 seam 1): constraint
+        # reads go through the one resolver so Phase C PolicySet inheritance is
+        # an implementation swap, not a call-site rewrite.
+        policy = resolve_effective_policy(session=session)
+        exec_policy = policy.exec_policy
         image_model_id = session.image_model_id  # P-0046 slice 6: image-gen override
         model_override = session.model  # P-0049: per-session API model override
         # Load the immediate dialogue tail so conversational follow-ups keep their
@@ -261,7 +267,7 @@ async def run_turn_background(
         # existing per-turn safety cap. Enforcement is stop-at-next-step (bounded
         # overshoot ≤ one round), surfaced as such in the UI.
         turn_budget = _DEFAULT_TURN_BUDGET_USD
-        if session.budget_usd is not None:
+        if policy.budget_cap_usd is not None:
             prior_spend = float((await db.execute(
                 select(func.coalesce(func.sum(SessionTurn.cost_usd), 0.0))
                 .where(
@@ -270,7 +276,7 @@ async def run_turn_background(
                     SessionTurn.status == "succeeded",
                 )
             )).scalar() or 0.0)
-            turn_budget = max(0.0, session.budget_usd - prior_spend)
+            turn_budget = max(0.0, policy.budget_cap_usd - prior_spend)
         daily_cap = _settings.daily_budget_usd
         if daily_cap > 0:
             from app.cost import _start_of_today, spend_since

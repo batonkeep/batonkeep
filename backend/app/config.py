@@ -197,6 +197,10 @@ class Settings(BaseSettings):
 
     # ── Database ──────────────────────────────────────────────────────────────
     database_url: str = "sqlite+aiosqlite:////data/batonkeep.db"
+    # SQLite journal mode (D-0058 A1): "" = auto (WAL locally, TRUNCATE when the
+    # data dir is detected on a network filesystem — WAL's -shm mmap is unsafe
+    # there). Explicit "wal" | "truncate" | "delete" overrides detection.
+    sqlite_journal_mode: str = ""
 
     # ── Outputs ───────────────────────────────────────────────────────────────
     outputs_dir: str = "/data/outputs"

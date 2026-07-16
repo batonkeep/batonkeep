@@ -309,14 +309,19 @@ def strip_agent_narration(text: str) -> str:
 
 
 # ── CLI command builders ──────────────────────────────────────────────────────
-# Verified against --help 2026-06-01:
+# Verified against --help (agy re-verified 2026-07-16, others 2026-06-01):
 #   claude 2.1.159: -p/--print, --verbose, --output-format stream-json,
 #                   --include-partial-messages, --allowedTools,
 #                   --dangerously-skip-permissions  NO --max-turns
 #   grok 0.2.14:    -p/--single, --output-format streaming-json,
 #                   --always-approve, --max-turns N, --no-plan
-#   agy 1.0.3:      -p/--print, --dangerously-skip-permissions
-#                   NO --output-format, NO --no-plan (use prompt suffix)
+#   agy 1.1.2:      -p/--print, --dangerously-skip-permissions, --model,
+#                   --print-timeout (default 5m!)  NO --output-format,
+#                   NO --no-plan (use prompt suffix)
+# These CLIs auto-update in the field (the image installs latest at build), so a
+# flag drift here fails loudly at spawn — the D-0058 A2 version probe will record
+# the executing version per run; until then, re-verify on upstream releases (the
+# weekly changelog sweep in the ops loop).
 
 # Appended to every CLI prompt so agents don't stall in planning/interactive mode.
 _HEADLESS_SUFFIX = (
@@ -362,10 +367,20 @@ def _build_cmd(
         # claude (no turn cap) and let run_timeout_seconds bound any runaway run instead.
 
     elif binary == "agy":
-        # Verified: agy 1.0.3 — no --output-format or --no-plan flag; plain text via -p.
-        # No --model flag — agy/antigravity picks its own model; override is ignored.
-        # stdin MUST be /dev/null: agy waits on stdin without it and emits nothing.
-        cmd = ["agy", "-p", headless_prompt]
+        # Verified: agy 1.1.2 (D-0058 item 9) — still no --output-format (plain text
+        # via -p; narration stripping below stays). Two stale 1.0.3 assumptions fixed:
+        #   • --model exists now (1.1.2+ print mode hard-fails on an unresolvable
+        #     model instead of silently downgrading — fail-loud is what we want);
+        #   • --print-timeout defaults to 5m and was silently truncating longer runs —
+        #     align it to the orchestrator's wall-clock bound, which stays the owner
+        #     of run cancellation.
+        # stdin stays /dev/null: required <1.1.1 (agy read stdin and hung), harmless
+        # after. 1.1.1 also fixed print-mode false-success (server error → exit 0 +
+        # empty output), so non-zero exit is trustworthy again from that version on.
+        cmd = ["agy", "-p", headless_prompt,
+               "--print-timeout", f"{_settings.run_timeout_seconds}s"]
+        if model:
+            cmd += ["--model", model]
         if auto_approve:
             cmd += ["--dangerously-skip-permissions"]
 

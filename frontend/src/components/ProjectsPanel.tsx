@@ -120,6 +120,13 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
     loadDetail();
   }, [selectedId, loadDetail]);
 
+  // Re-fetch on tab switch too: proposals/evidence arrive from agents while the
+  // panel is open, and the lists are small enough to reload freely.
+  useEffect(() => {
+    loadDetail();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+
   // ── New project modal ──────────────────────────────────────────────────────
   const [showCreate, setShowCreate] = useState(false);
   const [creating, setCreating] = useState(false);

@@ -208,6 +208,13 @@ class ContextReceipt(Base):
     # [{rel_path, reason}] — sensitivity/budget cuts, surfaced not silent.
     exclusions: Mapped[list | None] = mapped_column(JSON, nullable=True)
     approx_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Provenance stamps: without these, provider-fit comparisons can't
+    # distinguish a model regression from a CLI/harness regression. The harness
+    # version is stamped at projection time; the CLI version is filled in when
+    # a CLI-lane candidate actually starts (last candidate attempted wins on
+    # failover — it is the one whose output the run records).
+    harness_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    cli_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -251,6 +258,55 @@ class Evidence(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class Approval(Base):
+    """A durable human-approval record. The in-process Future (approvals.py)
+    remains the wakeup mechanism for a coroutine awaiting a decision; this row
+    is the record — it survives a restart (stale pending rows are expired by
+    the startup reaper, mirroring run/turn reaping) and is the audit trail the
+    substrate's approval baseline builds on.
+
+    kinds: code_exec (session confirmation round-trip) · canonical_write
+    (proposed change to a project's canonical context; payload carries the
+    diff, applied by the engine only on approval).
+    """
+
+    __tablename__ = "approvals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    owner_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("owners.id"), nullable=False, default="local", index=True
+    )
+    # Bridges the in-process Future registry (approvals.request) and the WS event.
+    request_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False, default="code_exec")
+    # pending | approved | denied | expired
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending",
+                                        index=True)
+    project_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("projects.id"), nullable=True, index=True
+    )
+    work_item_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("work_items.id"), nullable=True, index=True
+    )
+    session_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("sessions.id"), nullable=True, index=True
+    )
+    run_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("runs.id"), nullable=True, index=True
+    )
+    # Versioned payload ({"v": 1, ...}): code_exec carries {code, label};
+    # canonical_write carries {rel_path, content, diff, base_revision}.
+    # Additive-only evolution — readers tolerate unknown keys, never migrate.
+    payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Who proposed / who decided ("human", provider instance id, or "system").
+    producer: Mapped[str] = mapped_column(String(96), nullable=False, default="system")
+    decided_by: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Task(Base):

@@ -310,7 +310,7 @@ async def run_turn_background(
                     str(f.get("path", "?")) if isinstance(f, dict) else str(f)
                     for f in json.loads(last_changed)
                 ]
-            await project_context.project_for_execution(
+            receipt = await project_context.project_for_execution(
                 db,
                 owner_id=owner_id,
                 project_id=session.project_id,
@@ -319,6 +319,14 @@ async def run_turn_background(
                 session_turn_id=turn_id,
                 changed_files=changed,
             )
+            # Provenance stamp: the executing CLI version (API-lane executors
+            # have no probe; the receipt keeps harness_version either way).
+            if receipt is not None:
+                probe = getattr(get_executor(chosen), "cli_version", None)
+                version = probe() if callable(probe) else None
+                if version:
+                    receipt.cli_version = version
+                    await db.commit()
         except Exception:
             logger.exception(
                 "[session] turn %d context projection failed — continuing", turn_id
@@ -359,14 +367,37 @@ async def run_turn_background(
     async def _approve(code: str, label: str | None) -> bool:
         """P-0046 slice 3b: drive the code-exec `confirmation` round-trip — emit an
         approval-request event to the live view, then await the operator's decision
-        (POST /api/sessions/{id}/approvals/{rid}; timeout → denied)."""
+        (POST /api/sessions/{id}/approvals/{rid}; timeout → denied).
+
+        The Future is the wakeup; the Approval row is the durable record
+        (persisted best-effort — a DB hiccup must never wedge the turn)."""
         request_id, fut = approvals.request()
+        try:
+            async with AsyncSessionLocal() as adb:
+                await approvals.record_request(
+                    adb, owner_id=owner_id, request_id=request_id, kind="code_exec",
+                    payload={"v": 1, "code": redact_text(code), "label": label},
+                    producer=chosen, session_id=session_id,
+                )
+                await adb.commit()
+        except Exception:
+            logger.exception("[approvals] could not persist code_exec request row")
         await _broadcast_event(
             session_id, turn_id, seq, EventKind.approval,
             message=label or "Approve code execution?",
             data={"request_id": request_id, "code": code, "label": label, "tool": "code_exec"},
         )
         approved = await approvals.await_decision(request_id, fut)
+        try:
+            async with AsyncSessionLocal() as adb:
+                # A timeout has no API decision; record it as denied by timeout.
+                await approvals.settle(
+                    adb, request_id, approved=approved,
+                    decided_by="human" if approvals.was_resolved(request_id) else "timeout",
+                )
+                await adb.commit()
+        except Exception:
+            logger.exception("[approvals] could not settle code_exec request row")
         await _broadcast_event(
             session_id, turn_id, seq, EventKind.approval,
             message="approved" if approved else "denied",
@@ -493,6 +524,21 @@ async def run_turn_background(
         session = await db.get(Session, session_id)
         if session is not None:
             session.updated_at = datetime.now(UTC)
+            # Substrate evidence: a turn that changed files gets its diff indexed
+            # in the append-only store. Best-effort — never breaks the turn.
+            if version is not None and session.project_id and version.get("diff"):
+                from app import evidence as evidence_store
+                await evidence_store.capture_safe(
+                    db,
+                    owner_id=owner_id,
+                    project_id=session.project_id,
+                    work_item_id=session.work_item_id,
+                    session_turn_id=turn_id,
+                    kind="diff",
+                    filename=f"turn_{seq}.diff",
+                    text=version["diff"],
+                    producer=chosen,
+                )
             await db.commit()
 
     await _broadcast_turn(turn_id, session_id, seq, chosen,

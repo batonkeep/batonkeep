@@ -20,7 +20,8 @@
 # inside the archive as data/backups/.manifest.json rather than a separate file.
 #
 # What is backed up:
-#   /data/batonkeep.db, /data/sessions/, /data/outputs/, /data/publish/, /data/*.json
+#   /data/batonkeep.db, /data/sessions/, /data/outputs/, /data/publish/,
+#   /data/evidence/, /data/*.json
 #
 # What is excluded:
 #   /home/agent         — provider CLI OAuth tokens (re-auth after restore)
@@ -72,6 +73,9 @@ INCLUDE_PATHS=(
   "/data/sessions"
   "/data/outputs"
   "/data/publish"
+  # Substrate evidence store — append-only files indexed by the evidence table;
+  # digests re-verify content on restore.
+  "/data/evidence"
   "/data/custom-providers.json"
   "/data/provider-instances.json"
   "/data/provider-enabled.json"

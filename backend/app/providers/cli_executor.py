@@ -356,6 +356,33 @@ def strip_agent_narration(text: str) -> str:
 # the executing version per run; until then, re-verify on upstream releases (the
 # weekly changelog sweep in the ops loop).
 
+# ── CLI version probe (provenance stamps) ─────────────────────────────────────
+# The CLIs auto-update in the field, so the executing version must land in the
+# durable record (ContextReceipt.cli_version) or provider-fit comparisons can't
+# tell a model regression from a CLI regression. One `<binary> --version` probe
+# per binary per process, cached — including failures (None), so a missing
+# binary isn't probed on every run.
+_CLI_VERSION_CACHE: dict[str, str | None] = {}
+
+
+def probe_cli_version(binary: str) -> str | None:
+    """Cached `<binary> --version` (first line, ≤64 chars). None if unprobeable."""
+    if binary in _CLI_VERSION_CACHE:
+        return _CLI_VERSION_CACHE[binary]
+    version: str | None = None
+    try:
+        import subprocess
+        out = subprocess.run(
+            [binary, "--version"], capture_output=True, text=True, timeout=10,
+        )
+        first = (out.stdout or out.stderr or "").strip().splitlines()
+        version = first[0].strip()[:64] if first else None
+    except (OSError, subprocess.SubprocessError):
+        version = None
+    _CLI_VERSION_CACHE[binary] = version
+    return version
+
+
 # Appended to every CLI prompt so agents don't stall in planning/interactive mode.
 _HEADLESS_SUFFIX = (
     "\n\n---\n"
@@ -468,6 +495,10 @@ class CLIExecutor(Executor):
         """Check if the binary is available on PATH."""
         import shutil
         return bool(self._def.cli_binary and shutil.which(self._def.cli_binary))
+
+    def cli_version(self) -> str | None:
+        """The executing binary's probed version (provenance stamps)."""
+        return probe_cli_version(self._def.cli_binary) if self._def.cli_binary else None
 
     async def run_stream(
         self,

@@ -2,9 +2,13 @@
 // vite in dev, nginx in prod), so the SPA is single-origin and needs no config.
 
 import type {
+  Approval,
+  ApprovalDecideResult,
   AuthStatus,
   Cockpit,
   ConsoleConfig,
+  ContextSource,
+  ContextSourcesResult,
   CloudflareConfig,
   CloudflareDeploy,
   CloudflareStatus,
@@ -12,11 +16,14 @@ import type {
   CustomProvider,
   CustomProviderInput,
   CustomProviderUpdate,
+  Evidence,
   FileEntry,
   ImageModel,
   ImportResult,
   Mode,
   ModelPricing,
+  Project,
+  ProjectInput,
   ProviderCatalog,
   ProviderHealth,
   ProviderLimitsUpdate,
@@ -42,6 +49,9 @@ import type {
   Version,
   VersionDiff,
   VersionInfo,
+  WorkItem,
+  WorkItemInput,
+  WorkItemPatchInput,
 } from "./types";
 
 const BASE = "/api";
@@ -90,6 +100,57 @@ export const api = {
   // ── Meta ───────────────────────────────────────────────────────────────
   // Running version + best-effort latest-release hint (D-0053).
   getVersion: () => req<VersionInfo>("/version"),
+
+  // ── Projects (S0 substrate) ──────────────────────────────────────────────
+  listProjects: () => req<Project[]>("/projects"),
+  getProject: (id: string) => req<Project>(`/projects/${id}`),
+  createProject: (body: ProjectInput) =>
+    req<Project>("/projects", { method: "POST", body: JSON.stringify(body) }),
+  listWorkItems: (projectId: string, state?: string) =>
+    req<WorkItem[]>(`/projects/${projectId}/work-items${state ? `?state=${encodeURIComponent(state)}` : ""}`),
+  createWorkItem: (projectId: string, body: WorkItemInput) =>
+    req<WorkItem>(`/projects/${projectId}/work-items`, { method: "POST", body: JSON.stringify(body) }),
+  updateWorkItem: (itemId: number, body: WorkItemPatchInput) =>
+    req<WorkItem>(`/work-items/${itemId}`, { method: "PATCH", body: JSON.stringify(body) }),
+  listContextSources: (projectId: string) =>
+    req<ContextSource[]>(`/projects/${projectId}/context-sources`),
+  // rel_path null → import every source the project manifest declares.
+  declareContextSource: (projectId: string, relPath: string | null) =>
+    req<ContextSourcesResult>(`/projects/${projectId}/context-sources`, {
+      method: "POST",
+      body: JSON.stringify({ rel_path: relPath }),
+    }),
+  refreshContext: (projectId: string) =>
+    req<ContextSource[]>(`/projects/${projectId}/context/refresh`, { method: "POST" }),
+  listEvidence: (projectId: string, workItemId?: number) =>
+    req<Evidence[]>(
+      `/projects/${projectId}/evidence${workItemId != null ? `?work_item_id=${workItemId}` : ""}`
+    ),
+  evidenceRawUrl: (evidenceId: number) => `${BASE}/evidence/${evidenceId}/raw`,
+  // Propose a write to the canonical context root — never applies; returns the
+  // pending approval carrying the diff.
+  proposeCanonicalWrite: (
+    projectId: string,
+    body: { rel_path: string; content: string; producer?: string; work_item_id?: number | null },
+  ) =>
+    req<Approval>(`/projects/${projectId}/context/propose`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  listApprovals: (params?: { status?: string; project_id?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.status) q.set("status", params.status);
+    if (params?.project_id) q.set("project_id", params.project_id);
+    const qs = q.toString();
+    return req<Approval[]>(`/approvals${qs ? `?${qs}` : ""}`);
+  },
+  // Decide a pending canonical-write proposal (code-exec approvals go through
+  // their session route — the backend refuses them here).
+  decideApproval: (approvalId: number, approved: boolean) =>
+    req<ApprovalDecideResult>(`/approvals/${approvalId}/decide`, {
+      method: "POST",
+      body: JSON.stringify({ approved }),
+    }),
 
   // ── Tasks ──────────────────────────────────────────────────────────────
   listTasks: () => req<Task[]>("/tasks"),

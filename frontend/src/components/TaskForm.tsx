@@ -7,7 +7,7 @@
 // D-track: composed from ui/ primitives (Modal, Field, Input, Select, Button, Badge, Card).
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronDown, ChevronRight, GripVertical, Plus, Wand2, X } from "lucide-react";
-import type { ImageModel, ProviderHealth, RoutingPolicy, RoutingStrategy, Task, TaskInput } from "../types";
+import type { ImageModel, Project, ProviderHealth, RoutingPolicy, RoutingStrategy, Task, TaskInput } from "../types";
 import { api } from "../api";
 import { isValidCron } from "../format";
 import { Badge, Button, Card, Field, Input, Modal, Select } from "../ui";
@@ -20,6 +20,9 @@ interface Props {
   // when editing an existing `task`; does not change create-vs-edit semantics.
   initial?: TaskInput | null;
   providers: ProviderHealth[];
+  // S0 substrate: selectable Projects (default preselected). A task's project is
+  // fixed at create — the selector renders read-only when editing.
+  projects: Project[];
   onSave: (input: TaskInput, id?: number) => Promise<void>;
   onClose: () => void;
 }
@@ -64,11 +67,15 @@ const ALL_TIMEZONES: string[] = (() => {
   catch { return ["UTC","America/Los_Angeles","America/New_York","Europe/London","Europe/Berlin","Asia/Kolkata","Asia/Singapore","Asia/Tokyo","Australia/Sydney"]; }
 })();
 
-export default function TaskForm({ task, initial, providers, onSave, onClose }: Props) {
+export default function TaskForm({ task, initial, providers, projects, onSave, onClose }: Props) {
   // Field defaults come from the task being edited, else a starter preset, else blank.
   // `task` (not `src`) still governs create-vs-edit semantics (button label, save id).
   const src = task ?? initial ?? null;
   const [name, setName] = useState(src?.name ?? "");
+  // Project the task belongs to: the edited task's own, else the owner default.
+  const [projectId, setProjectId] = useState<string>(
+    task?.project_id ?? projects.find((p) => p.is_default)?.id ?? ""
+  );
   const [description, setDescription] = useState(src?.description ?? "");
   const [category, setCategory] = useState(src?.category ?? "");
   const [promptTemplate, setPromptTemplate] = useState(src ? src.prompt_template : DEFAULT_PROMPT_TEMPLATE);
@@ -188,6 +195,8 @@ export default function TaskForm({ task, initial, providers, onSave, onClose }: 
       image_model_id: imageModelId || null,
       timeout_seconds,
     };
+    // Project is fixed at create (the backend ignores it on update).
+    if (!task && projectId) input.project_id = projectId;
     setSaving(true);
     try { await onSave(input, task?.id); onClose(); }
     catch (e) { setError(e instanceof Error ? e.message : "Save failed."); setSaving(false); }
@@ -218,9 +227,31 @@ export default function TaskForm({ task, initial, providers, onSave, onClose }: 
           </Field>
         </div>
 
-        <Field label="Description">
-          <Input value={description} onChange={(e) => setDescription(e.target.value)} />
-        </Field>
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+          <Field label="Description">
+            <Input value={description} onChange={(e) => setDescription(e.target.value)} />
+          </Field>
+          {projects.length > 0 && (
+            <Field
+              label="Project"
+              hint={task ? "Fixed once the task is created." : undefined}
+            >
+              <Select
+                value={projectId}
+                onChange={(e) => setProjectId(e.target.value)}
+                disabled={!!task}
+              >
+                {/* Older tasks may predate Projects — show an explicit blank. */}
+                {task && !task.project_id && <option value="">— none —</option>}
+                {projects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}{p.is_default ? " (default)" : ""}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          )}
+        </div>
 
         {/* Schedule */}
         <div className="space-y-3">

@@ -37,6 +37,9 @@ export interface RoutingPolicy {
 export interface Task {
   id: number;
   owner_id: string;
+  // S0 substrate: owning Project (always set on new creates; older rows null).
+  project_id?: string | null;
+  work_item_id?: number | null;
   name: string;
   description: string | null;
   category: string | null;
@@ -59,6 +62,9 @@ export interface Task {
 
 // Payload accepted by POST/PUT /tasks. `routing` is the full policy object.
 export interface TaskInput {
+  // S0 substrate: the Project this task belongs to (create only; null = default).
+  project_id?: string | null;
+  work_item_id?: number | null;
   name: string;
   description?: string | null;
   category?: string | null;
@@ -308,6 +314,9 @@ export type TurnStatus = "running" | "succeeded" | "failed" | "cancelled";
 export interface Session {
   id: string;
   owner_id: string;
+  // S0 substrate: owning Project (always set on new creates; older rows null).
+  project_id?: string | null;
+  work_item_id?: number | null;
   title: string;
   // currently-selected provider instance id (e.g. "grok", "agy", "mock")
   provider: string | null;
@@ -338,6 +347,9 @@ export interface Session {
 
 // Payload accepted by POST /sessions.
 export interface SessionInput {
+  // S0 substrate: the Project this session belongs to (null = default).
+  project_id?: string | null;
+  work_item_id?: number | null;
   title?: string | null;
   goal?: string | null;
   provider?: string | null;
@@ -595,4 +607,155 @@ export interface VersionInfo {
   latest: string | null;
   update_available: boolean;
   release_url: string | null;
+}
+
+// ── Projects (S0 substrate) ──────────────────────────────────────────────────
+// Mirrors ProjectOut / WorkItemOut / ContextSourceOut / EvidenceOut / ApprovalOut
+// in backend/app/schemas.py.
+
+export interface Project {
+  id: string;
+  owner_id: string;
+  name: string;
+  // Free-form label (general | infra | research | …); engine never branches on it.
+  kind: string;
+  status: string;
+  sensitivity: string;
+  // Exactly one per owner ("Personal workspace"); creation default, undeletable.
+  is_default: boolean;
+  root_path: string | null;
+  manifest_rel: string | null;
+  description: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectInput {
+  name: string;
+  kind?: string;
+  sensitivity?: string;
+  root_path?: string | null;
+  description?: string | null;
+}
+
+export type WorkItemState =
+  | "open"
+  | "in_progress"
+  | "awaiting_approval"
+  | "blocked"
+  | "done"
+  | "dropped"
+  | "reopened";
+
+// Valid state machine (mirrors WORK_ITEM_TRANSITIONS in backend/app/schemas.py) so
+// the state select only offers transitions the PATCH will accept.
+export const WORK_ITEM_TRANSITIONS: Record<WorkItemState, WorkItemState[]> = {
+  open: ["in_progress", "blocked", "done", "dropped"],
+  in_progress: ["open", "awaiting_approval", "blocked", "done", "dropped"],
+  awaiting_approval: ["in_progress", "blocked", "done", "dropped"],
+  blocked: ["open", "in_progress", "dropped"],
+  done: ["reopened"],
+  dropped: ["reopened"],
+  reopened: ["in_progress", "blocked", "done", "dropped"],
+};
+
+export interface WorkItem {
+  id: number;
+  owner_id: string;
+  project_id: string;
+  kind: string;
+  state: WorkItemState;
+  title: string;
+  // Durable intent — what "done" means, independent of any transcript.
+  objective: string;
+  next_action: string | null;
+  risk: "low" | "medium" | "high";
+  parent_id: number | null;
+  signal: Record<string, unknown> | null;
+  decisions: { ts: string; actor: string; text: string }[] | null;
+  created_at: string;
+  updated_at: string;
+  closed_at: string | null;
+}
+
+export interface WorkItemInput {
+  kind?: string;
+  title: string;
+  objective?: string;
+  next_action?: string | null;
+  risk?: "low" | "medium" | "high";
+  parent_id?: number | null;
+}
+
+export interface WorkItemPatchInput {
+  title?: string;
+  objective?: string;
+  next_action?: string | null;
+  state?: WorkItemState;
+  risk?: "low" | "medium" | "high";
+  kind?: string;
+  add_decision?: string;
+  decision_actor?: string;
+}
+
+export interface ContextSource {
+  id: number;
+  owner_id: string;
+  project_id: string;
+  kind: "git" | "dir" | "file";
+  rel_path: string;
+  bootstrap_order: number | null;
+  domain: string | null;
+  sensitivity: string;
+  last_revision: string | null;
+  last_checked_at: string | null;
+}
+
+// Declare/import result: touched sources + manifest warnings (never silently dropped).
+export interface ContextSourcesResult {
+  sources: ContextSource[];
+  warnings: string[];
+}
+
+export interface Evidence {
+  id: number;
+  owner_id: string;
+  project_id: string;
+  work_item_id: number | null;
+  run_id: number | null;
+  session_turn_id: number | null;
+  kind: string;
+  rel_path: string;
+  digest: string | null;
+  producer: string;
+  bytes: number;
+  sensitivity: string;
+  created_at: string;
+}
+
+export type ApprovalStatus = "pending" | "approved" | "denied" | "expired";
+
+export interface Approval {
+  id: number;
+  owner_id: string;
+  request_id: string;
+  // canonical_write (decidable here) | code_exec (decided via its session route).
+  kind: string;
+  status: ApprovalStatus;
+  project_id: string | null;
+  work_item_id: number | null;
+  session_id: string | null;
+  run_id: number | null;
+  // Versioned {"v":1,…}; canonical_write carries {rel_path, content, diff, base_revision}.
+  payload: Record<string, unknown> | null;
+  producer: string;
+  decided_by: string | null;
+  created_at: string;
+  decided_at: string | null;
+}
+
+export interface ApprovalDecideResult {
+  approval: Approval;
+  // canonical_write + approved: what was applied ({rel_path, commit}).
+  applied: Record<string, unknown> | null;
 }

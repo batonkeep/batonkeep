@@ -9,7 +9,7 @@ import DOMPurify from "dompurify";
 import hljs from "highlight.js/lib/common";
 import "highlight.js/styles/github-dark.css";
 import { Activity, Archive, Check, ChevronDown, ChevronLeft, ChevronRight, Cloud, Copy, Download, FileCode, Folder, Globe, History, Link2, Loader2, Lock, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, Shield, Square, SquareTerminal, Trash2, X } from "lucide-react";
-import type { CloudflareStatus, ExecPolicy, FileChange, FileEntry, ImageModel, ProviderCatalog, ProviderHealth, Publish, Session, SessionTemplate, SessionTurn, Version } from "../types";
+import type { CloudflareStatus, ExecPolicy, FileChange, FileEntry, ImageModel, Project, ProviderCatalog, ProviderHealth, Publish, Session, SessionTemplate, SessionTurn, Version } from "../types";
 import { api } from "../api";
 import { useSessionEvents, type SessionEvent } from "../useLiveFeed";
 import { fmtTime } from "../format";
@@ -421,6 +421,8 @@ const WebTtyConsole = lazy(() => import("./WebTtyConsole"));
 
 interface Props {
   sessions: Session[];
+  // S0 substrate: selectable Projects for new sessions (default preselected).
+  projects: Project[];
   selectedId: string | null;
   onSelect: (id: string | null) => void;
   onSessionsChanged: () => void; // reload the session list in the parent
@@ -480,6 +482,7 @@ function derivePendingApproval(events: SessionEvent[]): PendingApproval | null {
 
 export default function SessionView({
   sessions,
+  projects,
   selectedId,
   onSelect,
   onSessionsChanged,
@@ -503,6 +506,8 @@ export default function SessionView({
   const [cancelling, setCancelling] = useState(false);
   const [creating, setCreating] = useState(false);
   const [confidentialDraft, setConfidentialDraft] = useState(false); // new-session local-only pin
+  // S0 substrate: Project for the next new session ("" = the owner default).
+  const [projectDraft, setProjectDraft] = useState("");
   const [previewNonce, setPreviewNonce] = useState(0);
   const [rawOpen, setRawOpen] = useState(false);
   // Activity log defaults open: long agentic turns need continuous feedback, not
@@ -744,6 +749,8 @@ export default function SessionView({
       const s = await api.createSession({
         ...(template ? { template } : { title: "Untitled session" }),
         confidential: confidentialDraft,
+        // "" = let the backend resolve the owner's default project.
+        project_id: projectDraft || null,
       });
       onSessionsChanged();
       onSelect(s.id);
@@ -1409,6 +1416,24 @@ export default function SessionView({
                 </button>
               ))}
             </div>
+            {/* S0 substrate: which Project the new session lands in (default preselected). */}
+            {projects.length > 0 && (
+              <label className="flex items-center gap-2 text-xs text-muted">
+                <span className="font-mono text-[11px] uppercase tracking-wider">Project</span>
+                <select
+                  value={projectDraft || (projects.find((p) => p.is_default)?.id ?? "")}
+                  onChange={(e) => setProjectDraft(e.target.value)}
+                  className="rounded-md border border-edge bg-base px-2 py-1 font-mono text-xs text-ink outline-none focus:border-brand/60"
+                  aria-label="Project for the new session"
+                >
+                  {projects.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}{p.is_default ? " (default)" : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <label className="flex cursor-pointer items-center gap-2 text-xs text-muted">
               <input
                 type="checkbox"

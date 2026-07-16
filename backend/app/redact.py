@@ -106,7 +106,7 @@ def redact_json(obj: Any) -> Any:
             )
             for k, v in obj.items()
         }
-    if isinstance(obj, (list, tuple)):
+    if isinstance(obj, list | tuple):
         return [redact_json(v) for v in obj]
     if isinstance(obj, str):
         return redact_text(obj)

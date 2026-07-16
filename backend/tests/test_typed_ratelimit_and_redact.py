@@ -25,7 +25,6 @@ from app.providers.cli_executor import CLIExecutor, parse_line
 from app.providers.registry import ProviderDef
 from app.redact import REDACTED, redact_json, redact_text
 
-
 # ── A4: codex typed failure events (parse_line) ───────────────────────────────
 
 def test_codex_turn_failed_usage_limit_is_typed_rate_limit():

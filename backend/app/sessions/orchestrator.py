@@ -35,12 +35,12 @@ from app.logging_config import owner_id_var, session_id_var
 from app.models import Session, SessionTurn
 from app.policy import resolve_effective_policy
 from app.providers.base import EventKind, ExecResult
-from app.redact import redact_text
 from app.providers.registry import (
     get_executor,
     is_local_instance,
     local_candidate_ids,
 )
+from app.redact import redact_text
 from app.sessions import workspace as ws
 from app.sessions.preview import rewrite_workspace_file_links
 from app.ws import ws_manager

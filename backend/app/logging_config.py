@@ -24,6 +24,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 
+from app.redact import redact_text
+
 # ── Correlation contextvars ───────────────────────────────────────────────────
 request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None)
 owner_id_var: ContextVar[str | None] = ContextVar("owner_id", default=None)
@@ -77,7 +79,9 @@ class JsonFormatter(logging.Formatter):
                     payload[key] = val
                 except (TypeError, ValueError):
                     payload[key] = repr(val)
-        return json.dumps(payload, default=str)
+        # Secrets wall (D-0058 A6): one pass over the serialized line catches
+        # message text, extras, and exception traces alike.
+        return redact_text(json.dumps(payload, default=str))
 
 
 def configure_logging(level: str = "INFO") -> None:

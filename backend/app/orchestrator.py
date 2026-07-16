@@ -30,6 +30,7 @@ from app.db import AsyncSessionLocal
 from app.logging_config import bind_run
 from app.models import RoutingDecision, Run, RunEvent, Task
 from app.policy import resolve_effective_policy
+from app.redact import redact_json, redact_text
 from app.providers.base import EventKind, ExecEvent, ExecResult, Usage
 from app.providers.registry import get_executor
 from app.quota import quota_tracker
@@ -867,7 +868,7 @@ def _get_tier(instance_id: str) -> str:
 
 async def _fail(db, run: Run, error: str) -> None:
     run.status = "failed"
-    run.error = error
+    run.error = redact_text(error)  # error text often embeds stderr (A6)
     run.finished_at = datetime.now(UTC)
     await db.commit()
     await _record_routing_outcome(db, run)  # P-0053 slice 2 (no-op if no decision)
@@ -990,13 +991,16 @@ async def _emit_event(
     safe_data = None
     if data:
         safe_data = {k: v for k, v in data.items() if not isinstance(v, ExecResult)}
+    # Secrets wall (D-0058 A6): the durable event log must never carry a key an
+    # agent echoed into stdout/stderr. The live WS stream and the deliverable
+    # itself are not rewritten — the wall is the durable record.
     ev = RunEvent(
         run_id=run.id,
         seq=seq,
         kind=kind.value,
         phase=phase or message[:64],
-        message=message,
-        data=safe_data,
+        message=redact_text(message) if message else message,
+        data=redact_json(safe_data) if safe_data else safe_data,
     )
     db.add(ev)
     await db.commit()

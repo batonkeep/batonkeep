@@ -35,6 +35,7 @@ from app.logging_config import owner_id_var, session_id_var
 from app.models import Session, SessionTurn
 from app.policy import resolve_effective_policy
 from app.providers.base import EventKind, ExecResult
+from app.redact import redact_text
 from app.providers.registry import (
     get_executor,
     is_local_instance,
@@ -480,7 +481,8 @@ async def run_turn_background(
                 turn.cache_write_tokens = usage.cache_write_tokens
             else:
                 turn.status = "failed"
-                turn.error = error_msg or "no result produced"
+                # error text often embeds provider stderr (A6 secrets wall)
+                turn.error = redact_text(error_msg) if error_msg else "no result produced"
             if version is not None:
                 turn.commit_sha = version["commit"]
                 turn.diffstat = version["diffstat"]

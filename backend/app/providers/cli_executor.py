@@ -64,6 +64,13 @@ _settings = get_settings()
 
 # ── Rate-limit patterns ───────────────────────────────────────────────────────
 # Each CLI words its limit differently; match broadly and parse reset timestamp.
+# D-0058 A4: for codex/grok these regexes are the FALLBACK — both lanes now emit
+# typed failure signals on stdout (codex `turn.failed`/`error` events; grok
+# `stopReason:"rate_limit"`, which its source sets only for an actual HTTP 429)
+# and the parser/stream loop classifies those first. claude/agy still ride the
+# stderr regex. Wordings below are auditable in the OSS sources (2026-07-16
+# review): codex "You've hit your usage limit…", "Quota exceeded…", workspace
+# "…out of credits…"; grok "You've hit the rate limit for your plan…".
 _RATE_LIMIT_PATTERNS = [
     re.compile(r"rate.?limit", re.IGNORECASE),
     re.compile(r"limit.?reached", re.IGNORECASE),
@@ -71,6 +78,7 @@ _RATE_LIMIT_PATTERNS = [
     re.compile(r"quota.?exceeded", re.IGNORECASE),
     re.compile(r"usage.?limit", re.IGNORECASE),
     re.compile(r"tokens per", re.IGNORECASE),
+    re.compile(r"out of credits", re.IGNORECASE),  # codex workspace credit depletion
 ]
 
 # Try to extract a reset time from the error message
@@ -196,6 +204,31 @@ def parse_line(line: str, accumulated_text: list[str]) -> ExecEvent | None:
             return ExecEvent(
                 kind=EventKind.log, message=f"[end] {obj.get('stopReason', '')}", data=obj
             )
+
+        # ── Typed failure events (D-0058 A4) ─────────────────────────────────
+        # codex exec --json: {"type":"turn.failed","error":{"message":…}} and
+        # {"type":"error","message":…} ("unrecoverable error emitted directly by
+        # the event stream"); grok's headless emitter uses the same
+        # {"type":"error","message":…} shape. These are the typed signal —
+        # classify rate limits here so the stderr regex in run_stream stays a
+        # fallback for the structured lanes. codex usage-limit messages carry a
+        # "…try again at <time>." suffix that _parse_reset_at picks up.
+        if obj_type in ("turn.failed", "error"):
+            err_obj = obj.get("error")
+            msg = str(err_obj.get("message") or "") if isinstance(err_obj, dict) else ""
+            if not msg:
+                msg = str(obj.get("message") or "") or line[:300]
+            if _is_rate_limit(msg):
+                return ExecEvent(
+                    kind=EventKind.error,
+                    message=f"rate_limit_reached: {msg[:300]}",
+                    data={
+                        "rate_limit": True,
+                        "reset_at": _parse_reset_at(msg).isoformat(),
+                        "raw": obj,
+                    },
+                )
+            return ExecEvent(kind=EventKind.error, message=msg[:300], data={"raw": obj})
 
         # Grok streaming-json delta (text field at top level)
         if "text" in obj and obj_type not in ("result",):
@@ -546,6 +579,10 @@ class CLIExecutor(Executor):
             # or a non-EndTurn stop reason). The fallback below must report a failure,
             # not "complete", even if partial reasoning text was accumulated.
             truncated_reason: str | None = None
+            # D-0058 A4: grok's headless stream maps an actual HTTP 429 (and only
+            # a 429 — its source contract) to stopReason:"rate_limit" on the end
+            # event. Typed signal; the stderr regex below becomes the fallback.
+            rate_limited_stop = False
 
             try:
                 async with asyncio.timeout(timeout):
@@ -566,6 +603,9 @@ class CLIExecutor(Executor):
                             # Grok/Claude end-of-stream signal
                             if itype == "end":
                                 stop = str(item.data.get("stopReason", ""))
+                                if stop.lower() == "rate_limit":
+                                    rate_limited_stop = True
+                                    break
                                 # Anything other than a normal completion means the run
                                 # was cut short (e.g. grok emits stopReason:"Cancelled"
                                 # after max_turns_reached).
@@ -586,8 +626,26 @@ class CLIExecutor(Executor):
 
             await proc.wait()
 
-            # Check full stderr for rate-limit signals (already populated by _stderr_worker)
             stderr_all = "\n".join(stderr_buf)
+
+            # Typed grok rate-limit stop (A4): the end event said 429 explicitly.
+            # No reset info rides the stream (data is null for rate_limit stops);
+            # stderr may still word a reset time, else the default cooldown applies.
+            if rate_limited_stop:
+                reset_at = _parse_reset_at(stderr_all)
+                yield ExecEvent(
+                    kind=EventKind.error,
+                    message="rate_limit_reached: provider stream reported "
+                            "stopReason=rate_limit",
+                    data={
+                        "rate_limit": True,
+                        "reset_at": reset_at.isoformat() if reset_at else None,
+                    },
+                )
+                return
+
+            # Fallback (claude/agy — and any lane whose typed signal was absent):
+            # regex over the full stderr, already populated by _stderr_worker.
             if _is_rate_limit(stderr_all):
                 reset_at = _parse_reset_at(stderr_all)
                 yield ExecEvent(

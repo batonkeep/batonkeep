@@ -37,10 +37,12 @@ from app.config import get_settings
 from app.db import get_db, init_db
 from app.logging_config import configure_logging, owner_id_var, request_id_var
 from app.models import (
+    Approval,
     Artifact,
     ContextReceipt,
     ContextSource,
     Credential,
+    Evidence,
     Owner,
     Project,
     Run,
@@ -57,8 +59,12 @@ from app.projects import (
     resolve_work_item_id,
 )
 from app.schemas import (
+    ApprovalDecideIn,
+    ApprovalDecideOut,
     ApprovalDecision,
+    ApprovalOut,
     AuthStatus,
+    CanonicalProposeIn,
     CaptureRequest,
     CatalogModelUpdate,
     CatalogPreferredUpdate,
@@ -77,6 +83,7 @@ from app.schemas import (
     CustomProviderCreate,
     CustomProviderOut,
     CustomProviderUpdate,
+    EvidenceOut,
     FileEntryOut,
     GitImportIn,
     ImageModelOut,
@@ -185,6 +192,14 @@ async def lifespan(app: FastAPI):
         await reap_orphaned_turns()
     except Exception:
         logger.exception("startup turn-reaper failed")
+
+    # Substrate approval baseline: expire pending approval rows whose in-process
+    # Futures died with the previous process (canonical-write proposals are kept —
+    # they stay decidable through the API across restarts).
+    try:
+        await approvals.reap_pending()
+    except Exception:
+        logger.exception("startup approval-reaper failed")
 
     # P-0046: drift-guard the exec-env — confirm the built image's exec venv
     # still matches the manifest (guaranteed code-exec toolchain). Non-strict:
@@ -757,6 +772,159 @@ async def get_turn_receipt(
     return ContextReceiptOut.model_validate(receipt)
 
 
+# ── Evidence (S0 substrate — append-only: list + raw only, no update route) ──
+
+@app.get(
+    "/api/projects/{project_id}/evidence",
+    response_model=list[EvidenceOut],
+    tags=["projects"],
+)
+async def list_project_evidence(
+    project_id: str,
+    work_item_id: int | None = None,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    await _get_owned_project(db, owner_id, project_id)
+    stmt = (
+        select(Evidence)
+        .where(Evidence.project_id == project_id, Evidence.owner_id == owner_id)
+        .order_by(Evidence.id.desc())
+    )
+    if work_item_id is not None:
+        stmt = stmt.where(Evidence.work_item_id == work_item_id)
+    rows = (await db.execute(stmt)).scalars().all()
+    return [EvidenceOut.model_validate(r) for r in rows]
+
+
+@app.get("/api/evidence/{evidence_id}/raw", tags=["projects"])
+async def get_evidence_raw(
+    evidence_id: int,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """Serve one evidence file (traversal-guarded, the run-assets pattern)."""
+    from app import evidence as evidence_store
+
+    row = await db.get(Evidence, evidence_id)
+    if row is None or row.owner_id != owner_id:
+        raise HTTPException(status_code=404, detail="Evidence not found")
+    path = evidence_store.evidence_abs_path(row.project_id, row.rel_path)
+    if path is None or not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Evidence file missing")
+    import mimetypes
+    media, _ = mimetypes.guess_type(path)
+    return FileResponse(
+        path, media_type=media or "application/octet-stream",
+        filename=os.path.basename(row.rel_path),
+    )
+
+
+# ── Canonical-write proposals + approvals (S0 approval baseline) ─────────────
+
+@app.post(
+    "/api/projects/{project_id}/context/propose",
+    response_model=ApprovalOut,
+    status_code=202,
+    tags=["projects"],
+)
+async def propose_canonical_write(
+    project_id: str,
+    body: CanonicalProposeIn,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """Propose a write to the project's canonical context root. Never applies —
+    a pending approval (carrying the unified diff) is the only outcome; the
+    engine writes the root exclusively through an approved decision."""
+    from app import canonical
+
+    project = await _get_owned_project(db, owner_id, project_id)
+    try:
+        row = await canonical.propose(
+            db, project=project, rel_path=body.rel_path, content=body.content,
+            producer=body.producer, work_item_id=body.work_item_id,
+        )
+    except canonical.CanonicalWriteError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    await db.commit()
+    await db.refresh(row)
+    return ApprovalOut.model_validate(row)
+
+
+@app.get("/api/approvals", response_model=list[ApprovalOut], tags=["approvals"])
+async def list_approvals(
+    status: str | None = None,
+    project_id: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    stmt = (
+        select(Approval)
+        .where(Approval.owner_id == owner_id)
+        .order_by(Approval.id.desc())
+        .limit(200)
+    )
+    if status is not None:
+        stmt = stmt.where(Approval.status == status)
+    if project_id is not None:
+        stmt = stmt.where(Approval.project_id == project_id)
+    rows = (await db.execute(stmt)).scalars().all()
+    return [ApprovalOut.model_validate(r) for r in rows]
+
+
+@app.post(
+    "/api/approvals/{approval_id}/decide",
+    response_model=ApprovalDecideOut,
+    tags=["approvals"],
+)
+async def decide_approval(
+    approval_id: int,
+    body: ApprovalDecideIn,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """Decide a pending canonical-write proposal. Approving applies the write
+    (git commit on git roots); denying records the refusal. Code-exec approvals
+    are decided through their session route — this one refuses them so a
+    blocked turn's Future can't be bypassed."""
+    from app import canonical
+
+    row = await db.get(Approval, approval_id)
+    if row is None or row.owner_id != owner_id:
+        raise HTTPException(status_code=404, detail="Approval not found")
+    if row.kind != "canonical_write":
+        raise HTTPException(
+            status_code=400,
+            detail="only canonical_write approvals are decided here; "
+                   "code-exec approvals go through their session route",
+        )
+    if row.status != "pending":
+        raise HTTPException(status_code=409, detail=f"approval already {row.status}")
+
+    settled = await approvals.settle(
+        db, row.request_id, approved=body.approved, decided_by="human"
+    )
+    if settled is None:
+        raise HTTPException(status_code=409, detail="approval already settled")
+
+    applied: dict | None = None
+    if body.approved:
+        project = await db.get(Project, row.project_id)
+        if project is None or project.owner_id != owner_id:
+            raise HTTPException(status_code=404, detail="Project not found")
+        try:
+            applied = await canonical.apply(db, row, project)
+        except canonical.CanonicalWriteError as exc:
+            # The decision stands recorded; the apply failure is the caller's
+            # to see (e.g. root unbound since proposal).
+            await db.commit()
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+    await db.commit()
+    await db.refresh(row)
+    return ApprovalDecideOut(approval=ApprovalOut.model_validate(row), applied=applied)
+
+
 # ── /api/tasks ────────────────────────────────────────────────────────────────
 
 @app.get("/api/task-templates", response_model=list[TaskTemplateOut], tags=["tasks"])
@@ -1323,6 +1491,8 @@ async def resolve_approval(
         raise HTTPException(status_code=404, detail="Session not found")
     if not approvals.resolve(request_id, body.approved):
         raise HTTPException(status_code=404, detail="No pending approval for that id")
+    # The awaiting coroutine settles the durable row (it knows human vs timeout);
+    # nothing else to persist here.
 
 
 @app.delete("/api/sessions/{session_id}", status_code=204, tags=["sessions"])

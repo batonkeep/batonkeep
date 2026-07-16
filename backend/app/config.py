@@ -204,6 +204,9 @@ class Settings(BaseSettings):
 
     # ── Outputs ───────────────────────────────────────────────────────────────
     outputs_dir: str = "/data/outputs"
+    # Evidence store root (substrate): files land under
+    # <evidence_dir>/project_<id>/, indexed append-only by the Evidence table.
+    evidence_dir: str = "/data/evidence"
 
     # ── Agent filesystem isolation (P-0022 / D-0020) ────────────────────────────
     # Privilege separation: the backend runs as `batond`; agent CLIs are launched

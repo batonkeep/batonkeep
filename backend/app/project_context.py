@@ -35,6 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.models import ContextReceipt, ContextSource, Evidence, Project, WorkItem
+from app.version import APP_VERSION
 from app.work_ledger import LEDGER_FILENAME, render_ledger, sha256_text
 
 logger = logging.getLogger(__name__)
@@ -516,6 +517,9 @@ async def project_for_execution(
         ledger_sha=sha256_text(ledger_text),
         exclusions=exclusions or None,
         approx_bytes=total_bytes + len(ledger_text.encode("utf-8")),
+        # Provenance stamps: harness now; cli_version is filled in when a CLI
+        # candidate actually starts (the orchestrators own that).
+        harness_version=APP_VERSION[:32],
     )
     db.add(receipt)
     await db.commit()

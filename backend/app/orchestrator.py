@@ -283,6 +283,14 @@ async def _do_execute(run_id: int, task: Task) -> None:
                     attempt: dict[str, Any] = {"provider": provider_name, "outcome": "pending"}
                     attempts.append(attempt)
                     run.attempts = list(attempts)
+                    # Provenance stamp: the executing CLI version onto the receipt
+                    # (last candidate attempted wins on failover — the one whose
+                    # output the run records). API-lane executors have no probe.
+                    if receipt is not None:
+                        probe = getattr(executor, "cli_version", None)
+                        version = probe() if callable(probe) else None
+                        if version:
+                            receipt.cli_version = version
                     await db.commit()
 
                     rate_limited = False
@@ -607,6 +615,22 @@ async def _do_execute(run_id: int, task: Task) -> None:
         run.model = final_result.model if final_result else None
         run.tier = _get_tier(run.provider or "")
         run.attempts = attempts
+
+        # Substrate evidence: index the run's report in the append-only evidence
+        # store. Best-effort — evidence must never break the run that produced it.
+        if run.project_id and full_text:
+            from app import evidence as evidence_store
+            await evidence_store.capture_safe(
+                db,
+                owner_id=run.owner_id,
+                project_id=run.project_id,
+                work_item_id=run.work_item_id,
+                run_id=run_id,
+                kind="report",
+                filename="output.md",
+                text=full_text,
+                producer=run.provider or "system",
+            )
 
         quota_tracker.record_invocation(
             run.provider or "unknown", final_usage.tokens_in + final_usage.tokens_out

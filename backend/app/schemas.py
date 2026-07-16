@@ -259,7 +259,67 @@ class ContextReceiptOut(BaseModel):
     ledger_sha: str | None
     exclusions: list[Any] | None
     approx_bytes: int
+    # Provenance stamps: distinguish model regressions from CLI/harness ones.
+    harness_version: str | None = None
+    cli_version: str | None = None
     created_at: datetime
+
+
+class EvidenceOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    owner_id: str
+    project_id: str
+    work_item_id: int | None
+    run_id: int | None
+    session_turn_id: int | None
+    kind: str
+    rel_path: str
+    digest: str | None
+    producer: str
+    bytes: int
+    sensitivity: str
+    created_at: datetime
+
+
+class ApprovalOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    owner_id: str
+    request_id: str
+    kind: str
+    status: str
+    project_id: str | None
+    work_item_id: int | None
+    session_id: str | None
+    run_id: int | None
+    payload: dict[str, Any] | None
+    producer: str
+    decided_by: str | None
+    created_at: datetime
+    decided_at: datetime | None
+
+
+class CanonicalProposeIn(BaseModel):
+    """A proposed write to a project's canonical context root. Never applied
+    directly — it becomes a pending approval carrying the diff."""
+
+    rel_path: str
+    content: str
+    producer: str = "human"
+    work_item_id: int | None = None
+
+
+class ApprovalDecideIn(BaseModel):
+    approved: bool
+
+
+class ApprovalDecideOut(BaseModel):
+    approval: ApprovalOut
+    # canonical_write + approved: what was applied ({"rel_path", "commit"}).
+    applied: dict[str, Any] | None = None
 
 
 class TaskCreate(BaseModel):

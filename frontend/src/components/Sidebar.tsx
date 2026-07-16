@@ -1,14 +1,15 @@
 // Sidebar.tsx — primary nav. Left rail on desktop (with sub-labels), bottom
-// tab bar on mobile (4 items, same tap targets). D-0027: Providers → Settings,
+// tab bar on mobile (5 items, same tap targets). D-0027: Providers → Settings,
 // Cockpit → Analytics; sub-labels on desktop; human labels; mobile unchanged.
-import { Gauge, Hammer, ListChecks, Settings2 } from "lucide-react";
+import { FolderKanban, Gauge, Hammer, ListChecks, Settings2 } from "lucide-react";
 import Logo from "../ui/Logo";
 import VersionBadge from "./VersionBadge";
 import type { WsStatus } from "../useLiveFeed";
 
-// "Live" (runs) is folded into the Tasks pane as a sub-tab, keeping the bottom
-// nav to four items on mobile. Providers folded into Settings (D-0027 / D-0023).
-export type View = "tasks" | "build" | "settings" | "cockpit";
+// "Live" (runs) is folded into the Tasks pane as a sub-tab; Providers folded into
+// Settings (D-0027 / D-0023). Projects (S0 substrate) brings the bottom nav to
+// five items on mobile — the platform ceiling.
+export type View = "tasks" | "build" | "projects" | "settings" | "cockpit";
 
 interface Props {
   view: View;
@@ -28,6 +29,7 @@ const ITEMS: {
 }[] = [
   { id: "tasks",    label: "Tasks",     sub: "schedule + run",     icon: ListChecks },
   { id: "build",    label: "Build",     sub: "sessions + publish",  icon: Hammer },
+  { id: "projects", label: "Projects",  sub: "work + context",      icon: FolderKanban },
   { id: "cockpit",  label: "Analytics", sub: "ops telemetry",       icon: Gauge },
   { id: "settings", label: "Settings",  sub: "AI plans + config",   icon: Settings2 },
 ];

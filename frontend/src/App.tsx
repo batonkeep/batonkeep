@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LogOut, Moon, Plus, Search, Sun } from "lucide-react";
 import { api } from "./api";
 import { useLiveFeed } from "./useLiveFeed";
-import type { Credential, Mode, ProviderHealth, Run, Session, Stats, Task, TaskInput, TaskTemplate, UsageSummary } from "./types";
+import type { Credential, Mode, Project, ProviderHealth, Run, Session, Stats, Task, TaskInput, TaskTemplate, UsageSummary } from "./types";
 import Sidebar, { View } from "./components/Sidebar";
 import StatsBar from "./components/StatsBar";
 import TaskList from "./components/TaskList";
@@ -12,6 +12,7 @@ import RunViewer from "./components/RunViewer";
 import SessionView from "./components/SessionView";
 import SettingsPanel from "./components/SettingsPanel";
 import CockpitPanel from "./components/CockpitPanel";
+import ProjectsPanel from "./components/ProjectsPanel";
 import Onboarding from "./components/Onboarding";
 import LoginPage from "./components/LoginPage";
 import Styleguide from "./components/Styleguide";
@@ -77,6 +78,7 @@ function AppShell({ appAuthEnabled, onLogout }: { appAuthEnabled: boolean; onLog
   const [mode, setMode] = useState<Mode | null>(null);
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]); // S0 substrate
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
   // Scoped console: available only when the backend enables it; token is entered
@@ -135,6 +137,7 @@ function AppShell({ appAuthEnabled, onLogout }: { appAuthEnabled: boolean; onLog
   }, []);
   const loadCreds = useCallback(() => api.listCredentials().then(setCredentials).catch(() => { }), []);
   const loadSessions = useCallback(() => api.listSessions().then(setSessions).catch(() => { }), []);
+  const loadProjects = useCallback(() => api.listProjects().then(setProjects).catch(() => { }), []);
 
   useEffect(() => {
     loadTasks();
@@ -143,6 +146,7 @@ function AppShell({ appAuthEnabled, onLogout }: { appAuthEnabled: boolean; onLog
     loadStats();
     loadCreds();
     loadSessions();
+    loadProjects();
     api.getMode().then(setMode).catch(() => { });
     api.getConsoleConfig().then((c) => setConsoleAvailable(c.available)).catch(() => { });
     api.listTaskTemplates().then(setTaskTemplates).catch(() => { });
@@ -275,6 +279,7 @@ function AppShell({ appAuthEnabled, onLogout }: { appAuthEnabled: boolean; onLog
   const VIEW_TITLES: Record<View, string> = {
     tasks: "Tasks",
     build: "Build",
+    projects: "Projects",
     settings: "Settings",
     cockpit: "Analytics",
   };
@@ -370,7 +375,7 @@ function AppShell({ appAuthEnabled, onLogout }: { appAuthEnabled: boolean; onLog
 
         {/* Run/task aggregates — irrelevant to Build, and the Cockpit is their
             consolidated superset, so hide the strip on both. */}
-        {view !== "build" && view !== "cockpit" && view !== "settings" && (
+        {view !== "build" && view !== "cockpit" && view !== "settings" && view !== "projects" && (
           <div className="mb-6">
             <StatsBar stats={stats} usage={usage} sparkData={sparkData} />
           </div>
@@ -476,6 +481,7 @@ function AppShell({ appAuthEnabled, onLogout }: { appAuthEnabled: boolean; onLog
         {view === "build" && (
           <SessionView
             sessions={sessions}
+            projects={projects}
             selectedId={selectedSessionId}
             onSelect={setSelectedSessionId}
             onSessionsChanged={loadSessions}
@@ -499,6 +505,10 @@ function AppShell({ appAuthEnabled, onLogout }: { appAuthEnabled: boolean; onLog
             onSetConsoleToken={setConsoleToken}
             appAuthEnabled={appAuthEnabled}
           />
+        )}
+
+        {view === "projects" && (
+          <ProjectsPanel projects={projects} onProjectsChanged={loadProjects} />
         )}
 
         {view === "cockpit" && <CockpitPanel />}
@@ -529,6 +539,7 @@ function AppShell({ appAuthEnabled, onLogout }: { appAuthEnabled: boolean; onLog
           task={editingTask}
           initial={formInitial}
           providers={providers}
+          projects={projects}
           onSave={handleSave}
           onClose={() => { setShowForm(false); setFormInitial(null); }}
         />

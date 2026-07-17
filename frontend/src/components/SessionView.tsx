@@ -8,8 +8,8 @@ import { marked } from "marked";
 import DOMPurify from "dompurify";
 import hljs from "highlight.js/lib/common";
 import "highlight.js/styles/github-dark.css";
-import { Activity, Archive, Check, ChevronDown, ChevronLeft, ChevronRight, Cloud, Copy, Download, FileCode, Folder, Globe, History, Link2, Loader2, Lock, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, Shield, Square, SquareTerminal, Trash2, X } from "lucide-react";
-import type { CloudflareStatus, ExecPolicy, FileChange, FileEntry, ImageModel, Project, ProviderCatalog, ProviderHealth, Publish, Session, SessionTemplate, SessionTurn, Version } from "../types";
+import { Activity, Archive, Check, ChevronDown, ChevronLeft, ChevronRight, Cloud, Copy, Download, FileCode, Folder, FolderKanban, Globe, History, Link2, Loader2, Lock, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, Shield, Square, SquareTerminal, Trash2, X } from "lucide-react";
+import type { CloudflareStatus, ContextSource, ExecPolicy, FileChange, FileEntry, ImageModel, Project, ProviderCatalog, ProviderHealth, Publish, Session, SessionTemplate, SessionTurn, Version } from "../types";
 import { api } from "../api";
 import { useSessionEvents, type SessionEvent } from "../useLiveFeed";
 import { fmtTime } from "../format";
@@ -497,6 +497,12 @@ export default function SessionView({
   const [detail, setDetail] = useState<Session | null>(null);
   const [turns, setTurns] = useState<SessionTurn[]>([]);
   const [message, setMessage] = useState("");
+  // S0.4: the selected session's declared context sources back the composer's
+  // `@` typeahead (inserted as the projected `context/<rel_path>` the agent sees).
+  const [ctxSources, setCtxSources] = useState<ContextSource[]>([]);
+  const [mention, setMention] = useState<{ start: number; query: string } | null>(null);
+  const [mentionIdx, setMentionIdx] = useState(0);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const [providerSwitch, setProviderSwitch] = useState("");
   // P-0049: per-session model override for the active API provider ("" = the
   // provider's catalog default). Backed by the provider's catalog of enabled models.
@@ -644,6 +650,22 @@ export default function SessionView({
     if (!selectedId) return;
     api.getPublish(selectedId).then(setPublish).catch(() => { });
   }, [selectedId]);
+
+  // S0.4: project name lookup (badge + list grouping) and context sources for
+  // the `@` selector, reloaded when the selection moves to another project.
+  const projectName = useCallback(
+    (id: string | null | undefined) => projects.find((p) => p.id === id)?.name ?? null,
+    [projects],
+  );
+  const selectedProjectId = sessions.find((s) => s.id === selectedId)?.project_id ?? null;
+  useEffect(() => {
+    setMention(null);
+    if (!selectedProjectId) {
+      setCtxSources([]);
+      return;
+    }
+    api.listContextSources(selectedProjectId).then(setCtxSources).catch(() => setCtxSources([]));
+  }, [selectedProjectId]);
 
   // Workspace file listing for the Files tab (P-0034). Always-current: refreshed
   // when the tab opens and whenever a turn/capture changes the workspace.
@@ -847,6 +869,49 @@ export default function SessionView({
     setDetail(updated);
     setTitleDraft(null);
     onSessionsChanged();
+  };
+
+  // ── S0.4: `@` context selector ────────────────────────────────────────────
+  // Typing `@` opens a typeahead over the projected context sources and the
+  // workspace files; selecting inserts the plain relative path the agent can
+  // resolve in its workspace (provider-neutral — it's just text in the prompt).
+  const mentionItems = useMemo(() => {
+    if (!mention) return [];
+    const q = mention.query.toLowerCase();
+    const ctx = ctxSources.map((s) => ({
+      insert: `context/${s.rel_path}${s.kind === "dir" ? "/" : ""}`,
+      label: `context/${s.rel_path}`,
+      hint: s.domain ? `${s.kind} · ${s.domain}` : s.kind,
+    }));
+    const ws = files.map((f) => ({ insert: f.path, label: f.path, hint: "workspace" }));
+    return [...ctx, ...ws].filter((c) => c.label.toLowerCase().includes(q)).slice(0, 8);
+  }, [mention, ctxSources, files]);
+
+  const detectMention = (value: string, cursor: number) => {
+    const m = /(^|\s)@([\w./~-]*)$/.exec(value.slice(0, cursor));
+    if (!m) {
+      setMention(null);
+      return;
+    }
+    if (files.length === 0 && !filesLoading) loadFiles();
+    setMention({ start: cursor - m[2].length - 1, query: m[2] });
+    setMentionIdx(0);
+  };
+
+  const applyMention = (item: { insert: string }) => {
+    if (!mention) return;
+    const el = composerRef.current;
+    const cursor = el?.selectionStart ?? message.length;
+    const next = message.slice(0, mention.start) + item.insert + " " + message.slice(cursor);
+    setMessage(next);
+    setMention(null);
+    requestAnimationFrame(() => {
+      if (el) {
+        const pos = mention.start + item.insert.length + 1;
+        el.focus();
+        el.setSelectionRange(pos, pos);
+      }
+    });
   };
 
   const handleSend = async () => {
@@ -1323,7 +1388,7 @@ export default function SessionView({
               </div>
             );
           }
-          return visible.map((s) => {
+          const card = (s: Session) => {
           const active = s.id === selectedId;
           return (
             <div
@@ -1351,7 +1416,26 @@ export default function SessionView({
               </button>
             </div>
           );
-          });
+          };
+          // S0.4: sessions spanning more than one project group under project
+          // headers (first-seen order — the list is already recency-sorted).
+          // A single-project list stays flat: no header noise for the common case.
+          const groups: { pid: string; items: Session[] }[] = [];
+          for (const s of visible) {
+            const pid = s.project_id ?? "";
+            const g = groups.find((x) => x.pid === pid);
+            if (g) g.items.push(s);
+            else groups.push({ pid, items: [s] });
+          }
+          if (groups.length <= 1) return visible.map(card);
+          return groups.map((g) => (
+            <div key={g.pid || "none"} className="space-y-2">
+              <p className="flex items-center gap-1.5 px-1 pt-1 font-mono text-[10px] uppercase tracking-wider text-muted">
+                <FolderKanban size={11} /> {projectName(g.pid) ?? "No project"}
+              </p>
+              {g.items.map(card)}
+            </div>
+          ));
         })()}
       </div>
 
@@ -1481,6 +1565,15 @@ export default function SessionView({
                     </span>
                     <Pencil size={12} className="shrink-0 text-muted opacity-0 transition-opacity group-hover:opacity-100" />
                   </button>
+                  {/* S0.4: which project this session belongs to (fixed at creation). */}
+                  {detail && projectName(detail.project_id) && (
+                    <span
+                      className="hidden items-center gap-1 rounded border border-edge bg-base px-1.5 py-0.5 font-mono text-[10px] text-muted sm:flex"
+                      title="Project (fixed when the session was created)"
+                    >
+                      <FolderKanban size={11} /> {projectName(detail.project_id)}
+                    </span>
+                  )}
                   {detail?.confidential && (
                     <span
                       className="flex items-center gap-1 rounded border border-brand/40 bg-brand/10 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-brand"
@@ -2035,10 +2128,59 @@ export default function SessionView({
               )}
               {mode === "chat" && (
                 <div className="relative">
+                  {mention && mentionItems.length > 0 && (
+                    <div className="absolute bottom-full left-0 z-20 mb-1 w-full max-w-md overflow-hidden rounded-lg border border-edge bg-panel shadow-lg">
+                      <p className="border-b border-edge px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider text-muted">
+                        Reference context / workspace files
+                      </p>
+                      {mentionItems.map((item, i) => (
+                        <button
+                          key={item.label + item.hint}
+                          // mousedown, not click: fires before the textarea blur.
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            applyMention(item);
+                          }}
+                          className={`flex w-full items-center justify-between gap-3 px-3 py-1.5 text-left ${i === mentionIdx ? "bg-brand/10" : "hover:bg-edge/40"
+                            }`}
+                        >
+                          <span className="truncate font-mono text-xs text-ink">{item.label}</span>
+                          <span className="shrink-0 font-mono text-[10px] text-muted">{item.hint}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   <textarea
+                    ref={composerRef}
                     value={message}
-                    onChange={(e) => setMessage(e.target.value)}
+                    onChange={(e) => {
+                      setMessage(e.target.value);
+                      detectMention(e.target.value, e.target.selectionStart ?? e.target.value.length);
+                    }}
+                    onBlur={() => setMention(null)}
                     onKeyDown={(e) => {
+                      if (mention && mentionItems.length > 0) {
+                        if (e.key === "ArrowDown") {
+                          e.preventDefault();
+                          setMentionIdx((i) => (i + 1) % mentionItems.length);
+                          return;
+                        }
+                        if (e.key === "ArrowUp") {
+                          e.preventDefault();
+                          setMentionIdx((i) => (i - 1 + mentionItems.length) % mentionItems.length);
+                          return;
+                        }
+                        if (e.key === "Tab" || (e.key === "Enter" && !e.metaKey && !e.ctrlKey)) {
+                          e.preventDefault();
+                          applyMention(mentionItems[mentionIdx]);
+                          return;
+                        }
+                        if (e.key === "Escape") {
+                          e.preventDefault();
+                          setMention(null);
+                          return;
+                        }
+                      }
                       if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                         e.preventDefault();
                         handleSend();

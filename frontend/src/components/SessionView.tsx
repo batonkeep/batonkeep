@@ -503,6 +503,9 @@ export default function SessionView({
   const [mention, setMention] = useState<{ start: number; query: string } | null>(null);
   const [mentionIdx, setMentionIdx] = useState(0);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  // S0.4: explicit expand/collapse toggles per project group in the session list.
+  // Unset = the default policy (only the selected session's group is open).
+  const [groupToggles, setGroupToggles] = useState<Record<string, boolean>>({});
   const [providerSwitch, setProviderSwitch] = useState("");
   // P-0049: per-session model override for the active API provider ("" = the
   // provider's catalog default). Backed by the provider's catalog of enabled models.
@@ -883,7 +886,13 @@ export default function SessionView({
       label: `context/${s.rel_path}`,
       hint: s.domain ? `${s.kind} · ${s.domain}` : s.kind,
     }));
-    const ws = files.map((f) => ({ insert: f.path, label: f.path, hint: "workspace" }));
+    // Identity is the full inserted path — same-named files in different dirs
+    // stay distinct entries, while a declared source and its projected workspace
+    // copy (identical path) collapse to the source entry.
+    const seen = new Set(ctx.map((c) => c.label));
+    const ws = files
+      .filter((f) => !seen.has(f.path))
+      .map((f) => ({ insert: f.path, label: f.path, hint: "workspace" }));
     return [...ctx, ...ws].filter((c) => c.label.toLowerCase().includes(q)).slice(0, 8);
   }, [mention, ctxSources, files]);
 
@@ -1420,6 +1429,9 @@ export default function SessionView({
           // S0.4: sessions spanning more than one project group under project
           // headers (first-seen order — the list is already recency-sorted).
           // A single-project list stays flat: no header noise for the common case.
+          // Groups are collapsed by default; only the selected session's group
+          // opens on its own. An active search expands everything (matches must
+          // never hide), and explicit toggles win otherwise.
           const groups: { pid: string; items: Session[] }[] = [];
           for (const s of visible) {
             const pid = s.project_id ?? "";
@@ -1428,14 +1440,27 @@ export default function SessionView({
             else groups.push({ pid, items: [s] });
           }
           if (groups.length <= 1) return visible.map(card);
-          return groups.map((g) => (
-            <div key={g.pid || "none"} className="space-y-2">
-              <p className="flex items-center gap-1.5 px-1 pt-1 font-mono text-[10px] uppercase tracking-wider text-muted">
-                <FolderKanban size={11} /> {projectName(g.pid) ?? "No project"}
-              </p>
-              {g.items.map(card)}
-            </div>
-          ));
+          return groups.map((g) => {
+            const open = q
+              ? true
+              : groupToggles[g.pid] ?? g.items.some((s) => s.id === selectedId);
+            return (
+              <div key={g.pid || "none"} className="space-y-2">
+                <button
+                  onClick={() => setGroupToggles((t) => ({ ...t, [g.pid]: !open }))}
+                  className="flex w-full items-center gap-1.5 rounded px-1 pt-1 font-mono text-[10px] uppercase tracking-wider text-muted hover:text-ink"
+                  aria-expanded={open}
+                >
+                  {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+                  <FolderKanban size={11} /> {projectName(g.pid) ?? "No project"}
+                  <span className="ml-auto rounded border border-edge bg-base px-1.5 text-[10px] normal-case">
+                    {g.items.length}
+                  </span>
+                </button>
+                {open && g.items.map(card)}
+              </div>
+            );
+          });
         })()}
       </div>
 

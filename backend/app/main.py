@@ -916,9 +916,11 @@ async def decide_approval(
         try:
             applied = await canonical.apply(db, row, project)
         except canonical.CanonicalWriteError as exc:
-            # The decision stands recorded; the apply failure is the caller's
-            # to see (e.g. root unbound since proposal).
-            await db.commit()
+            # Approval and apply land together or not at all: an approval that
+            # applied nothing would carry no commit and no decision evidence.
+            # Roll the settle back so the proposal stays pending — fix the cause
+            # (rebind the root, fix permissions) and decide again, or deny.
+            await db.rollback()
             raise HTTPException(status_code=409, detail=str(exc)) from None
     await db.commit()
     await db.refresh(row)

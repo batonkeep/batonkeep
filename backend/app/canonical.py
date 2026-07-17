@@ -126,9 +126,16 @@ async def apply(db: AsyncSession, approval: Approval, project: Project) -> dict:
     except ManifestError as exc:
         raise CanonicalWriteError(str(exc)) from None
 
-    os.makedirs(os.path.dirname(abs_path) or project.root_path, exist_ok=True)
-    with open(abs_path, "w", encoding="utf-8") as f:
-        f.write(content)
+    try:
+        os.makedirs(os.path.dirname(abs_path) or project.root_path, exist_ok=True)
+        with open(abs_path, "w", encoding="utf-8") as f:
+            f.write(content)
+    except OSError as exc:
+        # Unwritable root (e.g. a root-owned host mount) — a recoverable operator
+        # problem, not a crash.
+        raise CanonicalWriteError(
+            f"context root not writable by the backend: {rel}: {exc.strerror or exc}"
+        ) from None
 
     commit_sha: str | None = None
     if os.path.isdir(os.path.join(project.root_path, ".git")):

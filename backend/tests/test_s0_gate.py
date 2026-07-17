@@ -218,6 +218,43 @@ def test_fixture_projects_run_identical_engine_paths(client, tmp_path, shape):
     assert [e["kind"] for e in evidence] == ["decision"]
 
 
+def test_unwritable_root_approve_is_409_and_proposal_survives(client, tmp_path):
+    """An approve whose apply cannot write the context root (e.g. a root-owned
+    host mount) is a clean 409, not a 500 — and the settle rolls back with it:
+    the proposal stays pending (an approval that applied nothing would carry no
+    commit and no decision evidence), the root stays untouched, and the same
+    proposal approves cleanly once the cause is fixed."""
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("permission checks are void when running as root")
+    root = make_generic_root(tmp_path)
+    pid = client.post("/api/projects", json={"name": "perm", "root_path": root}).json()["id"]
+
+    target = os.path.join(root, "README.md")
+    original = open(target).read()
+    proposal = client.post(
+        f"/api/projects/{pid}/context/propose",
+        json={"rel_path": "README.md", "content": original + "approved line\n"},
+    ).json()
+
+    os.chmod(target, 0o444)
+    try:
+        decided = client.post(
+            f"/api/approvals/{proposal['id']}/decide", json={"approved": True}
+        )
+        assert decided.status_code == 409, decided.text
+        assert "not writable" in decided.json()["detail"]
+        assert open(target).read() == original
+        pending = client.get(f"/api/approvals?status=pending&project_id={pid}").json()
+        assert [a["id"] for a in pending] == [proposal["id"]]
+    finally:
+        os.chmod(target, 0o644)
+
+    decided = client.post(f"/api/approvals/{proposal['id']}/decide", json={"approved": True})
+    assert decided.status_code == 200, decided.text
+    assert decided.json()["applied"]["commit"]
+    assert open(target).read() == original + "approved line\n"
+
+
 def test_engine_source_has_no_estate_branching():
     """The grep-gate (runs in CI as part of this suite): engine code contains
     no estate-specific vocabulary and never branches on a project's `kind`.

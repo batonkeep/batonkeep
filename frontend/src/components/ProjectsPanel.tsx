@@ -16,6 +16,8 @@ import {
   Plus,
   RefreshCw,
 } from "lucide-react";
+import { marked } from "marked";
+import DOMPurify from "dompurify";
 import { api } from "../api";
 import type {
   Approval,
@@ -64,6 +66,16 @@ function fmtBytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+// Text evidence (reports, diffs, logs) opens in a viewer modal; only unknown/binary
+// extensions fall back to the raw link alone.
+function evidenceViewKind(relPath: string): "markdown" | "diff" | "text" | null {
+  const name = relPath.toLowerCase();
+  if (/\.(md|markdown)$/.test(name)) return "markdown";
+  if (/\.(diff|patch)$/.test(name)) return "diff";
+  if (/\.(txt|log|json|ya?ml|csv)$/.test(name)) return "text";
+  return null;
+}
+
 // Unified-diff viewer: hunk-colored lines in a scrollable pre.
 function DiffView({ diff }: { diff: string }) {
   return (
@@ -101,6 +113,31 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
   const [evidence, setEvidence] = useState<Evidence[]>([]);
   const [approvals, setApprovals] = useState<Approval[]>([]);
   const [error, setError] = useState<string | null>(null);
+
+  // ── Evidence viewer modal ────────────────────────────────────────────────────
+  const [viewing, setViewing] = useState<Evidence | null>(null);
+  const [viewText, setViewText] = useState<string | null>(null);
+
+  const openEvidence = async (e: Evidence) => {
+    setViewing(e);
+    setViewText(null);
+    try {
+      const res = await fetch(api.evidenceRawUrl(e.id));
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setViewText(await res.text());
+    } catch (err) {
+      setViewText(`Failed to load evidence: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  const viewHtml = useMemo(() => {
+    if (!viewing || viewText == null) return "";
+    if (evidenceViewKind(viewing.rel_path) !== "markdown") return "";
+    // Evidence may echo model-generated or scraped content; marked does NOT
+    // sanitize, so strip injection vectors before dangerouslySetInnerHTML
+    // (same rule as run reports).
+    return DOMPurify.sanitize(marked.parse(viewText, { async: false }) as string);
+  }, [viewing, viewText]);
 
   const loadDetail = useCallback(() => {
     if (!selectedId) return;
@@ -692,34 +729,86 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
               </p>
             </div>
           )}
-          {evidence.map((e) => (
-            <div
-              key={e.id}
-              className="flex flex-wrap items-center gap-2 rounded-lg border border-edge bg-panel/60 px-3 py-2"
-            >
-              <Badge tone={EVIDENCE_TONE[e.kind] ?? "neutral"}>{e.kind}</Badge>
-              <span className="min-w-0 flex-1 truncate font-mono text-sm text-ink">
-                {e.rel_path.split("/").pop()}
-              </span>
-              {e.work_item_id != null && (
-                <span className="font-mono text-[11px] text-muted">work #{e.work_item_id}</span>
-              )}
-              <span className="font-mono text-[11px] text-muted">
-                {e.producer} · {fmtBytes(e.bytes)} · {fmtTime(e.created_at)}
+          {evidence.map((e) => {
+            const viewable = evidenceViewKind(e.rel_path) != null;
+            return (
+              <div
+                key={e.id}
+                onClick={viewable ? () => openEvidence(e) : undefined}
+                title={viewable ? "View evidence" : undefined}
+                className={
+                  "flex flex-wrap items-center gap-2 rounded-lg border border-edge bg-panel/60 px-3 py-2" +
+                  (viewable ? " cursor-pointer transition-colors hover:border-brand/40" : "")
+                }
+              >
+                <Badge tone={EVIDENCE_TONE[e.kind] ?? "neutral"}>{e.kind}</Badge>
+                <span className="min-w-0 flex-1 truncate font-mono text-sm text-ink">
+                  {e.rel_path.split("/").pop()}
+                </span>
+                {e.work_item_id != null && (
+                  <span className="font-mono text-[11px] text-muted">work #{e.work_item_id}</span>
+                )}
+                <span className="font-mono text-[11px] text-muted">
+                  {e.producer} · {fmtBytes(e.bytes)} · {fmtTime(e.created_at)}
+                </span>
+                <a
+                  href={api.evidenceRawUrl(e.id)}
+                  target="_blank"
+                  rel="noreferrer"
+                  onClick={(ev) => ev.stopPropagation()}
+                  className="flex items-center gap-1 font-mono text-[11px] text-brand hover:opacity-80"
+                  title="Open the raw evidence file"
+                >
+                  <ExternalLink size={12} /> raw
+                </a>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Evidence viewer: markdown rendered, diffs colorized, other text as-is. */}
+      <Modal
+        open={viewing != null}
+        onClose={() => {
+          setViewing(null);
+          setViewText(null);
+        }}
+        title={viewing?.rel_path.split("/").pop()}
+        size="max-w-2xl"
+      >
+        {viewing && (
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge tone={EVIDENCE_TONE[viewing.kind] ?? "neutral"}>{viewing.kind}</Badge>
+              <span className="min-w-0 flex-1 font-mono text-[11px] text-muted">
+                {viewing.producer} · {fmtBytes(viewing.bytes)} · {fmtTime(viewing.created_at)}
+                {viewing.digest ? ` · sha256 ${viewing.digest.slice(0, 12)}` : ""}
               </span>
               <a
-                href={api.evidenceRawUrl(e.id)}
+                href={api.evidenceRawUrl(viewing.id)}
                 target="_blank"
                 rel="noreferrer"
                 className="flex items-center gap-1 font-mono text-[11px] text-brand hover:opacity-80"
-                title="Open the evidence file"
+                title="Open the raw evidence file"
               >
-                <ExternalLink size={12} /> open
+                <ExternalLink size={12} /> raw
               </a>
             </div>
-          ))}
-        </div>
-      )}
+            {viewText == null ? (
+              <p className="font-mono text-xs text-muted">Loading…</p>
+            ) : evidenceViewKind(viewing.rel_path) === "markdown" ? (
+              <div className="markdown" dangerouslySetInnerHTML={{ __html: viewHtml }} />
+            ) : evidenceViewKind(viewing.rel_path) === "diff" ? (
+              <DiffView diff={viewText} />
+            ) : (
+              <pre className="overflow-auto whitespace-pre-wrap rounded-lg border border-edge bg-base/60 p-3 font-mono text-[11px] leading-relaxed">
+                {viewText}
+              </pre>
+            )}
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

@@ -30,7 +30,8 @@ dependencies = [
     # mcp 1.27 needs pydantic>=2.11 (hence the 2.10.3→2.13.4 bump). fastapi 0.137.1
     # drops starlette's upper cap (>=0.46), so we pin starlette==1.3.1 directly to
     # clear the Dependabot starlette CVE cluster; mcp needs only starlette>=0.27.
-    "mcp==1.27.2",
+    # 1.28.1 clears GHSA WebSocket-transport Host/Origin validation advisory.
+    "mcp==1.28.1",
     # 2026.6.4 relaxes the old httpx<0.28 pin (modelcontextprotocol/servers#3287);
     # resolves with starlette 1.3.1 / uvicorn 0.32.1.
     # Runs SSRF-fenced behind sandbox.wrap() (see mcp_provider.py).

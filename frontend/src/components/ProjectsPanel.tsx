@@ -168,21 +168,30 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
   const [showCreate, setShowCreate] = useState(false);
   const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState<ProjectInput>({ name: "", kind: "general", sensitivity: "normal" });
+  // S0.4: how the project gets its context root. "managed" (default — server
+  // creates one on the data volume) kills the bring-your-own-directory cliff;
+  // "path" keeps bind-mounted knowledge repos; "none" defers the choice.
+  const [rootMode, setRootMode] = useState<"managed" | "path" | "none">("managed");
 
   const handleCreateProject = async () => {
     if (!draft.name.trim()) return setError("Project name is required.");
+    if (rootMode === "path" && !draft.root_path?.trim()) {
+      return setError("Context root path is required (or pick a managed root).");
+    }
     setCreating(true);
     setError(null);
     try {
       const p = await api.createProject({
         ...draft,
         name: draft.name.trim(),
-        root_path: draft.root_path?.trim() || null,
+        root_path: rootMode === "path" ? draft.root_path?.trim() || null : null,
+        create_root: rootMode === "managed",
         description: draft.description?.trim() || null,
       });
       onProjectsChanged();
       setShowCreate(false);
       setDraft({ name: "", kind: "general", sensitivity: "normal" });
+      setRootMode("managed");
       setSelectedId(p.id);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Create failed.");
@@ -366,16 +375,34 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
                 </Field>
               </div>
               <Field
-                label="Context root (optional)"
-                hint="Server-side directory holding the project's canonical context (docs, manifest). Writes to it always go through approval."
+                label="Context root"
+                hint={
+                  rootMode === "managed"
+                    ? "The server creates the root on the data volume, git-init'd with a starter batonkeep.yaml — backups already cover it."
+                    : rootMode === "path"
+                      ? "A directory the backend can already reach — e.g. a bind-mounted knowledge repo. Writes to it always go through approval."
+                      : "No canonical context for now; you can point the project at a root later."
+                }
               >
-                <Input
-                  className="font-mono"
-                  value={draft.root_path ?? ""}
-                  onChange={(e) => setDraft({ ...draft, root_path: e.target.value })}
-                  placeholder="/data/projects/homelab"
-                />
+                <Select
+                  value={rootMode}
+                  onChange={(e) => setRootMode(e.target.value as typeof rootMode)}
+                >
+                  <option value="managed">Create a managed root (recommended)</option>
+                  <option value="path">Use an existing server path</option>
+                  <option value="none">None for now</option>
+                </Select>
               </Field>
+              {rootMode === "path" && (
+                <Field label="Server path">
+                  <Input
+                    className="font-mono"
+                    value={draft.root_path ?? ""}
+                    onChange={(e) => setDraft({ ...draft, root_path: e.target.value })}
+                    placeholder="/data/projects/homelab"
+                  />
+                </Field>
+              )}
               <Field label="Description">
                 <Input
                   value={draft.description ?? ""}

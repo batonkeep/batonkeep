@@ -7,7 +7,7 @@ import json
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 # P-0046 code-exec execution policies (single source of truth: code_exec.POLICIES).
 from app.providers.tools.code_exec import POLICIES as EXEC_POLICIES
@@ -77,6 +77,10 @@ class ProjectCreate(BaseModel):
     kind: str = "general"
     sensitivity: str = "normal"
     root_path: str | None = None
+    # S0.4: ask the server to create a managed context root under the data volume
+    # (projects/<id>/context, git-init'd with a starter manifest) instead of
+    # naming a pre-existing directory. Mutually exclusive with root_path.
+    create_root: bool = False
     description: str | None = None
 
     @field_validator("sensitivity")
@@ -85,6 +89,12 @@ class ProjectCreate(BaseModel):
         if v not in {"normal", "confidential"}:
             raise ValueError("sensitivity must be 'normal' or 'confidential'")
         return v
+
+    @model_validator(mode="after")
+    def _root_choice(self) -> ProjectCreate:
+        if self.create_root and self.root_path:
+            raise ValueError("create_root and root_path are mutually exclusive")
+        return self
 
 
 class ProjectOut(BaseModel):

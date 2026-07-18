@@ -635,6 +635,9 @@ export interface ProjectInput {
   kind?: string;
   sensitivity?: string;
   root_path?: string | null;
+  // S0.4: ask the server to create a managed context root (projects/<id>/context
+  // on the data volume, git-init'd with a starter manifest). Exclusive with root_path.
+  create_root?: boolean;
   description?: string | null;
 }
 

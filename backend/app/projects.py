@@ -1,5 +1,5 @@
 """
-projects.py — S0 substrate: default-Project resolution.
+projects.py — S0 substrate: default-Project resolution + managed context roots.
 
 The Project is the durable top-level unit of work; tasks and sessions always
 belong to one. During the staged migration the DB columns stay nullable, so the
@@ -9,14 +9,79 @@ send project_id therefore keep working unchanged.
 """
 from __future__ import annotations
 
+import logging
+import os
+import subprocess
 import uuid
 
+import yaml
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Project, WorkItem
+from app.project_context import MANIFEST_API_VERSION, MANIFEST_KIND
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_PROJECT_NAME = "Personal workspace"
+
+
+def init_managed_root(root: str, name: str, description: str | None) -> None:
+    """Create a server-managed context root (S0.4): the directory, a starter
+    README.md + batonkeep.yaml (bootstrap: README.md), and a git repo with an
+    initial commit. Raises OSError when the base isn't writable — the route maps
+    it to 409, mirroring the canonical-write posture. A missing git binary
+    degrades to an un-versioned root with a warning: projection hashes file
+    content directly, so git here is provenance, not a requirement."""
+    os.makedirs(root, exist_ok=True)
+
+    readme = os.path.join(root, "README.md")
+    if not os.path.exists(readme):
+        body = f"# {name}\n"
+        if description:
+            body += f"\n{description}\n"
+        body += (
+            "\nCanonical context root for this Batonkeep project. Files declared in\n"
+            "`batonkeep.yaml` are projected read-only into every run's workspace;\n"
+            "agent edits come back as proposals and land here only on approval.\n"
+        )
+        with open(readme, "w", encoding="utf-8") as f:
+            f.write(body)
+
+    manifest = os.path.join(root, "batonkeep.yaml")
+    if not os.path.exists(manifest):
+        doc: dict = {
+            "apiVersion": MANIFEST_API_VERSION,
+            "kind": MANIFEST_KIND,
+            "name": name,
+        }
+        if description:
+            doc["description"] = description
+        doc["context"] = {"bootstrap": ["README.md"]}
+        with open(manifest, "w", encoding="utf-8") as f:
+            yaml.safe_dump(doc, f, sort_keys=False, allow_unicode=True)
+
+    if not os.path.isdir(os.path.join(root, ".git")):
+        try:
+            subprocess.run(
+                ["git", "init", "-q", root],
+                capture_output=True, text=True, timeout=15, check=True,
+            )
+            subprocess.run(
+                ["git", "-C", root, "add", "-A"],
+                capture_output=True, text=True, timeout=15, check=True,
+            )
+            subprocess.run(
+                ["git", "-C", root,
+                 # Committer identity inline — a host/container without a global
+                 # git identity must not fail root creation.
+                 "-c", "user.name=batonkeep", "-c", "user.email=noreply@batonkeep.local",
+                 "commit", "-q", "-m", "init: managed context root",
+                 "--author", "batonkeep <noreply@batonkeep.local>"],
+                capture_output=True, text=True, timeout=15, check=True,
+            )
+        except (subprocess.SubprocessError, OSError) as exc:
+            logger.warning("managed context root created but git init failed: %s", exc)
 
 
 async def get_or_create_default_project(db: AsyncSession, owner_id: str) -> Project:

@@ -55,6 +55,7 @@ from app.models import (
 )
 from app.projects import (
     get_or_create_default_project,
+    init_managed_root,
     resolve_project_id,
     resolve_work_item_id,
 )
@@ -433,16 +434,39 @@ async def create_project(
 ):
     import uuid
 
+    from app import project_context
+
+    name = body.name.strip()[:256]
+    project_id = uuid.uuid4().hex
+    root_path = body.root_path
+    if body.create_root:
+        # S0.4: server-managed root under the data volume — filesystem work runs
+        # before the row exists, so a failure leaves nothing half-created.
+        root_path = os.path.join(settings.projects_dir, project_id, "context")
+        try:
+            init_managed_root(root_path, name, body.description)
+        except OSError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=f"projects dir not writable by the backend: {exc.strerror or exc}",
+            ) from None
+
     project = Project(
-        id=uuid.uuid4().hex,
+        id=project_id,
         owner_id=owner_id,
-        name=body.name.strip()[:256],
+        name=name,
         kind=body.kind,
         sensitivity=body.sensitivity,
-        root_path=body.root_path,
+        root_path=root_path,
         description=body.description,
     )
     db.add(project)
+    if body.create_root:
+        # The starter manifest declares README.md — import it now so the new
+        # project's Context tab starts populated, not empty.
+        await db.flush()
+        await project_context.sync_sources_from_manifest(db, project)
+        await project_context.refresh_sources(db, project)
     await db.commit()
     await db.refresh(project)
     return ProjectOut.model_validate(project)

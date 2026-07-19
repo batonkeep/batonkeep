@@ -149,6 +149,32 @@ make pull && make up          # or: docker compose pull && docker compose up -d
 
 Back up your volumes before a major upgrade — see **Data & backups** below.
 
+## Project context roots
+
+A Project can have a **context root** — a server-side directory of canonical docs
+(runbooks, decision records, a `batonkeep.yaml` manifest) that is projected read-only into
+every run's workspace. Agent edits to it come back as proposals and only land after your
+approval. Two ways to get one:
+
+- **Managed (default):** pick *“Create a managed root”* when creating the project. The
+  server creates `/data/projects/<project-id>/context` on the `appdata` volume, git-init'd
+  with a starter `README.md` + `batonkeep.yaml`. Nothing to mount, and the backup script
+  below already covers it.
+- **Bring your own:** point the project at any directory the backend container can reach —
+  typically an existing knowledge repo bind-mounted into the backend service:
+
+  ```yaml
+  # docker-compose.override.yml
+  services:
+    backend:
+      volumes:
+        - /srv/homelab-docs:/context/homelab
+  ```
+
+  Then set the project's context root to `/context/homelab`. The mount must be writable
+  by the backend user (uid 1001) for approved writes to land — on a read-only mount,
+  Approve fails cleanly with a 409 and the proposal stays pending.
+
 ## Data & backups
 
 All of your state lives in two Docker named volumes. **If you lose them, it is gone — there

@@ -290,3 +290,72 @@ async def test_run_inherits_task_project(tmp_path):
     finally:
         orch_mod.AsyncSessionLocal = orig
         await engine.dispose()
+
+
+# ── Managed context roots (S0.4) ─────────────────────────────────────────────
+
+def test_create_project_with_managed_root(client, tmp_path, monkeypatch):
+    """create_root builds projects/<id>/context on the data volume — git-init'd,
+    starter README + manifest, and the bootstrap source imported immediately."""
+    import os
+    import subprocess
+
+    import app.main as main
+
+    monkeypatch.setattr(main.settings, "projects_dir", str(tmp_path / "proots"))
+
+    p = client.post(
+        "/api/projects",
+        json={"name": "Homelab", "create_root": True, "description": "Estate docs"},
+    ).json()
+    root = p["root_path"]
+    assert root == str(tmp_path / "proots" / p["id"] / "context")
+    assert os.path.isfile(os.path.join(root, "batonkeep.yaml"))
+    with open(os.path.join(root, "README.md"), encoding="utf-8") as f:
+        readme = f.read()
+    assert readme.startswith("# Homelab")
+    assert "Estate docs" in readme
+
+    out = subprocess.run(
+        ["git", "-C", root, "log", "--oneline"], capture_output=True, text=True
+    )
+    assert out.returncode == 0
+    assert "managed context root" in out.stdout
+
+    # The starter manifest declares README.md; it shows up as a hashed bootstrap
+    # source without a separate import call.
+    sources = client.get(f"/api/projects/{p['id']}/context-sources").json()
+    assert [s["rel_path"] for s in sources] == ["README.md"]
+    assert sources[0]["bootstrap_order"] == 1
+    assert sources[0]["last_revision"]
+
+
+def test_create_project_root_choice_is_exclusive(client):
+    resp = client.post(
+        "/api/projects",
+        json={"name": "X", "create_root": True, "root_path": "/somewhere"},
+    )
+    assert resp.status_code == 422
+
+
+def test_create_project_managed_root_unwritable_is_409(client, tmp_path, monkeypatch):
+    """A base the backend can't write turns into a clean 409 with nothing
+    half-created — same posture as canonical writes on an unwritable root."""
+    import os
+
+    import app.main as main
+
+    if os.geteuid() == 0:
+        pytest.skip("root ignores permission bits; the write would succeed")
+
+    base = tmp_path / "ro"
+    base.mkdir()
+    base.chmod(0o555)
+    monkeypatch.setattr(main.settings, "projects_dir", str(base))
+    try:
+        resp = client.post("/api/projects", json={"name": "X", "create_root": True})
+        assert resp.status_code == 409
+        assert "not writable" in resp.json()["detail"]
+        assert all(pr["name"] != "X" for pr in client.get("/api/projects").json())
+    finally:
+        base.chmod(0o755)

@@ -9,7 +9,7 @@ import DOMPurify from "dompurify";
 import hljs from "highlight.js/lib/common";
 import "highlight.js/styles/github-dark.css";
 import { Activity, Archive, Check, ChevronDown, ChevronLeft, ChevronRight, Cloud, Copy, Download, FileCode, Folder, FolderKanban, Globe, History, Link2, Loader2, Lock, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, Shield, Square, SquareTerminal, Trash2, X } from "lucide-react";
-import type { CloudflareStatus, ContextSource, ExecPolicy, FileChange, FileEntry, ImageModel, Project, ProviderCatalog, ProviderHealth, Publish, Session, SessionTemplate, SessionTurn, Version } from "../types";
+import type { CloudflareStatus, ContextSource, ExecPolicy, FileChange, FileEntry, ImageModel, Project, ProviderCatalog, ProviderHealth, Publish, Session, SessionTemplate, SessionTurn, Version, WorkItem } from "../types";
 import { api } from "../api";
 import { useSessionEvents, type SessionEvent } from "../useLiveFeed";
 import { fmtTime } from "../format";
@@ -517,6 +517,10 @@ export default function SessionView({
   const [confidentialDraft, setConfidentialDraft] = useState(false); // new-session local-only pin
   // S0 substrate: Project for the next new session ("" = the owner default).
   const [projectDraft, setProjectDraft] = useState("");
+  // S0.4: optional WorkItem link for the next new session ("" = none). Linking is
+  // what puts WORKITEM.md in the agent's workspace; fixed at creation like the project.
+  const [workItemDraft, setWorkItemDraft] = useState("");
+  const [draftItems, setDraftItems] = useState<WorkItem[]>([]);
   const [previewNonce, setPreviewNonce] = useState(0);
   const [rawOpen, setRawOpen] = useState(false);
   // Activity log defaults open: long agentic turns need continuous feedback, not
@@ -766,6 +770,30 @@ export default function SessionView({
     api.listImageModels().then(setImageModels).catch(() => { });
   }, []);
 
+  // S0.4: the effective Project for the new-session form (the select shows the
+  // owner default when nothing is picked), and its open work items for the
+  // optional work-item link. Reloaded when the picked project changes.
+  const draftProjectId = projectDraft || (projects.find((p) => p.is_default)?.id ?? "");
+  useEffect(() => {
+    setWorkItemDraft("");
+    if (selectedId || !draftProjectId) {
+      setDraftItems([]);
+      return;
+    }
+    let cancelled = false;
+    api
+      .listWorkItems(draftProjectId)
+      .then((items) => {
+        if (!cancelled) setDraftItems(items.filter((w) => w.state !== "done" && w.state !== "dropped"));
+      })
+      .catch(() => {
+        if (!cancelled) setDraftItems([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedId, draftProjectId]);
+
   const handleCreate = async (template?: string) => {
     setCreating(true);
     // Write the template intent before onSelect triggers the selectedId useEffect.
@@ -776,6 +804,7 @@ export default function SessionView({
         confidential: confidentialDraft,
         // "" = let the backend resolve the owner's default project.
         project_id: projectDraft || null,
+        work_item_id: workItemDraft ? Number(workItemDraft) : null,
       });
       onSessionsChanged();
       onSelect(s.id);
@@ -1525,23 +1554,45 @@ export default function SessionView({
                 </button>
               ))}
             </div>
-            {/* S0 substrate: which Project the new session lands in (default preselected). */}
+            {/* S0 substrate: which Project the new session lands in (default preselected),
+                and (S0.4) an optional WorkItem link — what puts WORKITEM.md in the agent's
+                workspace. Both are fixed once the session is created. */}
             {projects.length > 0 && (
-              <label className="flex items-center gap-2 text-xs text-muted">
-                <span className="font-mono text-[11px] uppercase tracking-wider">Project</span>
-                <select
-                  value={projectDraft || (projects.find((p) => p.is_default)?.id ?? "")}
-                  onChange={(e) => setProjectDraft(e.target.value)}
-                  className="rounded-md border border-edge bg-base px-2 py-1 font-mono text-xs text-ink outline-none focus:border-brand/60"
-                  aria-label="Project for the new session"
-                >
-                  {projects.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}{p.is_default ? " (default)" : ""}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                <label className="flex items-center gap-2 text-xs text-muted">
+                  <span className="font-mono text-[11px] uppercase tracking-wider">Project</span>
+                  <select
+                    value={draftProjectId}
+                    onChange={(e) => setProjectDraft(e.target.value)}
+                    className="rounded-md border border-edge bg-base px-2 py-1 font-mono text-xs text-ink outline-none focus:border-brand/60"
+                    aria-label="Project for the new session"
+                  >
+                    {projects.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}{p.is_default ? " (default)" : ""}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {draftItems.length > 0 && (
+                  <label className="flex items-center gap-2 text-xs text-muted">
+                    <span className="font-mono text-[11px] uppercase tracking-wider">Work item</span>
+                    <select
+                      value={workItemDraft}
+                      onChange={(e) => setWorkItemDraft(e.target.value)}
+                      className="max-w-64 rounded-md border border-edge bg-base px-2 py-1 font-mono text-xs text-ink outline-none focus:border-brand/60"
+                      aria-label="Work item for the new session (optional)"
+                    >
+                      <option value="">none</option>
+                      {draftItems.map((w) => (
+                        <option key={w.id} value={String(w.id)}>
+                          #{w.id} {w.title.length > 48 ? `${w.title.slice(0, 48)}…` : w.title} · {w.state}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+              </div>
             )}
             <label className="flex cursor-pointer items-center gap-2 text-xs text-muted">
               <input

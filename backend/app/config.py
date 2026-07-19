@@ -244,6 +244,11 @@ class Settings(BaseSettings):
     # beyond it are excluded (recorded on the receipt, surfaced not silent) —
     # a mis-declared giant source must not balloon every run's workspace.
     context_projection_max_bytes: int = 10 * 1024 * 1024  # 10 MiB
+    # Base dir for server-managed context roots (S0.4): a project created with
+    # create_root gets <projects_dir>/<project_id>/context, git-init'd with a
+    # starter manifest. Lives on the data volume so backups already cover it.
+    # Bring-your-own root_path (a bind-mounted knowledge repo) stays supported.
+    projects_dir: str = "/data/projects"
 
     # ── Asset upload-in (M1.5, D-0010) ──────────────────────────────────────────
     # Files dropped into the chat land as real workspace files; limits are

@@ -186,11 +186,10 @@ class TestPolicyGate:
 # Helper to drive the D-0016 mode gate without touching the global settings
 # cache: just stub the deployment_mode on the seam's settings handle.
 def _set_mode(monkeypatch, mode: str) -> None:
-    # Settings is a frozen pydantic model; mutate the field in its __dict__ via
-    # setitem so monkeypatch auto-restores it (mirrors the orchestrator tests).
+    # Patch the shared Settings field via monkeypatch (restored on teardown).
     from app.config import DeploymentMode
     from app.providers import cli_interactive as ci
-    monkeypatch.setitem(ci._settings.__dict__, "deployment_mode", DeploymentMode(mode))
+    monkeypatch.setattr(ci._settings, "deployment_mode", DeploymentMode(mode), raising=False)
 
 
 class TestIsAutonomousDriving:

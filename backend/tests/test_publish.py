@@ -56,7 +56,7 @@ class TestPublishBundle:
 
     def test_build_bundle_materializes_assets(self, tmp_path, monkeypatch):
         from app.sessions import publish as pub
-        monkeypatch.setitem(pub._settings.__dict__, "publish_dir", str(tmp_path / "pub"))
+        monkeypatch.setattr(pub._settings, "publish_dir", str(tmp_path / "pub"), raising=False)
         ws_dir = self._make_workspace(tmp_path)
 
         dest = pub.build_bundle(ws_dir, "tok123")
@@ -75,7 +75,7 @@ class TestPublishBundle:
         # workspace root would ship source and exclude dist (D-0029), leaving the
         # shared link blank while the preview (which prefers dist) works.
         from app.sessions import publish as pub
-        monkeypatch.setitem(pub._settings.__dict__, "publish_dir", str(tmp_path / "pub"))
+        monkeypatch.setattr(pub._settings, "publish_dir", str(tmp_path / "pub"), raising=False)
         ws_dir = self._make_workspace(tmp_path)  # root index.html = source template
         os.makedirs(os.path.join(ws_dir, "dist", "assets"))
         with open(os.path.join(ws_dir, "dist", "index.html"), "w") as f:
@@ -120,7 +120,7 @@ class TestPublishBundle:
 
     def test_publish_token_dir_rejects_traversal(self, tmp_path, monkeypatch):
         from app.sessions import publish as pub
-        monkeypatch.setitem(pub._settings.__dict__, "publish_dir", str(tmp_path / "pub"))
+        monkeypatch.setattr(pub._settings, "publish_dir", str(tmp_path / "pub"), raising=False)
         with pytest.raises(ValueError):
             pub.publish_token_dir("../escape")
 
@@ -138,7 +138,7 @@ class TestPublishBundle:
 # ── HTTP: publish / share / revoke / download + owner isolation ───────────────
 
 class TestPublishHTTP:
-    def test_publish_share_revoke_download_and_isolation(self, tmp_path):
+    def test_publish_share_revoke_download_and_isolation(self, tmp_path, monkeypatch):
         import asyncio
         from fastapi.testclient import TestClient
         from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
@@ -148,8 +148,8 @@ class TestPublishHTTP:
         from app.sessions import workspace as ws
         from app.sessions import publish as pub
 
-        ws._settings.__dict__["sessions_dir"] = str(tmp_path / "sessions")
-        pub._settings.__dict__["publish_dir"] = str(tmp_path / "publish")
+        monkeypatch.setattr(ws._settings, "sessions_dir", str(tmp_path / "sessions"), raising=False)
+        monkeypatch.setattr(pub._settings, "publish_dir", str(tmp_path / "publish"), raising=False)
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/p.db", echo=False)
 
         async def _setup():
@@ -237,6 +237,4 @@ class TestPublishHTTP:
             assert c.get("/api/sessions/sb/download").status_code == 404
         finally:
             app.dependency_overrides.clear()
-            ws._settings.__dict__.pop("sessions_dir", None)
-            pub._settings.__dict__.pop("publish_dir", None)
             asyncio.get_event_loop().run_until_complete(engine.dispose())

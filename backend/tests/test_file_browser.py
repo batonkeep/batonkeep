@@ -127,7 +127,7 @@ class TestLinkRewrite:
 class TestFileBrowserHTTP:
     """list + raw-file endpoints, with owner_id isolation (P-0016 b gate)."""
 
-    def test_list_raw_traversal_and_owner_isolation(self, tmp_path):
+    def test_list_raw_traversal_and_owner_isolation(self, tmp_path, monkeypatch):
         import asyncio
         from fastapi.testclient import TestClient
         from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
@@ -135,7 +135,7 @@ class TestFileBrowserHTTP:
         from app.models import Owner, Session as SessionModel
         from app.main import app, _owner_id
 
-        ws._settings.__dict__["sessions_dir"] = str(tmp_path / "sessions")
+        monkeypatch.setattr(ws._settings, "sessions_dir", str(tmp_path / "sessions"), raising=False)
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/fb.db", echo=False)
 
         async def _setup():
@@ -195,7 +195,7 @@ class TestFileBrowserHTTP:
         finally:
             app.dependency_overrides.clear()
 
-    def test_turns_endpoint_rewrites_legacy_file_links(self, tmp_path):
+    def test_turns_endpoint_rewrites_legacy_file_links(self, tmp_path, monkeypatch):
         # A turn persisted BEFORE this feature still has a raw file:// link; the
         # turns endpoint rewrites it on read so the existing session renders fixed.
         import asyncio
@@ -205,7 +205,7 @@ class TestFileBrowserHTTP:
         from app.models import Owner, Session as SessionModel, SessionTurn
         from app.main import app, _owner_id
 
-        ws._settings.__dict__["sessions_dir"] = str(tmp_path / "sessions")
+        monkeypatch.setattr(ws._settings, "sessions_dir", str(tmp_path / "sessions"), raising=False)
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/t.db", echo=False)
 
         async def _setup():

@@ -53,7 +53,7 @@ class TestLoadPolicy:
             "terminal_allow_shell": False,
             "terminal_policy_path": "",
         }.items():
-            s.__dict__[k] = v
+            monkeypatch.setattr(s, k, v, raising=False)
         p = reload_policy()
         assert p.enabled is False
         assert p.allow_shell is False
@@ -68,15 +68,15 @@ class TestLoadPolicy:
             "enabled": True,
         }))
         s = get_settings()
-        s.__dict__["terminal_seam_enabled"] = False  # file flips it on
-        s.__dict__["terminal_allowed_commands"] = "/usage"
-        s.__dict__["terminal_allow_shell"] = False
-        s.__dict__["terminal_policy_path"] = str(pol)
+        monkeypatch.setattr(s, "terminal_seam_enabled", False, raising=False)  # file flips it on
+        monkeypatch.setattr(s, "terminal_allowed_commands", "/usage", raising=False)
+        monkeypatch.setattr(s, "terminal_allow_shell", False, raising=False)
+        monkeypatch.setattr(s, "terminal_policy_path", str(pol), raising=False)
         try:
             p = load_policy()
             assert p.enabled is True
             assert p.allow_shell is True
             assert {"/usage", "/model"} <= p.allowed_commands
         finally:
-            s.__dict__["terminal_policy_path"] = ""
+            monkeypatch.setattr(s, "terminal_policy_path", "", raising=False)
             reload_policy()

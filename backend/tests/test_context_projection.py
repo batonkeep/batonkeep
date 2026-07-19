@@ -422,7 +422,7 @@ async def test_projection_reruns_replace_previous(proj_db, tmp_path):
     assert (wd / "context" / "README.md").is_file()
 
 
-async def test_projection_budget_and_missing_exclusions(proj_db, tmp_path):
+async def test_projection_budget_and_missing_exclusions(proj_db, tmp_path, monkeypatch):
     import app.project_context as pc
 
     root = _make_root(tmp_path)
@@ -435,15 +435,13 @@ async def test_projection_budget_and_missing_exclusions(proj_db, tmp_path):
 
     wd = tmp_path / "wbudget"
     wd.mkdir()
-    old = pc._settings.context_projection_max_bytes
-    pc._settings.__dict__["context_projection_max_bytes"] = 4  # below any source
-    try:
-        async with proj_db() as db:
-            receipt = await project_for_execution(
-                db, owner_id="local", project_id="p1", workdir=str(wd),
-            )
-    finally:
-        pc._settings.__dict__["context_projection_max_bytes"] = old
+    monkeypatch.setattr(
+        pc._settings, "context_projection_max_bytes", 4, raising=False
+    )  # below any source
+    async with proj_db() as db:
+        receipt = await project_for_execution(
+            db, owner_id="local", project_id="p1", workdir=str(wd),
+        )
     reasons = {e["rel_path"]: e["reason"] for e in receipt.exclusions}
     assert reasons["gone.md"] == "missing"
     assert reasons["README.md"] == "budget"
@@ -457,7 +455,7 @@ async def test_projection_without_project_returns_none(proj_db, tmp_path):
         ) is None
 
 
-async def test_run_execution_persists_receipt(proj_db, tmp_path):
+async def test_run_execution_persists_receipt(proj_db, tmp_path, monkeypatch):
     """Task lane end-to-end on the mock executor: the receipt exists and points
     at the run — persisted by the orchestrator before the executor started."""
     import app.orchestrator as orch
@@ -484,8 +482,8 @@ async def test_run_execution_persists_receipt(proj_db, tmp_path):
     orig_get = orch.get_executor
     orch.AsyncSessionLocal = proj_db
     orch.get_executor = lambda iid: CountingExecutor(iid)
-    orch._settings.__dict__["outputs_dir"] = str(tmp_path / "out")
-    orch._settings.__dict__["work_dir"] = str(tmp_path / "workroot")
+    monkeypatch.setattr(orch._settings, "outputs_dir", str(tmp_path / "out"), raising=False)
+    monkeypatch.setattr(orch._settings, "work_dir", str(tmp_path / "workroot"), raising=False)
     try:
         run = await orch.enqueue_run(task_id, trigger="test")
         bg = orch._cancel_handles.get(run.id)

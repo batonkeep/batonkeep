@@ -336,7 +336,7 @@ async def handoff_env(tmp_path, monkeypatch):
         work_item_id = work_item.id
 
     monkeypatch.setattr(orch, "AsyncSessionLocal", Maker)
-    monkeypatch.setitem(ws._settings.__dict__, "sessions_dir", str(tmp_path / "sessions"))
+    monkeypatch.setattr(ws._settings, "sessions_dir", str(tmp_path / "sessions"), raising=False)
 
     async def _noop_broadcast(payload):
         return None

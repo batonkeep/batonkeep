@@ -33,11 +33,11 @@ async def fresh_db(tmp_path):
 
 def _settings_to(monkeypatch, tmp_path):
     """Point work_dir + outputs_dir at the tmp tree (auto-restored by monkeypatch)."""
-    monkeypatch.setitem(task_workspace._settings.__dict__, "work_dir", str(tmp_path / "work"))
-    monkeypatch.setitem(task_workspace._settings.__dict__, "outputs_dir", str(tmp_path / "outputs"))
+    monkeypatch.setattr(task_workspace._settings, "work_dir", str(tmp_path / "work"), raising=False)
+    monkeypatch.setattr(task_workspace._settings, "outputs_dir", str(tmp_path / "outputs"), raising=False)
     # task_assets imports the same cached settings singleton, but set explicitly in
     # case that ever changes.
-    monkeypatch.setitem(task_assets._settings.__dict__, "outputs_dir", str(tmp_path / "outputs"))
+    monkeypatch.setattr(task_assets._settings, "outputs_dir", str(tmp_path / "outputs"), raising=False)
 
 
 def _write(path: str, data: bytes = b"x") -> None:
@@ -156,7 +156,7 @@ async def test_import_referenced_assets_from_agent_home(monkeypatch, tmp_path):
     # Stand in for the sandbox HOME the agent saved into (batond-readable here, so the
     # dev fallback in read_file_as_agent reads it directly — no spawner in tests).
     home = tmp_path / "home"
-    monkeypatch.setitem(task_workspace._settings.__dict__, "sandbox_home", str(home))
+    monkeypatch.setattr(task_workspace._settings, "sandbox_home", str(home), raising=False)
     brain = home / ".gemini" / "antigravity-cli" / "brain" / "abc"
     img = brain / "ai_ecosystem_map_123.jpg"
     _write(str(img), b"\xff\xd8\xffJPEGDATA")
@@ -198,7 +198,7 @@ async def test_read_file_as_agent_large_file_no_deadlock(monkeypatch, tmp_path):
     shim = tmp_path / "spawn_shim.sh"
     shim.write_text("#!/bin/sh\nshift\nexec \"$@\"\n")
     shim.chmod(shim.stat().st_mode | _stat.S_IXUSR | _stat.S_IXGRP | _stat.S_IXOTH)
-    monkeypatch.setitem(sandbox._settings.__dict__, "sandbox_spawn_path", str(shim))
+    monkeypatch.setattr(sandbox._settings, "sandbox_spawn_path", str(shim), raising=False)
     assert sandbox.available()
 
     big = tmp_path / "big.bin"

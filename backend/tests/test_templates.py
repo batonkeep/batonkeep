@@ -33,10 +33,10 @@ class TestTemplateRegistry:
 
 class TestTemplateSeedsBrief:
     @pytest.mark.asyncio
-    async def test_guidance_lands_in_session_md(self, tmp_path):
+    async def test_guidance_lands_in_session_md(self, tmp_path, monkeypatch):
         from app.sessions import workspace as ws
 
-        ws._settings.__dict__["sessions_dir"] = str(tmp_path / "sessions")
+        monkeypatch.setattr(ws._settings, "sessions_dir", str(tmp_path / "sessions"), raising=False)
         try:
             t = tmpl.get_template("summarize")
             root = await ws.create_workspace(
@@ -50,18 +50,15 @@ class TestTemplateSeedsBrief:
             ctx = ws.build_turn_context(root, "go")
             assert "## Task guidance" in ctx
         finally:
-            ws._settings.__dict__.pop("sessions_dir", None)
+            pass  # monkeypatch restores sessions_dir
 
     @pytest.mark.asyncio
-    async def test_no_template_no_guidance_block(self, tmp_path):
+    async def test_no_template_no_guidance_block(self, tmp_path, monkeypatch):
         from app.sessions import workspace as ws
 
-        ws._settings.__dict__["sessions_dir"] = str(tmp_path / "sessions")
-        try:
-            root = await ws.create_workspace("s2", title="Blank", goal="")
-            assert "## Task guidance" not in ws.read_brief(root)
-        finally:
-            ws._settings.__dict__.pop("sessions_dir", None)
+        monkeypatch.setattr(ws._settings, "sessions_dir", str(tmp_path / "sessions"), raising=False)
+        root = await ws.create_workspace("s2", title="Blank", goal="")
+        assert "## Task guidance" not in ws.read_brief(root)
 
 
 class TestTaskTemplateRegistry:
@@ -109,7 +106,7 @@ class TestTaskTemplateHTTP:
 
 
 class TestTemplateHTTP:
-    def test_list_and_create_with_template(self, tmp_path):
+    def test_list_and_create_with_template(self, tmp_path, monkeypatch):
         import asyncio
         from fastapi.testclient import TestClient
         from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
@@ -118,7 +115,7 @@ class TestTemplateHTTP:
         from app.main import app, _owner_id
         from app.sessions import workspace as ws
 
-        ws._settings.__dict__["sessions_dir"] = str(tmp_path / "sessions")
+        monkeypatch.setattr(ws._settings, "sessions_dir", str(tmp_path / "sessions"), raising=False)
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/t.db", echo=False)
 
         async def _setup():
@@ -155,4 +152,3 @@ class TestTemplateHTTP:
             assert c.post("/api/sessions", json={"template": "bogus"}).status_code == 400
         finally:
             app.dependency_overrides.clear()
-            ws._settings.__dict__.pop("sessions_dir", None)

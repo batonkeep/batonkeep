@@ -193,7 +193,7 @@ class TestRoutes:
         from app.main import app, _owner_id
         from app.sessions import workspace as ws, cf_pages as cf
 
-        ws._settings.__dict__["sessions_dir"] = str(tmp_path / "sessions")
+        monkeypatch.setattr(ws._settings, "sessions_dir", str(tmp_path / "sessions"), raising=False)
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/r.db")
 
         async def _setup():

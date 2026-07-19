@@ -113,10 +113,10 @@ class TestCredentials:
             store_credential, get_credential, delete_credential, list_credentials,
         )
         # Force a non-empty secret so Fernet encryption path is exercised.
-        # Settings is a frozen pydantic model — set via __dict__ (as in test_orchestrator).
+        # Save/restore the VALUE — never delete fields off the shared instance.
         settings = get_settings()
         orig_secret = settings.app_secret
-        settings.__dict__["app_secret"] = "test-secret-key"
+        settings.app_secret = "test-secret-key"
         try:
             async with Session() as db:
                 await store_credential(db, "local", "openai", "sk-secret-123")
@@ -136,7 +136,7 @@ class TestCredentials:
                 assert await delete_credential(db, "local", "openai") is True
                 assert await get_credential(db, "local", "openai") is None
         finally:
-            settings.__dict__["app_secret"] = orig_secret
+            settings.app_secret = orig_secret
 
     @pytest.mark.asyncio
     async def test_key_hint_is_last4_and_never_plaintext(self, fresh_db):

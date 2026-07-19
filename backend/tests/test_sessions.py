@@ -22,7 +22,7 @@ class TestWorkspace:
     @pytest.mark.asyncio
     async def test_create_workspace_is_git_initd_with_brief(self, tmp_path, monkeypatch):
         from app.sessions import workspace as ws
-        monkeypatch.setitem(ws._settings.__dict__, "sessions_dir", str(tmp_path))
+        monkeypatch.setattr(ws._settings, "sessions_dir", str(tmp_path), raising=False)
 
         root = await ws.create_workspace("sess1", title="Landing page", goal="ship a site")
 
@@ -35,7 +35,7 @@ class TestWorkspace:
     async def test_record_turn_logs_structured_entry_with_artifacts(self, tmp_path, monkeypatch):
         """D-0017 thread 1: ledger entries are grounded in the turn's artifacts."""
         from app.sessions import workspace as ws
-        monkeypatch.setitem(ws._settings.__dict__, "sessions_dir", str(tmp_path))
+        monkeypatch.setattr(ws._settings, "sessions_dir", str(tmp_path), raising=False)
         root = await ws.create_workspace("led1", title="T", goal="G")
 
         ws.record_turn(
@@ -62,7 +62,7 @@ class TestWorkspace:
         """The brief feeds every prompt + CLI launch file, so the per-turn Activity
         log is capped to a recent tail — old entries drop, a trim marker appears."""
         from app.sessions import workspace as ws
-        monkeypatch.setitem(ws._settings.__dict__, "sessions_dir", str(tmp_path))
+        monkeypatch.setattr(ws._settings, "sessions_dir", str(tmp_path), raising=False)
         root = await ws.create_workspace("led2", title="T", goal="G")
 
         total = ws.ACTIVITY_MAX_ENTRIES + 15
@@ -79,7 +79,7 @@ class TestWorkspace:
     @pytest.mark.asyncio
     async def test_summary_block_upsert_and_read(self, tmp_path, monkeypatch):
         from app.sessions import workspace as ws
-        monkeypatch.setitem(ws._settings.__dict__, "sessions_dir", str(tmp_path))
+        monkeypatch.setattr(ws._settings, "sessions_dir", str(tmp_path), raising=False)
         root = await ws.create_workspace("led2", title="T", goal="G")
 
         assert ws.read_summary(root) == ""                      # placeholder → empty
@@ -104,14 +104,14 @@ class TestWorkspace:
 
     def test_workspace_root_rejects_unsafe_id(self, tmp_path, monkeypatch):
         from app.sessions import workspace as ws
-        monkeypatch.setitem(ws._settings.__dict__, "sessions_dir", str(tmp_path))
+        monkeypatch.setattr(ws._settings, "sessions_dir", str(tmp_path), raising=False)
         with pytest.raises(ValueError):
             ws.workspace_root("../../etc")
 
     @pytest.mark.asyncio
     async def test_turn_context_uses_workspace_not_transcript(self, tmp_path, monkeypatch):
         from app.sessions import workspace as ws
-        monkeypatch.setitem(ws._settings.__dict__, "sessions_dir", str(tmp_path))
+        monkeypatch.setattr(ws._settings, "sessions_dir", str(tmp_path), raising=False)
         root = await ws.create_workspace("sess2", title="T", goal="G")
         ws.record_turn(root, seq=0, provider="grok", summary="built hero section", lane="chat")
 
@@ -126,7 +126,7 @@ class TestWorkspace:
     async def test_turn_context_includes_recent_dialogue(self, tmp_path, monkeypatch):
         # A short follow-up keeps its referent via the replayed dialogue tail.
         from app.sessions import workspace as ws
-        monkeypatch.setitem(ws._settings.__dict__, "sessions_dir", str(tmp_path))
+        monkeypatch.setattr(ws._settings, "sessions_dir", str(tmp_path), raising=False)
         root = await ws.create_workspace("sess3", title="T", goal="G")
 
         ctx = ws.build_turn_context(
@@ -143,7 +143,7 @@ class TestWorkspace:
 # ── Session turn lifecycle (Verify gate) ──────────────────────────────────────
 
 @pytest.fixture
-async def session_env(tmp_path):
+async def session_env(tmp_path, monkeypatch):
     """Fresh DB + patched session orchestrator/workspace pointing at tmp_path."""
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -163,7 +163,7 @@ async def session_env(tmp_path):
 
     orig_local = orch.AsyncSessionLocal
     orch.AsyncSessionLocal = Maker
-    ws._settings.__dict__["sessions_dir"] = str(tmp_path / "sessions")
+    monkeypatch.setattr(ws._settings, "sessions_dir", str(tmp_path / "sessions"), raising=False)
 
     # Capture WS broadcasts.
     broadcasts: list[dict] = []
@@ -183,7 +183,6 @@ async def session_env(tmp_path):
     orch.AsyncSessionLocal = orig_local
     orch.ws_manager.broadcast = orig_broadcast
     orch.get_executor = orig_get_exec
-    ws._settings.__dict__.pop("sessions_dir", None)
     await engine.dispose()
 
 
@@ -611,7 +610,7 @@ class TestWorkspaceVersioning:
     @pytest.mark.asyncio
     async def test_commit_turn_creates_version_with_diff(self, tmp_path, monkeypatch):
         from app.sessions import workspace as ws
-        monkeypatch.setitem(ws._settings.__dict__, "sessions_dir", str(tmp_path))
+        monkeypatch.setattr(ws._settings, "sessions_dir", str(tmp_path), raising=False)
         root = await ws.create_workspace("v1", title="T", goal="G")
 
         with open(os.path.join(root, "index.html"), "w") as f:
@@ -628,7 +627,7 @@ class TestWorkspaceVersioning:
     async def test_commit_turn_surfaces_per_file_artifacts(self, tmp_path, monkeypatch):
         """D-0017 thread 2: the turn result is the per-file artifact list."""
         from app.sessions import workspace as ws
-        monkeypatch.setitem(ws._settings.__dict__, "sessions_dir", str(tmp_path))
+        monkeypatch.setattr(ws._settings, "sessions_dir", str(tmp_path), raising=False)
         root = await ws.create_workspace("vf", title="T", goal="G")
 
         with open(os.path.join(root, "index.html"), "w") as f:
@@ -655,7 +654,7 @@ class TestWorkspaceVersioning:
     @pytest.mark.asyncio
     async def test_commit_turn_noop_when_nothing_changed(self, tmp_path, monkeypatch):
         from app.sessions import workspace as ws
-        monkeypatch.setitem(ws._settings.__dict__, "sessions_dir", str(tmp_path))
+        monkeypatch.setattr(ws._settings, "sessions_dir", str(tmp_path), raising=False)
         root = await ws.create_workspace("v2", title="T", goal="G")
         # No file edits after init → no new version.
         assert await ws.commit_turn(root, seq=0, provider="mock") is None
@@ -663,7 +662,7 @@ class TestWorkspaceVersioning:
     @pytest.mark.asyncio
     async def test_list_versions_newest_first(self, tmp_path, monkeypatch):
         from app.sessions import workspace as ws
-        monkeypatch.setitem(ws._settings.__dict__, "sessions_dir", str(tmp_path))
+        monkeypatch.setattr(ws._settings, "sessions_dir", str(tmp_path), raising=False)
         root = await ws.create_workspace("v3", title="T", goal="G")
         for i in range(2):
             with open(os.path.join(root, "index.html"), "w") as f:
@@ -679,7 +678,7 @@ class TestWorkspaceVersioning:
     @pytest.mark.asyncio
     async def test_restore_version_checks_out_and_recommits(self, tmp_path, monkeypatch):
         from app.sessions import workspace as ws
-        monkeypatch.setitem(ws._settings.__dict__, "sessions_dir", str(tmp_path))
+        monkeypatch.setattr(ws._settings, "sessions_dir", str(tmp_path), raising=False)
         root = await ws.create_workspace("v4", title="T", goal="G")
 
         page = os.path.join(root, "index.html")
@@ -702,7 +701,7 @@ class TestWorkspaceVersioning:
     @pytest.mark.asyncio
     async def test_restore_removes_files_added_after_target(self, tmp_path, monkeypatch):
         from app.sessions import workspace as ws
-        monkeypatch.setitem(ws._settings.__dict__, "sessions_dir", str(tmp_path))
+        monkeypatch.setattr(ws._settings, "sessions_dir", str(tmp_path), raising=False)
         root = await ws.create_workspace("v5", title="T", goal="G")
 
         with open(os.path.join(root, "a.html"), "w") as f:
@@ -719,7 +718,7 @@ class TestWorkspaceVersioning:
     @pytest.mark.asyncio
     async def test_restore_rejects_unknown_or_unsafe_ref(self, tmp_path, monkeypatch):
         from app.sessions import workspace as ws
-        monkeypatch.setitem(ws._settings.__dict__, "sessions_dir", str(tmp_path))
+        monkeypatch.setattr(ws._settings, "sessions_dir", str(tmp_path), raising=False)
         root = await ws.create_workspace("v6", title="T", goal="G")
         assert await ws.restore_version(root, "HEAD~1") is None        # refspec rejected
         assert await ws.restore_version(root, "deadbeef" * 5) is None   # unknown sha
@@ -812,7 +811,7 @@ class TestLedgerSummary:
     def test_pick_summarizer_confidential_is_local_only(self, monkeypatch):
         from app.sessions import ledger
         # A configured remote summarizer must NOT be chosen for a confidential session.
-        monkeypatch.setitem(ledger._settings.__dict__, "ledger_summary_provider", "claude")
+        monkeypatch.setattr(ledger._settings, "ledger_summary_provider", "claude", raising=False)
         monkeypatch.setattr(ledger, "local_candidate_ids", lambda: ["ollama"])
         monkeypatch.setattr(ledger, "get_executor", lambda cid: object())
         assert ledger._pick_summarizer("claude", confidential=True) == "ollama"
@@ -829,7 +828,7 @@ class TestLedgerSummary:
         monkeypatch.setattr(ledger, "get_executor", lambda name: MockExecutor(name=name, latency_ms=1))
 
         # Disabled + not forced → no-op.
-        monkeypatch.setitem(ledger._settings.__dict__, "ledger_summary_enabled", False)
+        monkeypatch.setattr(ledger._settings, "ledger_summary_enabled", False, raising=False)
         assert await ledger.summarize_session("s1", force=False) is None
         assert ws.read_summary(await _ws_root(Maker, "s1")) == ""
 
@@ -865,7 +864,7 @@ async def _ws_root(Maker, session_id):
 class TestVersioningHTTP:
     """versions / diff / restore endpoints + owner_id isolation (M1.3 gate)."""
 
-    def test_versions_diff_restore_and_owner_isolation(self, tmp_path):
+    def test_versions_diff_restore_and_owner_isolation(self, tmp_path, monkeypatch):
         import asyncio
 
         from fastapi.testclient import TestClient
@@ -877,7 +876,7 @@ class TestVersioningHTTP:
         from app.models import Session as SessionModel
         from app.sessions import workspace as ws
 
-        ws._settings.__dict__["sessions_dir"] = str(tmp_path / "sessions")
+        monkeypatch.setattr(ws._settings, "sessions_dir", str(tmp_path / "sessions"), raising=False)
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/v.db", echo=False)
 
         async def _setup():
@@ -942,5 +941,4 @@ class TestVersioningHTTP:
                           json={"commit": first_turn_commit}).status_code == 404
         finally:
             app.dependency_overrides.clear()
-            ws._settings.__dict__.pop("sessions_dir", None)
             asyncio.get_event_loop().run_until_complete(engine.dispose())

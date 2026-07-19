@@ -144,9 +144,16 @@ def _sync_url() -> str:
     return get_settings().database_url.replace("+aiosqlite", "").replace("+asyncpg", "")
 
 
+def _known_revisions(cfg) -> set[str]:
+    """Every alembic revision id this binary's migration scripts know about."""
+    from alembic.script import ScriptDirectory
+
+    return {rev.revision for rev in ScriptDirectory.from_config(cfg).walk_revisions()}
+
+
 def _run_migrations() -> None:
     """Synchronous migration runner (called via asyncio.to_thread from init_db)."""
-    from sqlalchemy import create_engine, inspect
+    from sqlalchemy import create_engine, inspect, text
 
     from alembic import command
 
@@ -159,13 +166,35 @@ def _run_migrations() -> None:
     try:
         with sync_engine.connect() as conn:
             names = set(inspect(conn).get_table_names())
+            stored = (
+                {row[0] for row in conn.execute(text("SELECT version_num FROM alembic_version"))}
+                if "alembic_version" in names
+                else set()
+            )
         app_tables = names - {"alembic_version"}
         if "alembic_version" not in names and app_tables:
             # Legacy pre-alembic DB already at head schema → adopt it in place.
             logger.info("[db] legacy schema (%d tables) — stamping alembic head", len(app_tables))
             command.stamp(cfg, "head")
-        else:
-            command.upgrade(cfg, "head")
+            return
+        unknown = stored - _known_revisions(cfg)
+        if unknown:
+            # The DB was migrated by a newer Batonkeep than this binary. Additive-only
+            # evolution covers JSON payload readers, not schema semantics — an older
+            # binary writing into a newer schema can violate invariants it has never
+            # heard of. Fail closed; the escape hatch is explicit and at-your-own-risk.
+            msg = (
+                f"database is at alembic revision(s) {sorted(unknown)} unknown to this "
+                f"binary — it was migrated by a newer Batonkeep. Refusing to start "
+                f"against a newer schema: upgrade this image, restore the matching "
+                f"backup, or set DB_ALLOW_UNKNOWN_REVISION=1 to run anyway "
+                f"(at your own risk; migrations are skipped)."
+            )
+            if os.environ.get("DB_ALLOW_UNKNOWN_REVISION") == "1":
+                logger.critical("[db] %s (override active — continuing)", msg)
+                return
+            raise RuntimeError(msg)
+        command.upgrade(cfg, "head")
     finally:
         sync_engine.dispose()
 

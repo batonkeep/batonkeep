@@ -68,6 +68,28 @@ def wrap(cmd: list[str]) -> list[str]:
     return [_settings.sandbox_spawn_path, "--", *cmd]
 
 
+def git_trust_env(workdir: str | None) -> dict[str, str]:
+    """Per-process git trust for one agent workspace (mixed-uid workspaces).
+
+    The workspace `.git` is created by the control-plane `batond` user while agent
+    processes run as the `sandbox` user, so every agent `git` invocation trips
+    git's dubious-ownership check (`safe.directory`) — agents then either follow
+    the error's suggestion and mutate their own global gitconfig, or misread the
+    workspace as broken. Scope the exception to exactly this workspace via git's
+    environment-based config (GIT_CONFIG_COUNT/KEY_n/VALUE_n, git ≥ 2.31); never
+    a global `safe.directory=*` off-switch, which would also trust repos planted
+    in shared directories like /tmp.
+    """
+    if not workdir:
+        return {}
+    return {
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "safe.directory",
+        # git compares the repo's real path; a symlinked workdir must not miss.
+        "GIT_CONFIG_VALUE_0": os.path.realpath(workdir),
+    }
+
+
 async def path_exists(path: str) -> bool:
     """Whether `path` exists *from the sandbox user's vantage point*.
 

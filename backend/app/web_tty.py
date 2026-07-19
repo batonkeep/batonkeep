@@ -78,6 +78,13 @@ def build_web_tty_session(session_id: str, instance_id: str) -> PtySession:
     except Exception as exc:  # noqa: BLE001 — seeding is best-effort
         logger.warning("web-tty context seeding failed for %s: %s", instance.id, exc)
 
+    # Per-workspace git trust: the workspace .git belongs to the control-plane
+    # user while the CLI runs as the sandbox user (dubious-ownership fence).
+    # Deliberately NOT applied to the sessionless /tmp console below — /tmp is
+    # world-writable and must stay untrusted.
+    from app import sandbox
+    env.update(sandbox.git_trust_env(workspace))
+
     argv = [pdef.cli_binary]
     logger.info(
         "web-tty session: %s in workspace %s (%s)",

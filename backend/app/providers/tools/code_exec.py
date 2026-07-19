@@ -181,6 +181,9 @@ async def run(
             "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
             "HOME": workdir,
             "PYTHONUNBUFFERED": "1",
+            # Git run from agent code hits the same mixed-uid dubious-ownership
+            # fence as the CLI lanes — trust exactly this workspace.
+            **sandbox.git_trust_env(workdir),
         }
         try:
             proc = await asyncio.create_subprocess_exec(

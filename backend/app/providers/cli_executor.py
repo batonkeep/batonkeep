@@ -544,8 +544,12 @@ class CLIExecutor(Executor):
             # Point this account's CLI at its own config dir so multiple
             # subscriptions of the same provider keep independent auth (Phase B).
             env = None
-            if self._instance and self._instance.cli_config_dir and self._instance.cli_config_env:
+            trust = sandbox.git_trust_env(workdir)
+            if trust:
                 env = os.environ.copy()
+                env.update(trust)
+            if self._instance and self._instance.cli_config_dir and self._instance.cli_config_env:
+                env = env if env is not None else os.environ.copy()
                 env[self._instance.cli_config_env] = self._instance.cli_config_dir
                 yield ExecEvent(
                     kind=EventKind.log,

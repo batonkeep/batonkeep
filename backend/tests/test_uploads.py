@@ -35,7 +35,7 @@ class TestUploadValidation:
     def test_oversize_rejected(self, tmp_path):
         root = str(tmp_path)
         orig = uploads._settings.upload_max_bytes
-        uploads._settings.__dict__["upload_max_bytes"] = 10
+        uploads._settings.upload_max_bytes = 10
         try:
             with pytest.raises(uploads.UploadError) as exc:
                 uploads.save_upload(root, "big.txt", io.BytesIO(b"x" * 50))
@@ -43,7 +43,7 @@ class TestUploadValidation:
             # Partial file cleaned up.
             assert not os.path.exists(os.path.join(root, "data", "big.txt"))
         finally:
-            uploads._settings.__dict__["upload_max_bytes"] = orig
+            uploads._settings.upload_max_bytes = orig
 
     def test_empty_file_rejected(self, tmp_path):
         with pytest.raises(uploads.UploadError) as exc:
@@ -69,7 +69,7 @@ class TestUploadValidation:
 # ── End-to-end through the app (drop → commit → reference → publish) ───────────
 
 class TestUploadHTTP:
-    def test_drop_files_commit_and_isolation(self, tmp_path):
+    def test_drop_files_commit_and_isolation(self, tmp_path, monkeypatch):
         import asyncio
         from fastapi.testclient import TestClient
         from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
@@ -78,7 +78,7 @@ class TestUploadHTTP:
         from app.main import app, _owner_id
         from app.sessions import workspace as ws
 
-        ws._settings.__dict__["sessions_dir"] = str(tmp_path / "sessions")
+        monkeypatch.setattr(ws._settings, "sessions_dir", str(tmp_path / "sessions"), raising=False)
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/u.db", echo=False)
 
         async def _setup():

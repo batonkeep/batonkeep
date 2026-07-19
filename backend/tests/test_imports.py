@@ -160,7 +160,7 @@ class TestGitClone:
 
 
 class TestRoute:
-    def test_import_route_extracts_and_commits(self, tmp_path):
+    def test_import_route_extracts_and_commits(self, tmp_path, monkeypatch):
         import asyncio
         from fastapi.testclient import TestClient
         from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
@@ -169,7 +169,7 @@ class TestRoute:
         from app.main import app, _owner_id
         from app.sessions import workspace as ws
 
-        ws._settings.__dict__["sessions_dir"] = str(tmp_path / "sessions")
+        monkeypatch.setattr(ws._settings, "sessions_dir", str(tmp_path / "sessions"), raising=False)
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/imp.db")
 
         async def _setup():

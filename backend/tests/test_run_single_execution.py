@@ -68,9 +68,11 @@ async def _run_task(Session, tmp_path, routing, emit_result):
     orig_get = orch.get_executor
     orch.AsyncSessionLocal = Session
     orch.get_executor = lambda iid: CountingExecutor(iid, emit_result=emit_result)
-    orch._settings.__dict__["outputs_dir"] = str(tmp_path / "out")
-    orch._settings.__dict__["work_dir"] = str(tmp_path / "work")
-    orch._settings.__dict__["retry_backoff_seconds"] = 0
+    saved = {k: getattr(orch._settings, k)
+             for k in ("outputs_dir", "work_dir", "retry_backoff_seconds")}
+    orch._settings.outputs_dir = str(tmp_path / "out")
+    orch._settings.work_dir = str(tmp_path / "work")
+    orch._settings.retry_backoff_seconds = 0
     try:
         async with Session() as db:
             task = Task(owner_id="local", name="Frontier LLM Comparison",
@@ -94,8 +96,10 @@ async def _run_task(Session, tmp_path, routing, emit_result):
     finally:
         orch.AsyncSessionLocal = orig_sl
         orch.get_executor = orig_get
-        for k in ("outputs_dir", "work_dir", "retry_backoff_seconds"):
-            orch._settings.__dict__.pop(k, None)
+        # Restore VALUES — never pop/delete fields off the shared pydantic
+        # instance (a deleted field breaks every later reader/patcher).
+        for k, v in saved.items():
+            setattr(orch._settings, k, v)
 
 
 @pytest.mark.asyncio

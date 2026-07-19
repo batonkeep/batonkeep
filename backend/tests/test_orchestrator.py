@@ -317,8 +317,9 @@ class TestOrchestratorSmoke:
         orch_mod.AsyncSessionLocal = Session
 
         outputs = str(base_path / "outputs")
-        orch_mod._settings.__dict__["outputs_dir"] = outputs  # bypass frozen pydantic
-        orch_mod._settings.__dict__["work_dir"] = str(base_path / "work")  # P-0022 task workspaces
+        saved = {k: getattr(orch_mod._settings, k) for k in ("outputs_dir", "work_dir")}
+        orch_mod._settings.outputs_dir = outputs
+        orch_mod._settings.work_dir = str(base_path / "work")  # P-0022 task workspaces
 
         try:
             from app.models import Task
@@ -368,10 +369,10 @@ class TestOrchestratorSmoke:
 
         finally:
             orch_mod.AsyncSessionLocal = orig_session_local
-            if "outputs_dir" in orch_mod._settings.__dict__:
-                del orch_mod._settings.__dict__["outputs_dir"]
-            if "work_dir" in orch_mod._settings.__dict__:
-                del orch_mod._settings.__dict__["work_dir"]
+            # Restore VALUES — never delete fields off the shared pydantic
+            # instance (a deleted field breaks every later reader/patcher).
+            for k, v in saved.items():
+                setattr(orch_mod._settings, k, v)
 
     @pytest.mark.asyncio
     async def test_scheduled_run_filters_no_headless_candidate(self, fresh_db, tmp_path, monkeypatch):
@@ -387,10 +388,10 @@ class TestOrchestratorSmoke:
         # monkeypatch.setitem auto-restores frozen-Settings fields (vs. del, which
         # would remove the field entirely and break later tests).
         monkeypatch.setattr(orch_mod, "AsyncSessionLocal", Session)
-        monkeypatch.setitem(orch_mod._settings.__dict__, "outputs_dir", str(base_path / "outputs"))
-        monkeypatch.setitem(orch_mod._settings.__dict__, "work_dir", str(base_path / "work"))
-        monkeypatch.setitem(orch_mod._settings.__dict__, "cron_allow_no_headless_providers", False)
-        monkeypatch.setitem(orch_mod._settings.__dict__, "deployment_mode", DeploymentMode.personal)
+        monkeypatch.setattr(orch_mod._settings, "outputs_dir", str(base_path / "outputs"), raising=False)
+        monkeypatch.setattr(orch_mod._settings, "work_dir", str(base_path / "work"), raising=False)
+        monkeypatch.setattr(orch_mod._settings, "cron_allow_no_headless_providers", False, raising=False)
+        monkeypatch.setattr(orch_mod._settings, "deployment_mode", DeploymentMode.personal, raising=False)
         # No real CLI lacks headless anymore, so simulate one to test the filter.
         monkeypatch.setattr(reg, "_NO_HEADLESS_CLI_TEMPLATES", frozenset({"nohead"}))
 
@@ -451,10 +452,10 @@ class TestOrchestratorSmoke:
         from app.providers.mock import MockExecutor
 
         monkeypatch.setattr(orch_mod, "AsyncSessionLocal", Session)
-        monkeypatch.setitem(orch_mod._settings.__dict__, "outputs_dir", str(base_path / "out"))
-        monkeypatch.setitem(orch_mod._settings.__dict__, "work_dir", str(base_path / "work"))
-        monkeypatch.setitem(orch_mod._settings.__dict__, "max_run_retries", 2)
-        monkeypatch.setitem(orch_mod._settings.__dict__, "retry_backoff_seconds", 0.0)
+        monkeypatch.setattr(orch_mod._settings, "outputs_dir", str(base_path / "out"), raising=False)
+        monkeypatch.setattr(orch_mod._settings, "work_dir", str(base_path / "work"), raising=False)
+        monkeypatch.setattr(orch_mod._settings, "max_run_retries", 2, raising=False)
+        monkeypatch.setattr(orch_mod._settings, "retry_backoff_seconds", 0.0, raising=False)
 
         # First chain run errors; the retry run succeeds.
         calls = {"n": 0}
@@ -498,10 +499,10 @@ class TestOrchestratorSmoke:
         from app.providers.mock import MockExecutor
 
         monkeypatch.setattr(orch_mod, "AsyncSessionLocal", Session)
-        monkeypatch.setitem(orch_mod._settings.__dict__, "outputs_dir", str(base_path / "out"))
-        monkeypatch.setitem(orch_mod._settings.__dict__, "work_dir", str(base_path / "work"))
-        monkeypatch.setitem(orch_mod._settings.__dict__, "max_run_retries", 1)
-        monkeypatch.setitem(orch_mod._settings.__dict__, "retry_backoff_seconds", 0.0)
+        monkeypatch.setattr(orch_mod._settings, "outputs_dir", str(base_path / "out"), raising=False)
+        monkeypatch.setattr(orch_mod._settings, "work_dir", str(base_path / "work"), raising=False)
+        monkeypatch.setattr(orch_mod._settings, "max_run_retries", 1, raising=False)
+        monkeypatch.setattr(orch_mod._settings, "retry_backoff_seconds", 0.0, raising=False)
         monkeypatch.setattr(
             orch_mod, "get_executor", lambda name: MockExecutor(latency_ms=1, simulate_error=True)
         )
@@ -540,10 +541,10 @@ class TestOrchestratorSmoke:
         from app.providers.mock import MockExecutor
 
         monkeypatch.setattr(orch_mod, "AsyncSessionLocal", Session)
-        monkeypatch.setitem(orch_mod._settings.__dict__, "outputs_dir", str(base_path / "out"))
-        monkeypatch.setitem(orch_mod._settings.__dict__, "work_dir", str(base_path / "work"))
+        monkeypatch.setattr(orch_mod._settings, "outputs_dir", str(base_path / "out"), raising=False)
+        monkeypatch.setattr(orch_mod._settings, "work_dir", str(base_path / "work"), raising=False)
         # Global default is generous; the per-task override is what must bite.
-        monkeypatch.setitem(orch_mod._settings.__dict__, "run_timeout_seconds", 1800)
+        monkeypatch.setattr(orch_mod._settings, "run_timeout_seconds", 1800, raising=False)
         # A slow executor whose stream sleeps well past the 1s per-task bound.
         monkeypatch.setattr(
             orch_mod, "get_executor", lambda name: MockExecutor(latency_ms=3000)
@@ -583,7 +584,7 @@ class TestOrchestratorSmoke:
         from app.providers.mock import MockExecutor
 
         monkeypatch.setattr(orch_mod, "AsyncSessionLocal", Session)
-        monkeypatch.setitem(orch_mod._settings.__dict__, "outputs_dir", str(base_path / "out"))
+        monkeypatch.setattr(orch_mod._settings, "outputs_dir", str(base_path / "out"), raising=False)
         # If the guard failed, this executor would run and flip status to succeeded.
         monkeypatch.setattr(orch_mod, "get_executor", lambda name: MockExecutor(latency_ms=1))
 
@@ -656,7 +657,8 @@ class TestOrchestratorSmoke:
         # Patch directly on orchestrator module (from-import binding)
         orig_session_local = orch_mod.AsyncSessionLocal
         orch_mod.AsyncSessionLocal = Session
-        orch_mod._settings.__dict__["outputs_dir"] = str(base_path / "outputs")
+        saved_outputs = orch_mod._settings.outputs_dir
+        orch_mod._settings.outputs_dir = str(base_path / "outputs")
 
         # Pre-cool mock
         quota_tracker.mark_cooldown("mock", datetime.now(timezone.utc) + timedelta(minutes=5))
@@ -702,8 +704,7 @@ class TestOrchestratorSmoke:
 
         finally:
             orch_mod.AsyncSessionLocal = orig_session_local
-            if "outputs_dir" in orch_mod._settings.__dict__:
-                del orch_mod._settings.__dict__["outputs_dir"]
+            orch_mod._settings.outputs_dir = saved_outputs
             quota_tracker.mark_healthy("mock")
 
 
@@ -760,8 +761,9 @@ class TestRoutingDecisionCapture:
 
         orig_session_local = orch_mod.AsyncSessionLocal
         orch_mod.AsyncSessionLocal = Session
-        orch_mod._settings.__dict__["outputs_dir"] = str(base_path / "outputs")
-        orch_mod._settings.__dict__["work_dir"] = str(base_path / "work")
+        saved = {k: getattr(orch_mod._settings, k) for k in ("outputs_dir", "work_dir")}
+        orch_mod._settings.outputs_dir = str(base_path / "outputs")
+        orch_mod._settings.work_dir = str(base_path / "work")
         try:
             async with Session() as db:
                 task = Task(
@@ -809,5 +811,5 @@ class TestRoutingDecisionCapture:
                 assert d.outcome_at is not None
         finally:
             orch_mod.AsyncSessionLocal = orig_session_local
-            for k in ("outputs_dir", "work_dir"):
-                orch_mod._settings.__dict__.pop(k, None)
+            for k, v in saved.items():
+                setattr(orch_mod._settings, k, v)

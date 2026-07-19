@@ -93,7 +93,7 @@ class TestBudgetGate:
         from app.config import get_settings
         from app.cost import over_daily_budget
         settings = get_settings()
-        settings.__dict__["daily_budget_usd"] = 0.0
+        settings.daily_budget_usd = 0.0
         async with fresh_db() as db:
             await _add_run(db, provider="openai-api", cost=999.0)
             assert await over_daily_budget(db, "local") is False
@@ -104,7 +104,7 @@ class TestBudgetGate:
         from app.cost import over_daily_budget, usage_summary
         settings = get_settings()
         orig = settings.daily_budget_usd
-        settings.__dict__["daily_budget_usd"] = 0.50
+        settings.daily_budget_usd = 0.50
         try:
             async with fresh_db() as db:
                 await _add_run(db, provider="openai-api", cost=0.40)
@@ -115,7 +115,7 @@ class TestBudgetGate:
                 assert s["over_budget"] is True
                 assert s["remaining_today_usd"] == 0.0
         finally:
-            settings.__dict__["daily_budget_usd"] = orig
+            settings.daily_budget_usd = orig
 
 
 class TestFreeProvider:

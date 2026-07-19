@@ -302,6 +302,11 @@ class PackageIn(BaseModel):
     """Optional knobs for the session workspace-package capture (S0.5)."""
 
     work_item_id: int | None = None
+    # "Hand this artifact to that work item": append the captured package to the
+    # target work item's pinned-evidence inputs in the same transaction, so the
+    # next operator's workspace materializes it. Also applies when the package
+    # already existed (idempotent capture, pin still lands).
+    pin_to_work_item_id: int | None = None
 
 
 class PackageOut(BaseModel):

@@ -243,14 +243,16 @@ export const api = {
   // Workspace packaging (S0.5): capture the tree at git HEAD as an immutable
   // evidence package (zip + MANIFEST.json). Idempotent per commit; the backend
   // 409s while the workspace has uncommitted changes.
-  packageWorkspace: (id: string, workItemId?: number | null) =>
+  packageWorkspace: (id: string, pinToWorkItemId?: number | null) =>
     req<{
       package: { id: number; rel_path: string };
       manifest: { id: number } | null;
       existing: boolean;
     }>(`/sessions/${id}/package`, {
       method: "POST",
-      body: JSON.stringify({ work_item_id: workItemId ?? null }),
+      // pin_to: "hand this artifact to that work item" — the backend appends
+      // the package to the target's pinned-evidence inputs atomically.
+      body: JSON.stringify({ pin_to_work_item_id: pinToWorkItemId ?? null }),
     }),
   // Import an existing site: a .zip / .tar(.gz/.bz2/.xz) extracted into the
   // workspace root, preserving structure (D-0009 follow-on).

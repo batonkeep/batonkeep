@@ -497,6 +497,9 @@ export default function SessionView({
   // S0.5: workspace → evidence package capture (Files-tab header action).
   const [pkgBusy, setPkgBusy] = useState(false);
   const [pkgMsg, setPkgMsg] = useState<string | null>(null);
+  const [pkgModal, setPkgModal] = useState(false);
+  const [pkgItems, setPkgItems] = useState<WorkItem[]>([]);
+  const [pkgPin, setPkgPin] = useState(""); // work-item id to pin to ("" = none)
   const [detail, setDetail] = useState<Session | null>(null);
   const [turns, setTurns] = useState<SessionTurn[]>([]);
   const [message, setMessage] = useState("");
@@ -689,23 +692,45 @@ export default function SessionView({
   }, [selectedId]);
 
   // S0.5: snapshot the workspace at HEAD into the project's evidence store
-  // (zip + MANIFEST.json). Idempotent per commit — the backend returns the
-  // existing rows when nothing changed; 409 surfaces as the message.
+  // (zip + MANIFEST.json), optionally handing it to a work item in the same
+  // call (the pin materializes into that work item's future workspaces).
+  // Idempotent per commit — the backend returns the existing rows when
+  // nothing changed; 409 surfaces as the message.
+  const openPkgModal = useCallback(() => {
+    if (!selectedId) return;
+    setPkgPin("");
+    setPkgItems([]);
+    setPkgModal(true);
+    const pid = detail?.project_id;
+    if (pid) {
+      api
+        .listWorkItems(pid)
+        .then((items) =>
+          setPkgItems(items.filter((w) => !["done", "dropped"].includes(w.state))),
+        )
+        .catch(() => setPkgItems([]));
+    }
+  }, [selectedId, detail?.project_id]);
+
   const capturePackage = useCallback(() => {
     if (!selectedId || pkgBusy) return;
     setPkgBusy(true);
     setPkgMsg(null);
-    api.packageWorkspace(selectedId)
+    api.packageWorkspace(selectedId, pkgPin ? Number(pkgPin) : null)
       .then((res) =>
         setPkgMsg(
-          res.existing
+          (res.existing
             ? "Already captured for this version"
-            : `Captured as evidence #${res.package.id}`,
+            : `Captured as evidence #${res.package.id}`) +
+            (pkgPin ? " · pinned" : ""),
         ),
       )
       .catch((err: Error) => setPkgMsg(err.message))
-      .finally(() => setPkgBusy(false));
-  }, [selectedId, pkgBusy]);
+      .finally(() => {
+        setPkgBusy(false);
+        setPkgModal(false);
+      });
+  }, [selectedId, pkgBusy, pkgPin]);
 
   // Load the selected session detail (for the preview token) + its turn history.
   useEffect(() => {
@@ -1891,7 +1916,7 @@ export default function SessionView({
                       </span>
                     )}
                     <button
-                      onClick={capturePackage}
+                      onClick={openPkgModal}
                       disabled={pkgBusy}
                       title="Snapshot the workspace at its latest version into the project's evidence (zip + manifest)"
                       className="inline-flex shrink-0 items-center gap-1 rounded-md border border-edge px-2 py-1 text-[11px] text-muted transition hover:text-ink disabled:opacity-50"
@@ -2493,6 +2518,50 @@ export default function SessionView({
           </div>
         )}
       </Card>
+
+      {/* S0.5: capture the workspace as an evidence package, optionally handing
+          it to a work item (the pin materializes into its future workspaces). */}
+      <Modal
+        open={pkgModal}
+        onClose={() => setPkgModal(false)}
+        title="Capture workspace package"
+      >
+        <div className="space-y-3">
+          <p className="text-xs text-muted">
+            Snapshots the workspace at its latest committed version into the project's
+            evidence: a zip with a <span className="font-mono">MANIFEST.json</span> of
+            per-file digests. Idempotent — recapturing an unchanged workspace reuses the
+            existing package.
+          </p>
+          <Field
+            label="Pin to work item (optional)"
+            hint="Hands the package to that work item: its future sessions receive the zip read-only under context/evidence/."
+          >
+            <Select value={pkgPin} onChange={(e) => setPkgPin(e.target.value)}>
+              <option value="">— no pin —</option>
+              {pkgItems.map((w) => (
+                <option key={w.id} value={String(w.id)}>
+                  #{w.id} · {w.title} ({w.state})
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" size="sm" onClick={() => setPkgModal(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={capturePackage}
+              disabled={pkgBusy}
+              icon={pkgBusy ? <Loader2 size={14} className="animate-spin" /> : <Archive size={14} />}
+            >
+              {pkgBusy ? "Capturing…" : "Capture"}
+            </Button>
+          </div>
+        </div>
+      </Modal>
 
       {/* Import an existing site — archive (zip/tar) or a public git URL. */}
       <Modal

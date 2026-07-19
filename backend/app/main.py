@@ -2238,6 +2238,38 @@ async def package_session_workspace(
             )
         )
     ).scalar_one_or_none()
+    async def _pin(package_evidence_id: int) -> None:
+        """Append the package to the target work item's pinned inputs (S0.5:
+        'hand this artifact to that work item'). Validated like the PATCH path:
+        same project, owner-scoped, capped, de-duped."""
+        target_id = body.pin_to_work_item_id if body else None
+        if target_id is None:
+            return
+        target = await db.get(WorkItem, target_id)
+        if (
+            target is None
+            or target.owner_id != owner_id
+            or target.project_id != session.project_id
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=f"pin_to_work_item_id {target_id} not found in this project",
+            )
+        items = list((target.pinned_evidence or {}).get("items", []))
+        if any(i.get("evidence_id") == package_evidence_id for i in items):
+            return
+        if len(items) >= settings.evidence_pin_max:
+            raise HTTPException(
+                status_code=400,
+                detail=f"work item {target_id} already has "
+                       f"{settings.evidence_pin_max} pinned items",
+            )
+        # Reassign (never mutate in place) so the JSON column change is tracked.
+        target.pinned_evidence = {
+            "v": 1,
+            "items": [*items, {"evidence_id": package_evidence_id}],
+        }
+
     if existing is not None:
         manifest_row = (
             await db.execute(
@@ -2248,6 +2280,8 @@ async def package_session_workspace(
                 )
             )
         ).scalar_one_or_none()
+        await _pin(existing.id)
+        await db.commit()
         return PackageOut(package=existing, manifest=manifest_row, existing=True)
 
     work_item_id = (body.work_item_id if body else None) or session.work_item_id
@@ -2282,6 +2316,7 @@ async def package_session_workspace(
         work_item_id=work_item_id,
         session_turn_id=latest_turn,
     )
+    await _pin(package_row.id)
     await db.commit()
     await db.refresh(package_row)
     await db.refresh(manifest_row)

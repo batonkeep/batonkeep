@@ -149,6 +149,11 @@ make pull && make up          # or: docker compose pull && docker compose up -d
 
 Back up your volumes before a major upgrade — see **Data & backups** below.
 
+**Downgrades are not supported.** If the database was migrated by a newer Batonkeep (e.g.
+after rolling an image back), the backend refuses to start rather than write into a schema
+it doesn't understand. Upgrade the image again or restore the matching backup; as a last
+resort, `DB_ALLOW_UNKNOWN_REVISION=1` starts anyway at your own risk (migrations skipped).
+
 ## Project context roots
 
 A Project can have a **context root** — a server-side directory of canonical docs

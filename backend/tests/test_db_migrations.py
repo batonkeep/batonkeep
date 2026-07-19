@@ -79,6 +79,53 @@ async def test_idempotent_second_run_is_noop(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_unknown_newer_revision_refuses_start(tmp_path, monkeypatch):
+    """A DB migrated by a newer binary (alembic revision this binary's scripts don't
+    know) must fail closed at startup — additive-only evolution covers JSON payload
+    readers, not schema semantics, so an older binary must not write a newer schema."""
+    import app.db as db
+
+    path = f"{tmp_path}/newer.db"
+    _use_db(monkeypatch, path)
+    await db.init_db()
+
+    eng = _sync_engine(path)
+    with eng.connect() as conn:
+        conn.execute(text("UPDATE alembic_version SET version_num = 'ffffffffffff'"))
+        conn.commit()
+    eng.dispose()
+
+    with pytest.raises(RuntimeError, match="unknown to this binary"):
+        await db.init_db()
+
+
+@pytest.mark.asyncio
+async def test_unknown_newer_revision_override_skips_migrations(tmp_path, monkeypatch):
+    """DB_ALLOW_UNKNOWN_REVISION=1 is the explicit escape hatch: startup proceeds,
+    migrations are skipped, and the stored (newer) revision is left untouched."""
+    import app.db as db
+
+    path = f"{tmp_path}/newer_override.db"
+    _use_db(monkeypatch, path)
+    await db.init_db()
+
+    eng = _sync_engine(path)
+    with eng.connect() as conn:
+        conn.execute(text("UPDATE alembic_version SET version_num = 'ffffffffffff'"))
+        conn.commit()
+    eng.dispose()
+
+    monkeypatch.setenv("DB_ALLOW_UNKNOWN_REVISION", "1")
+    await db.init_db()  # must not raise
+
+    eng = _sync_engine(path)
+    with eng.connect() as conn:
+        version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
+    assert version == "ffffffffffff"  # untouched — no downgrade/upgrade attempted
+    eng.dispose()
+
+
+@pytest.mark.asyncio
 async def test_legacy_db_is_stamped_not_recreated(tmp_path, monkeypatch):
     """A pre-alembic DB (tables, no alembic_version) is adopted via `stamp`, not re-created.
 

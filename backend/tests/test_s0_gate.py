@@ -435,18 +435,26 @@ async def test_handoff_ledger_is_deterministic_from_db_fields(handoff_env):
         work_item = await db.get(WorkItem, work_item_id)
         # Evidence as it stood when B's projection ran: B's own turn indexes
         # its diff *after* the projection, so exclude rows B's turn produced.
+        # The index is project-wide (S0.5) and rendered sorted by (work item, id).
         evidence_rows = (await db.execute(
             select(Evidence).where(
-                Evidence.work_item_id == work_item_id,
+                Evidence.project_id == work_item.project_id,
                 Evidence.session_turn_id != b_turn_id,
-            ).order_by(Evidence.id)
+            )
         )).scalars().all()
+    evidence_rows.sort(key=lambda e: (e.work_item_id is None, e.work_item_id or 0, e.id))
     rendered = render_ledger(
         project_name="Handoff project",
         work_item=work_item,
         changed_files=[],
         evidence_index=[
-            {"kind": e.kind, "rel_path": e.rel_path, "digest": e.digest}
+            {
+                "evidence_id": e.id,
+                "work_item_id": e.work_item_id,
+                "kind": e.kind,
+                "rel_path": e.rel_path,
+                "digest": e.digest,
+            }
             for e in evidence_rows
         ],
     )

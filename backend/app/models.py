@@ -123,6 +123,12 @@ class WorkItem(Base):
     signal: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # Append-only list of small structured decisions: [{ts, actor, text}].
     decisions: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Operator-curated *inputs* for this work item — evidence a projection
+    # materializes into the workspace so a cold operator has its predecessors'
+    # outputs in hand: {"v": 1, "items": [{"evidence_id", "note"?}]}. Pins live
+    # here (work items are mutable state) so the Evidence table itself stays
+    # append-only with no update path.
+    pinned_evidence: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -207,6 +213,10 @@ class ContextReceipt(Base):
     ledger_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # [{rel_path, reason}] — sensitivity/budget cuts, surfaced not silent.
     exclusions: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # What evidence the actor received (still paths + hashes, never content):
+    # {"v": 1, "index_count", "index_sha", "materialized": [{evidence_id,
+    # rel_path, digest}], "exclusions": [{evidence_id, reason}]}.
+    evidence: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     approx_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     # Provenance stamps: without these, provider-fit comparisons can't
     # distinguish a model regression from a CLI/harness regression. The harness

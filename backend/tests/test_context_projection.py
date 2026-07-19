@@ -366,7 +366,7 @@ async def test_projection_materializes_read_only_and_persists_receipt(proj_db, t
             workdir=str(workdir), run_id=None,
         )
     assert receipt is not None and receipt.id is not None
-    assert receipt.projection_version == "proj-v1"
+    assert receipt.projection_version == "proj-v2"
     assert [s["rel_path"] for s in receipt.sources] == ["README.md", "runbooks"]
     assert all(s["revision"] for s in receipt.sources)
     assert receipt.approx_bytes > 0

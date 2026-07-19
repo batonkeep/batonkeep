@@ -170,6 +170,10 @@ class WorkItemPatch(BaseModel):
     # Appends {ts, actor, text} to the append-only decisions list.
     add_decision: str | None = None
     decision_actor: str = "human"
+    # Replaces the work item's pinned-evidence *inputs* (curated, small — the
+    # projection materializes these into new workspaces). List of evidence ids;
+    # None = untouched, [] = clear all pins.
+    pinned_evidence: list[int] | None = None
 
     @field_validator("risk")
     @classmethod
@@ -201,6 +205,7 @@ class WorkItemOut(BaseModel):
     parent_id: int | None
     signal: dict[str, Any] | None
     decisions: list[Any] | None
+    pinned_evidence: dict[str, Any] | None
     created_at: datetime
     updated_at: datetime
     closed_at: datetime | None

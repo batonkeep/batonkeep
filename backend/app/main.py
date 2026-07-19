@@ -615,6 +615,29 @@ async def update_work_item(
                 "text": body.add_decision,
             },
         ]
+    if body.pinned_evidence is not None:
+        # Pins are curated inputs the projection materializes into new
+        # workspaces — validate hard: real evidence, same project, bounded.
+        ids = list(dict.fromkeys(body.pinned_evidence))  # de-dupe, keep order
+        if len(ids) > settings.evidence_pin_max:
+            raise HTTPException(
+                status_code=400,
+                detail=f"at most {settings.evidence_pin_max} pinned items",
+            )
+        for eid in ids:
+            row = await db.get(Evidence, eid)
+            if (
+                row is None
+                or row.owner_id != owner_id
+                or row.project_id != work_item.project_id
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"evidence {eid} not found in this project",
+                )
+        work_item.pinned_evidence = (
+            {"v": 1, "items": [{"evidence_id": i} for i in ids]} if ids else None
+        )
 
     await db.commit()
     await db.refresh(work_item)

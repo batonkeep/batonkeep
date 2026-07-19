@@ -47,6 +47,21 @@ def _decision_lines(decisions: Sequence[Mapping[str, Any]] | None) -> list[str]:
     return lines or ["- (none)"]
 
 
+def format_evidence_line(e: Mapping[str, Any]) -> str:
+    """One deterministic index line per evidence row. The [WI-n]/[project]
+    prefix + trailing evidence id let a cold operator locate a row's origin and
+    pull it via the API/UI; the same lines are hashed into the receipt's
+    `index_sha`, so this formatting is part of the receipt contract."""
+    wi = e.get("work_item_id")
+    prefix = f"[WI-{wi}]" if wi is not None else "[project]"
+    line = (
+        f"- {prefix} {e.get('kind', '?')}: {e.get('rel_path', '?')} "
+        f"(sha256 {e.get('digest') or '—'})"
+    )
+    eid = e.get("evidence_id")
+    return f"{line} · evidence {eid}" if eid is not None else line
+
+
 def render_ledger(
     *,
     project_name: str,
@@ -54,6 +69,7 @@ def render_ledger(
     changed_files: Sequence[str] = (),
     evidence_index: Sequence[Mapping[str, Any]] = (),
     pending_approvals: Sequence[str] = (),
+    pinned_inputs: Sequence[str] = (),
 ) -> str:
     """Render the working ledger. Pure function of its inputs — same inputs,
     same bytes (see module docstring for what must stay out of here)."""
@@ -83,13 +99,14 @@ def render_ledger(
     out.append("## Changed files")
     out.extend([f"- {f}" for f in changed_files] or ["- (none)"])
     out.append("")
+    # Materialized pinned evidence — the inputs a cold actor should read first;
+    # the paths exist read-only inside this workspace.
+    out.append("## Inputs (pinned evidence)")
+    out.extend([f"- {p}" for p in pinned_inputs] or ["- (none)"])
+    out.append("")
     out.append("## Evidence")
     out.extend(
-        [
-            f"- {e.get('kind', '?')}: {e.get('rel_path', '?')} (sha256 {e.get('digest') or '—'})"
-            for e in evidence_index
-        ]
-        or ["- (none)"]
+        [format_evidence_line(e) for e in evidence_index] or ["- (none)"]
     )
     out.append("")
     out.append("## Next action")

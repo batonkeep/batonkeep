@@ -767,6 +767,60 @@ async def refresh_project_context(
     return [ContextSourceOut.model_validate(s) for s in sources]
 
 
+@app.get(
+    "/api/projects/{project_id}/context-sources/{source_id}/raw", tags=["projects"]
+)
+async def get_context_source_raw(
+    project_id: str,
+    source_id: int,
+    path: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """Serve one declared context source's content read-only (traversal-guarded
+    under the project root). `file` sources serve directly; `dir`/`git` sources
+    take `?path=` naming a file inside the source. This is what makes the
+    Context tab's sources viewable, matching the evidence viewer."""
+    from app.models import ContextSource as CS
+    from app.project_context import ManifestError, _resolve_under_root, _validate_rel
+
+    project = await _get_owned_project(db, owner_id, project_id)
+    source = await db.get(CS, source_id)
+    if source is None or source.project_id != project.id:
+        raise HTTPException(status_code=404, detail="Context source not found")
+    if not project.root_path:
+        raise HTTPException(status_code=404, detail="Project has no context root")
+
+    rel = source.rel_path
+    if path:
+        try:
+            sub = _validate_rel(path)
+        except ManifestError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        rel = os.path.join(source.rel_path, sub) if source.rel_path != "." else sub
+        # The sub-path must stay inside THIS source, not just the root.
+        norm = os.path.normpath(rel)
+        base = os.path.normpath(source.rel_path)
+        if base != "." and norm != base and not norm.startswith(base + os.sep):
+            raise HTTPException(status_code=400, detail="path escapes the source")
+    try:
+        abs_path = _resolve_under_root(project.root_path, rel)
+    except ManifestError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    if os.path.isdir(abs_path):
+        raise HTTPException(
+            status_code=409, detail="source is a directory — pass ?path=<file>"
+        )
+    if not os.path.isfile(abs_path):
+        raise HTTPException(status_code=404, detail="Source file missing")
+    import mimetypes
+    media, _ = mimetypes.guess_type(abs_path)
+    return FileResponse(
+        abs_path, media_type=media or "application/octet-stream",
+        filename=os.path.basename(rel),
+    )
+
+
 # ── Context receipts (S0 substrate) ──────────────────────────────────────────
 
 @app.get("/api/runs/{run_id}/receipt", response_model=ContextReceiptOut, tags=["runs"])
@@ -892,6 +946,7 @@ async def propose_canonical_write(
     try:
         row = await canonical.propose(
             db, project=project, rel_path=body.rel_path, content=body.content,
+            evidence_id=body.evidence_id, digest=body.digest,
             producer=body.producer, work_item_id=body.work_item_id,
         )
     except canonical.CanonicalWriteError as exc:

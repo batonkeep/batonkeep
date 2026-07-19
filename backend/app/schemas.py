@@ -335,10 +335,17 @@ class ApprovalOut(BaseModel):
 
 class CanonicalProposeIn(BaseModel):
     """A proposed write to a project's canonical context root. Never applied
-    directly — it becomes a pending approval carrying the diff."""
+    directly — it becomes a pending approval carrying the diff. Exactly one of
+    `content` (inline, prose-sized) or `evidence_id` (by-reference promotion:
+    the bytes stay in the evidence store, digest-pinned at propose and
+    re-verified at apply)."""
 
     rel_path: str
-    content: str
+    content: str | None = None
+    evidence_id: int | None = None
+    # Optional caller pin for by-reference proposals; must match the stored
+    # evidence digest when given.
+    digest: str | None = None
     producer: str = "human"
     work_item_id: int | None = None
 

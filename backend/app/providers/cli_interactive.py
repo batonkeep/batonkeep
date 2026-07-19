@@ -346,6 +346,7 @@ class CLIInteractiveExecutor(Executor):
         launch = self._build_launch(allow_shell=policy.allow_shell)
 
         env = os.environ.copy()
+        env.update(sandbox.git_trust_env(workdir))
         if self._instance and self._instance.cli_config_dir and self._instance.cli_config_env:
             env[self._instance.cli_config_env] = self._instance.cli_config_dir
         # Force a predictable terminal so the TUI emits a stable escape vocabulary.

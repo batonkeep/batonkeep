@@ -273,6 +273,9 @@ class ContextReceiptOut(BaseModel):
     sources: list[Any] | None
     ledger_sha: str | None
     exclusions: list[Any] | None
+    # What evidence the actor received: index summary + materialized pins +
+    # exclusions ({"v":1,...}) — the audit surface for the evidence loop.
+    evidence: dict[str, Any] | None = None
     approx_bytes: int
     # Provenance stamps: distinguish model regressions from CLI/harness ones.
     harness_version: str | None = None

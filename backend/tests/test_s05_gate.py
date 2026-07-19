@@ -133,6 +133,12 @@ def test_cold_handoff_v2_package_to_next_work_item(env, tmp_path):
     mat = receipt.evidence["materialized"]
     assert [m["evidence_id"] for m in mat] == [pkg["id"]]
 
+    # The evidence payload must survive API serialization (ContextReceiptOut) —
+    # it is the operator-facing audit surface, not a DB-only column.
+    from app.schemas import ContextReceiptOut
+    out = ContextReceiptOut.model_validate(receipt)
+    assert out.evidence and out.evidence["materialized"] == mat
+
     # 3. The materialized zip's embedded manifest digests match the producing
     #    tree byte-for-byte — the artifact is reproducible, not just named.
     zip_path = cold / mat[0]["rel_path"]

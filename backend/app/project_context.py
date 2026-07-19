@@ -34,15 +34,24 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.evidence import evidence_abs_path
 from app.models import ContextReceipt, ContextSource, Evidence, Project, WorkItem
 from app.version import APP_VERSION
-from app.work_ledger import LEDGER_FILENAME, render_ledger, sha256_text
+from app.work_ledger import (
+    LEDGER_FILENAME,
+    format_evidence_line,
+    render_ledger,
+    sha256_text,
+)
 
 logger = logging.getLogger(__name__)
 _settings = get_settings()
 
-PROJECTION_VERSION = "proj-v1"
+PROJECTION_VERSION = "proj-v2"
 CONTEXT_DIRNAME = "context"
+# Where a work item's pinned evidence is materialized inside the projected
+# context dir: <workdir>/context/evidence/<evidence_id>_<basename>.
+EVIDENCE_DIRNAME = "evidence"
 DEFAULT_MANIFEST_REL = "batonkeep.yaml"
 MANIFEST_API_VERSION = "batonkeep.dev/v1alpha1"
 MANIFEST_KIND = "Project"
@@ -475,24 +484,91 @@ async def project_for_execution(
     elif sources:
         exclusions = [{"rel_path": s.rel_path, "reason": "no-root"} for s in sources]
 
-    # Evidence index for the ledger: paths + digests only (never content).
-    evidence_index: list[dict] = []
-    if work_item is not None:
-        ev_result = await db.execute(
-            select(Evidence)
-            .where(Evidence.work_item_id == work_item.id)
-            .order_by(Evidence.id)
-        )
-        evidence_index = [
-            {"kind": e.kind, "rel_path": e.rel_path, "digest": e.digest}
-            for e in ev_result.scalars().all()
-        ]
+    # Evidence index for the ledger: paths + digests only (never content) —
+    # PROJECT-WIDE, not just the bound work item. The whole point of durable
+    # evidence is that a *fresh* work item's operator can see its predecessors'
+    # outputs; filtering to the bound item left cold handoffs blind. Newest rows
+    # win under the cap (the full index stays queryable via the API); rendering
+    # order is (work item, id) so the ledger reads chronologically per item.
+    ev_result = await db.execute(
+        select(Evidence)
+        .where(Evidence.project_id == project.id)
+        .order_by(Evidence.id.desc())
+        .limit(_settings.evidence_index_max_rows)
+    )
+    ev_rows = sorted(
+        ev_result.scalars().all(),
+        key=lambda e: (e.work_item_id is None, e.work_item_id or 0, e.id),
+    )
+    evidence_index = [
+        {
+            "evidence_id": e.id,
+            "work_item_id": e.work_item_id,
+            "kind": e.kind,
+            "rel_path": e.rel_path,
+            "digest": e.digest,
+        }
+        for e in ev_rows
+    ]
+    index_sha = sha256_text("\n".join(format_evidence_line(e) for e in evidence_index))
+
+    # Materialize the bound work item's *pinned* evidence read-only under
+    # context/evidence/ — its own byte budget (packages are bigger than text
+    # sources), digest re-verified at copy so silently-altered evidence fails
+    # closed as an exclusion rather than propagating.
+    materialized: list[dict] = []
+    ev_exclusions: list[dict] = []
+    pins = ((work_item.pinned_evidence or {}).get("items", [])
+            if work_item is not None else [])
+    if pins:
+        ev_dir = os.path.join(ctx_dir, EVIDENCE_DIRNAME)
+        ev_budget = _settings.context_evidence_max_bytes
+        ev_total = 0
+        for pin in pins:
+            eid = pin.get("evidence_id") if isinstance(pin, dict) else None
+            row = await db.get(Evidence, eid) if isinstance(eid, int) else None
+            if row is None or row.project_id != project.id:
+                ev_exclusions.append({"evidence_id": eid, "reason": "missing"})
+                continue
+            src = evidence_abs_path(row.project_id, row.rel_path)
+            if src is None or not os.path.isfile(src):
+                ev_exclusions.append({"evidence_id": eid, "reason": "missing"})
+                continue
+            size = os.path.getsize(src)
+            if ev_total + size > ev_budget:
+                ev_exclusions.append({"evidence_id": eid, "reason": "budget"})
+                continue
+            if row.digest and _sha256_file(src) != row.digest:
+                ev_exclusions.append({"evidence_id": eid, "reason": "digest-mismatch"})
+                logger.warning(
+                    "pinned evidence %s failed digest re-verification — excluded", eid
+                )
+                continue
+            rel = os.path.join(
+                CONTEXT_DIRNAME, EVIDENCE_DIRNAME,
+                f"{row.id}_{os.path.basename(row.rel_path)}",
+            )
+            dest = os.path.join(ev_dir, f"{row.id}_{os.path.basename(row.rel_path)}")
+            try:
+                _materialize(src, dest)
+                os.chmod(dest, 0o444)
+            except OSError as exc:
+                ev_exclusions.append(
+                    {"evidence_id": eid, "reason": f"copy-failed: {exc}"}
+                )
+                continue
+            ev_total += size
+            total_bytes += size
+            materialized.append(
+                {"evidence_id": row.id, "rel_path": rel, "digest": row.digest}
+            )
 
     ledger_text = render_ledger(
         project_name=project.name,
         work_item=work_item,
         changed_files=changed_files or [],
         evidence_index=evidence_index,
+        pinned_inputs=[m["rel_path"] for m in materialized],
     )
     ledger_path = os.path.join(workdir, LEDGER_FILENAME)
     try:
@@ -516,6 +592,13 @@ async def project_for_execution(
         sources=projected,
         ledger_sha=sha256_text(ledger_text),
         exclusions=exclusions or None,
+        evidence={
+            "v": 1,
+            "index_count": len(evidence_index),
+            "index_sha": index_sha,
+            "materialized": materialized,
+            "exclusions": ev_exclusions,
+        },
         approx_bytes=total_bytes + len(ledger_text.encode("utf-8")),
         # Provenance stamps: harness now; cli_version is filled in when a CLI
         # candidate actually starts (the orchestrators own that).

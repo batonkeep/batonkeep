@@ -244,6 +244,16 @@ class Settings(BaseSettings):
     # beyond it are excluded (recorded on the receipt, surfaced not silent) —
     # a mis-declared giant source must not balloon every run's workspace.
     context_projection_max_bytes: int = 10 * 1024 * 1024  # 10 MiB
+    # Separate budget for materializing a work item's *pinned evidence* into the
+    # workspace (`context/evidence/`) — evidence packages are bigger than text
+    # sources, so they must not compete with (or blow) the source budget above.
+    context_evidence_max_bytes: int = 32 * 1024 * 1024  # 32 MiB
+    # Cap on the working ledger's project-wide evidence index (newest rows kept);
+    # the full index is always queryable via the API — the ledger is a digest.
+    evidence_index_max_rows: int = 100
+    # Max pinned-evidence items per work item (pins are curated inputs, not a
+    # second evidence table).
+    evidence_pin_max: int = 32
     # Base dir for server-managed context roots (S0.4): a project created with
     # create_root gets <projects_dir>/<project_id>/context, git-init'd with a
     # starter manifest. Lives on the data volume so backups already cover it.

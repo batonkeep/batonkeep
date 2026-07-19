@@ -92,6 +92,8 @@ from app.schemas import (
     LoginRequest,
     ModelPricingOut,
     ModeOut,
+    PackageIn,
+    PackageOut,
     ProjectCreate,
     ProjectOut,
     ProviderCatalogOut,
@@ -2108,6 +2110,104 @@ async def revoke_publish(
         artifact.path = None
         await db.commit()
     return PublishOut(published=False)
+
+
+@app.post(
+    "/api/sessions/{session_id}/package", response_model=PackageOut, tags=["sessions"]
+)
+async def package_session_workspace(
+    session_id: str,
+    body: PackageIn | None = None,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """Capture the workspace at git HEAD as an immutable artifact package:
+    a zip with MANIFEST.json (per-file sha256s, commit sha) at zip root, stored
+    as two append-only evidence rows (`package` + `manifest`). Idempotent per
+    (session × commit) — repackaging an unchanged workspace returns the existing
+    rows. Refuses a dirty or commitless workspace (409) and oversize trees (413)."""
+    import json
+
+    from sqlalchemy import select as sa_select
+
+    from app import evidence as evidence_store
+    from app.sessions import packaging
+    from app.sessions import workspace as ws
+
+    session = await _owned_session(session_id, owner_id, db)
+    if not session.project_id:
+        raise HTTPException(status_code=409, detail="session carries no project")
+    workspace = ws.workspace_root(session_id)
+    if not os.path.isdir(workspace):
+        raise HTTPException(status_code=404, detail="session workspace not found")
+
+    try:
+        manifest, zip_bytes, commit = await packaging.build_package(
+            workspace, session_id=session_id, produced_by="human"
+        )
+    except packaging.PackageTooLargeError as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    except packaging.PackagingError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    stem = packaging.package_name(session_id, commit)
+    existing = (
+        await db.execute(
+            sa_select(Evidence).where(
+                Evidence.project_id == session.project_id,
+                Evidence.kind == "package",
+                Evidence.rel_path.like(f"%_{stem}.zip"),
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        manifest_row = (
+            await db.execute(
+                sa_select(Evidence).where(
+                    Evidence.project_id == session.project_id,
+                    Evidence.kind == "manifest",
+                    Evidence.rel_path.like(f"%_{stem}.manifest.json"),
+                )
+            )
+        ).scalar_one_or_none()
+        return PackageOut(package=existing, manifest=manifest_row, existing=True)
+
+    work_item_id = (body.work_item_id if body else None) or session.work_item_id
+    latest_turn = (
+        await db.execute(
+            sa_select(SessionTurn.id)
+            .where(SessionTurn.session_id == session_id)
+            .order_by(SessionTurn.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+    package_row = await evidence_store.capture(
+        db,
+        owner_id=owner_id,
+        project_id=session.project_id,
+        kind="package",
+        filename=f"{stem}.zip",
+        data=zip_bytes,
+        producer="human",
+        work_item_id=work_item_id,
+        session_turn_id=latest_turn,
+    )
+    manifest_row = await evidence_store.capture(
+        db,
+        owner_id=owner_id,
+        project_id=session.project_id,
+        kind="manifest",
+        filename=f"{stem}.manifest.json",
+        text=json.dumps(manifest, indent=2),
+        producer="human",
+        work_item_id=work_item_id,
+        session_turn_id=latest_turn,
+    )
+    await db.commit()
+    await db.refresh(package_row)
+    await db.refresh(manifest_row)
+    return PackageOut(package=package_row, manifest=manifest_row, existing=False)
 
 
 @app.post("/api/sessions/{session_id}/publish/cloudflare", response_model=CloudflareDeployOut,

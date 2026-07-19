@@ -15,6 +15,7 @@ policy. This module is deliberately one mechanism: propose → decide → apply.
 from __future__ import annotations
 
 import difflib
+import hashlib
 import logging
 import os
 import subprocess
@@ -24,9 +25,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import approvals, evidence
-from app.models import Approval, ContextSource, Project
+from app.config import get_settings
+from app.models import Approval, ContextSource, Evidence, Project
 from app.project_context import ManifestError, _resolve_under_root, _validate_rel, compute_revision
 from app.redact import redact_text
+
+_settings = get_settings()
 
 logger = logging.getLogger(__name__)
 
@@ -52,21 +56,45 @@ def _unified_diff(old: str, new: str, rel_path: str) -> str:
     )
 
 
+def _read_current_text(abs_path: str, rel: str) -> str:
+    old = ""
+    if os.path.isfile(abs_path):
+        try:
+            with open(abs_path, encoding="utf-8") as f:
+                old = f.read()
+        except OSError as exc:
+            raise CanonicalWriteError(f"cannot read current {rel}: {exc}") from None
+        except UnicodeDecodeError:
+            old = ""  # current file is binary — diff renders against empty
+    return old
+
+
 async def propose(
     db: AsyncSession,
     *,
     project: Project,
     rel_path: str,
-    content: str,
+    content: str | None = None,
+    evidence_id: int | None = None,
+    digest: str | None = None,
     producer: str,
     work_item_id: int | None = None,
 ) -> Approval:
     """Record a canonical-write proposal as a pending Approval row.
 
-    Never writes to the root. Content passes the secrets wall before it is
-    persisted (the row is durable; evidence rules apply). Flushes; caller
-    commits.
+    Two payload forms, exactly one per call:
+      v1 — inline `content` (prose/config-sized, `MAX_PROPOSAL_BYTES` cap);
+      v2 — **by reference** to an evidence row (`evidence_id`): the content
+      never transits the approval row — the payload pins the evidence's
+      digest, re-verified at propose *and* apply time, so the inline byte cap
+      stops being the promotion ceiling while tampering still fails closed.
+
+    Never writes to the root. Inline content passes the secrets wall before it
+    is persisted (the row is durable; evidence rules apply — by-reference
+    content already passed it at capture). Flushes; caller commits.
     """
+    if (content is None) == (evidence_id is None):
+        raise CanonicalWriteError("exactly one of content or evidence_id is required")
     if not project.root_path:
         raise CanonicalWriteError("project has no context root bound")
     try:
@@ -75,6 +103,64 @@ async def propose(
     except ManifestError as exc:
         raise CanonicalWriteError(str(exc)) from None
 
+    base_revision = compute_revision(project.root_path, rel, "file")
+
+    if evidence_id is not None:
+        row = await db.get(Evidence, evidence_id)
+        if row is None or row.owner_id != project.owner_id \
+                or row.project_id != project.id:
+            raise CanonicalWriteError(
+                f"evidence {evidence_id} not found in this project"
+            )
+        src = evidence.evidence_abs_path(row.project_id, row.rel_path)
+        if src is None or not os.path.isfile(src):
+            raise CanonicalWriteError(f"evidence {evidence_id} file is missing")
+        size = os.path.getsize(src)
+        if size > _settings.canonical_max_file_bytes:
+            raise CanonicalWriteError(
+                f"evidence is {size} bytes — canonical context is capped at "
+                f"{_settings.canonical_max_file_bytes} bytes (canonical_max_file_bytes); "
+                "promote the manifest or extracted files, not the package"
+            )
+        with open(src, "rb") as f:
+            data = f.read()
+        actual = hashlib.sha256(data).hexdigest()
+        if row.digest and actual != row.digest:
+            raise CanonicalWriteError(
+                f"evidence {evidence_id} failed digest re-verification — "
+                "stored file no longer matches its capture digest"
+            )
+        if digest and actual != digest:
+            raise CanonicalWriteError(
+                f"evidence {evidence_id} digest does not match the caller's pin"
+            )
+        try:
+            new_text: str | None = data.decode("utf-8")
+        except UnicodeDecodeError:
+            new_text = None
+        diff = (
+            _unified_diff(_read_current_text(abs_path, rel), new_text, rel)
+            if new_text is not None
+            else f"(binary evidence: {size} bytes, sha256 {actual})"
+        )
+        return await approvals.record_request(
+            db,
+            owner_id=project.owner_id,
+            request_id=uuid.uuid4().hex,
+            kind="canonical_write",
+            producer=producer,
+            project_id=project.id,
+            work_item_id=work_item_id,
+            payload={
+                "v": 2,
+                "rel_path": rel,
+                "evidence_id": evidence_id,
+                "digest": actual,
+                "diff": diff,
+                "base_revision": base_revision,
+            },
+        )
+
     content = redact_text(content)
     if len(content.encode("utf-8")) > MAX_PROPOSAL_BYTES:
         raise CanonicalWriteError(
@@ -82,15 +168,7 @@ async def propose(
             "prose/config-sized; large artifacts belong in evidence or outputs"
         )
 
-    old = ""
-    if os.path.isfile(abs_path):
-        try:
-            with open(abs_path, encoding="utf-8") as f:
-                old = f.read()
-        except OSError as exc:
-            raise CanonicalWriteError(f"cannot read current {rel}: {exc}") from None
-
-    base_revision = compute_revision(project.root_path, rel, "file")
+    old = _read_current_text(abs_path, rel)
     return await approvals.record_request(
         db,
         owner_id=project.owner_id,
@@ -117,7 +195,6 @@ async def apply(db: AsyncSession, approval: Approval, project: Project) -> dict:
     on non-git roots). Flushes; caller commits the DB transaction.
     """
     payload = approval.payload or {}
-    content = str(payload.get("content") or "")
     if not project.root_path:
         raise CanonicalWriteError("project has no context root bound")
     try:
@@ -126,10 +203,33 @@ async def apply(db: AsyncSession, approval: Approval, project: Project) -> dict:
     except ManifestError as exc:
         raise CanonicalWriteError(str(exc)) from None
 
+    if payload.get("evidence_id") is not None:
+        # v2 by-reference: the bytes come from the evidence store at apply
+        # time, re-verified against the digest pinned at propose time —
+        # evidence altered between propose and approve fails closed.
+        row = await db.get(Evidence, int(payload["evidence_id"]))
+        src = (
+            evidence.evidence_abs_path(row.project_id, row.rel_path)
+            if row is not None else None
+        )
+        if src is None or not os.path.isfile(src):
+            raise CanonicalWriteError(
+                f"evidence {payload['evidence_id']} is no longer available"
+            )
+        with open(src, "rb") as f:
+            data = f.read()
+        if hashlib.sha256(data).hexdigest() != payload.get("digest"):
+            raise CanonicalWriteError(
+                f"evidence {payload['evidence_id']} failed digest re-verification "
+                "at apply — refusing to write altered content to the canonical root"
+            )
+    else:
+        data = str(payload.get("content") or "").encode("utf-8")
+
     try:
         os.makedirs(os.path.dirname(abs_path) or project.root_path, exist_ok=True)
-        with open(abs_path, "w", encoding="utf-8") as f:
-            f.write(content)
+        with open(abs_path, "wb") as f:
+            f.write(data)
     except OSError as exc:
         # Unwritable root (e.g. a root-owned host mount) — a recoverable operator
         # problem, not a crash.

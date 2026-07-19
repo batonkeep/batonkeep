@@ -211,6 +211,11 @@ class Settings(BaseSettings):
     # The package is an artifact snapshot, not a backup — anything bigger belongs
     # in the export/restore path.
     package_max_bytes: int = 64 * 1024 * 1024  # 64 MiB
+    # Ceiling for a by-reference canonical promotion (evidence → canonical
+    # root). Canonical context is projected into every future run against the
+    # source byte budget — a large package zip does not belong there; promote
+    # its manifest (or extracted files) and let the package stay evidence.
+    canonical_max_file_bytes: int = 2 * 1024 * 1024  # 2 MiB
 
     # ── Agent filesystem isolation (P-0022 / D-0020) ────────────────────────────
     # Privilege separation: the backend runs as `batond`; agent CLIs are launched

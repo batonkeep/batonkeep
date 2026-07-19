@@ -114,30 +114,96 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
   const [approvals, setApprovals] = useState<Approval[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  // ── Evidence viewer modal ────────────────────────────────────────────────────
-  const [viewing, setViewing] = useState<Evidence | null>(null);
+  // ── Document viewer modal (evidence AND context sources — one viewer) ───────
+  // S0.5: context sources get the same modal rendering as evidence; before
+  // this, a project's context .md files were not actionable at all.
+  type ViewDoc = {
+    name: string;
+    relPath: string;
+    url: string;
+    badge?: string;
+    badgeTone?: Tone;
+    meta?: string;
+  };
+  const [viewing, setViewing] = useState<ViewDoc | null>(null);
   const [viewText, setViewText] = useState<string | null>(null);
 
-  const openEvidence = async (e: Evidence) => {
-    setViewing(e);
+  const openDoc = async (doc: ViewDoc) => {
+    setViewing(doc);
     setViewText(null);
     try {
-      const res = await fetch(api.evidenceRawUrl(e.id));
+      const res = await fetch(doc.url);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setViewText(await res.text());
     } catch (err) {
-      setViewText(`Failed to load evidence: ${err instanceof Error ? err.message : String(err)}`);
+      setViewText(`Failed to load: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
 
+  const openEvidence = (e: Evidence) =>
+    openDoc({
+      name: e.rel_path.split("/").pop() ?? e.rel_path,
+      relPath: e.rel_path,
+      url: api.evidenceRawUrl(e.id),
+      badge: e.kind,
+      badgeTone: EVIDENCE_TONE[e.kind] ?? "neutral",
+      meta:
+        `${e.producer} · ${fmtBytes(e.bytes)} · ${fmtTime(e.created_at)}` +
+        (e.digest ? ` · sha256 ${e.digest.slice(0, 12)}` : ""),
+    });
+
+  const openSource = (s: ContextSource) =>
+    openDoc({
+      name: s.rel_path.split("/").pop() ?? s.rel_path,
+      relPath: s.rel_path,
+      url: api.contextSourceRawUrl(selectedId ?? "", s.id),
+      badge: s.kind,
+      meta:
+        `canonical source · ${s.last_revision ? s.last_revision.slice(0, 12) : "unhashed"}` +
+        (s.last_checked_at ? ` · checked ${fmtTime(s.last_checked_at)}` : ""),
+    });
+
   const viewHtml = useMemo(() => {
     if (!viewing || viewText == null) return "";
-    if (evidenceViewKind(viewing.rel_path) !== "markdown") return "";
+    if (evidenceViewKind(viewing.relPath) !== "markdown") return "";
     // Evidence may echo model-generated or scraped content; marked does NOT
     // sanitize, so strip injection vectors before dangerouslySetInnerHTML
     // (same rule as run reports).
     return DOMPurify.sanitize(marked.parse(viewText, { async: false }) as string);
   }, [viewing, viewText]);
+
+  // ── Propose-to-canonical modal (S0.5 promotion — the create side) ───────────
+  const [proposeFor, setProposeFor] = useState<Evidence | null>(null);
+  const [proposeDest, setProposeDest] = useState("");
+  const [proposeBusy, setProposeBusy] = useState(false);
+  const [proposeErr, setProposeErr] = useState<string | null>(null);
+
+  const openPropose = (e: Evidence) => {
+    // Default destination: the stored basename minus its 12-hex capture prefix.
+    const base = e.rel_path.split("/").pop() ?? "evidence.md";
+    setProposeDest(base.replace(/^[0-9a-f]{12}_/, ""));
+    setProposeErr(null);
+    setProposeFor(e);
+  };
+
+  const submitPropose = () => {
+    if (!selectedId || !proposeFor || proposeBusy) return;
+    setProposeBusy(true);
+    setProposeErr(null);
+    api
+      .proposeCanonicalWrite(selectedId, {
+        rel_path: proposeDest.trim(),
+        evidence_id: proposeFor.id,
+        work_item_id: proposeFor.work_item_id,
+      })
+      .then(() => {
+        setProposeFor(null);
+        loadDetail();
+        setTab("context"); // the pending proposal is now the approval surface
+      })
+      .catch((err: Error) => setProposeErr(err.message))
+      .finally(() => setProposeBusy(false));
+  };
 
   const loadDetail = useCallback(() => {
     if (!selectedId) return;
@@ -723,21 +789,32 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
                 This project has no context root, so there are no sources to declare.
               </div>
             )}
-            {sources.map((s) => (
-              <div
-                key={s.id}
-                className="flex flex-wrap items-center gap-2 rounded-lg border border-edge bg-panel/60 px-3 py-2"
-              >
-                <span className="min-w-0 flex-1 truncate font-mono text-sm text-ink">{s.rel_path}</span>
-                <Badge>{s.kind}</Badge>
-                {s.domain && <Badge tone="defer">{s.domain}</Badge>}
-                {s.sensitivity !== "inherit" && <Badge tone="warn">{s.sensitivity}</Badge>}
-                <span className="font-mono text-[11px] text-muted">
-                  {s.last_revision ? s.last_revision.slice(0, 12) : "unhashed"} ·{" "}
-                  {s.last_checked_at ? `checked ${fmtTime(s.last_checked_at)}` : "never checked"}
-                </span>
-              </div>
-            ))}
+            {sources.map((s) => {
+              // File sources with a text-ish extension open in the same viewer
+              // modal as evidence (S0.5); dir/git sources have no single file
+              // to show, so they keep the plain row.
+              const viewable = s.kind === "file" && evidenceViewKind(s.rel_path) != null;
+              return (
+                <div
+                  key={s.id}
+                  onClick={viewable ? () => openSource(s) : undefined}
+                  title={viewable ? "View source" : undefined}
+                  className={
+                    "flex flex-wrap items-center gap-2 rounded-lg border border-edge bg-panel/60 px-3 py-2" +
+                    (viewable ? " cursor-pointer transition-colors hover:border-brand/40" : "")
+                  }
+                >
+                  <span className="min-w-0 flex-1 truncate font-mono text-sm text-ink">{s.rel_path}</span>
+                  <Badge>{s.kind}</Badge>
+                  {s.domain && <Badge tone="defer">{s.domain}</Badge>}
+                  {s.sensitivity !== "inherit" && <Badge tone="warn">{s.sensitivity}</Badge>}
+                  <span className="font-mono text-[11px] text-muted">
+                    {s.last_revision ? s.last_revision.slice(0, 12) : "unhashed"} ·{" "}
+                    {s.last_checked_at ? `checked ${fmtTime(s.last_checked_at)}` : "never checked"}
+                  </span>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -788,51 +865,112 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
                 >
                   <ExternalLink size={12} /> raw
                 </a>
+                {selected.root_path && (
+                  <button
+                    onClick={(ev) => {
+                      ev.stopPropagation();
+                      openPropose(e);
+                    }}
+                    className="flex items-center gap-1 rounded-md border border-edge px-1.5 py-0.5 font-mono text-[11px] text-muted transition hover:border-brand/40 hover:text-ink"
+                    title="Propose this evidence into the canonical context root (needs your approval to apply)"
+                  >
+                    <FileText size={11} /> propose
+                  </button>
+                )}
               </div>
             );
           })}
         </div>
       )}
 
-      {/* Evidence viewer: markdown rendered, diffs colorized, other text as-is. */}
+      {/* Document viewer (evidence + context sources): markdown rendered,
+          diffs colorized, other text as-is. */}
       <Modal
         open={viewing != null}
         onClose={() => {
           setViewing(null);
           setViewText(null);
         }}
-        title={viewing?.rel_path.split("/").pop()}
+        title={viewing?.name}
         size="max-w-2xl"
       >
         {viewing && (
           <div className="space-y-3">
             <div className="flex flex-wrap items-center gap-2">
-              <Badge tone={EVIDENCE_TONE[viewing.kind] ?? "neutral"}>{viewing.kind}</Badge>
+              {viewing.badge && (
+                <Badge tone={viewing.badgeTone ?? "neutral"}>{viewing.badge}</Badge>
+              )}
               <span className="min-w-0 flex-1 font-mono text-[11px] text-muted">
-                {viewing.producer} · {fmtBytes(viewing.bytes)} · {fmtTime(viewing.created_at)}
-                {viewing.digest ? ` · sha256 ${viewing.digest.slice(0, 12)}` : ""}
+                {viewing.meta}
               </span>
               <a
-                href={api.evidenceRawUrl(viewing.id)}
+                href={viewing.url}
                 target="_blank"
                 rel="noreferrer"
                 className="flex items-center gap-1 font-mono text-[11px] text-brand hover:opacity-80"
-                title="Open the raw evidence file"
+                title="Open the raw file"
               >
                 <ExternalLink size={12} /> raw
               </a>
             </div>
             {viewText == null ? (
               <p className="font-mono text-xs text-muted">Loading…</p>
-            ) : evidenceViewKind(viewing.rel_path) === "markdown" ? (
+            ) : evidenceViewKind(viewing.relPath) === "markdown" ? (
               <div className="markdown" dangerouslySetInnerHTML={{ __html: viewHtml }} />
-            ) : evidenceViewKind(viewing.rel_path) === "diff" ? (
+            ) : evidenceViewKind(viewing.relPath) === "diff" ? (
               <DiffView diff={viewText} />
             ) : (
               <pre className="overflow-auto whitespace-pre-wrap rounded-lg border border-edge bg-base/60 p-3 font-mono text-[11px] leading-relaxed">
                 {viewText}
               </pre>
             )}
+          </div>
+        )}
+      </Modal>
+
+      {/* Propose evidence → canonical context (S0.5): by-reference — the bytes
+          stay in the evidence store, digest-pinned; approval applies it. */}
+      <Modal
+        open={proposeFor != null}
+        onClose={() => setProposeFor(null)}
+        title="Propose to canonical context"
+        size="max-w-md"
+      >
+        {proposeFor && (
+          <div className="space-y-3">
+            <p className="text-xs text-muted">
+              Creates a pending canonical-write proposal from{" "}
+              <span className="font-mono text-ink">
+                {proposeFor.rel_path.split("/").pop()}
+              </span>{" "}
+              (digest-pinned — the content is re-verified when you approve).
+              Nothing is written until it is approved on the Context tab.
+            </p>
+            <Field label="Destination path in the context root">
+              <Input
+                value={proposeDest}
+                onChange={(e) => setProposeDest(e.target.value)}
+                placeholder="docs/methodology.md"
+              />
+            </Field>
+            {proposeErr && (
+              <p className="rounded-lg border border-bad/40 bg-bad/10 px-3 py-2 text-xs text-bad">
+                {proposeErr}
+              </p>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" size="sm" onClick={() => setProposeFor(null)}>
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={submitPropose}
+                disabled={proposeBusy || !proposeDest.trim()}
+              >
+                {proposeBusy ? "Proposing…" : "Create proposal"}
+              </Button>
+            </div>
           </div>
         )}
       </Modal>

@@ -127,11 +127,23 @@ export const api = {
       `/projects/${projectId}/evidence${workItemId != null ? `?work_item_id=${workItemId}` : ""}`
     ),
   evidenceRawUrl: (evidenceId: number) => `${BASE}/evidence/${evidenceId}/raw`,
+  // Read-only serving of a declared context source (S0.5): file sources serve
+  // directly; dir/git sources take a path naming a file inside the source.
+  contextSourceRawUrl: (projectId: string, sourceId: number, path?: string) =>
+    `${BASE}/projects/${projectId}/context-sources/${sourceId}/raw` +
+    (path ? `?path=${encodeURIComponent(path)}` : ""),
   // Propose a write to the canonical context root — never applies; returns the
-  // pending approval carrying the diff.
+  // pending approval carrying the diff. Exactly one of `content` (inline) or
+  // `evidence_id` (by-reference promotion, digest-pinned; S0.5).
   proposeCanonicalWrite: (
     projectId: string,
-    body: { rel_path: string; content: string; producer?: string; work_item_id?: number | null },
+    body: {
+      rel_path: string;
+      content?: string;
+      evidence_id?: number;
+      producer?: string;
+      work_item_id?: number | null;
+    },
   ) =>
     req<Approval>(`/projects/${projectId}/context/propose`, {
       method: "POST",

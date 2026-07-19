@@ -228,6 +228,18 @@ export const api = {
     for (const f of files) form.append("files", f, f.name);
     return req<Upload>(`/sessions/${id}/uploads`, { method: "POST", headers: {}, body: form });
   },
+  // Workspace packaging (S0.5): capture the tree at git HEAD as an immutable
+  // evidence package (zip + MANIFEST.json). Idempotent per commit; the backend
+  // 409s while the workspace has uncommitted changes.
+  packageWorkspace: (id: string, workItemId?: number | null) =>
+    req<{
+      package: { id: number; rel_path: string };
+      manifest: { id: number } | null;
+      existing: boolean;
+    }>(`/sessions/${id}/package`, {
+      method: "POST",
+      body: JSON.stringify({ work_item_id: workItemId ?? null }),
+    }),
   // Import an existing site: a .zip / .tar(.gz/.bz2/.xz) extracted into the
   // workspace root, preserving structure (D-0009 follow-on).
   importArchive: (id: string, file: File) => {

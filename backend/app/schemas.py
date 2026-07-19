@@ -293,6 +293,22 @@ class EvidenceOut(BaseModel):
     created_at: datetime
 
 
+class PackageIn(BaseModel):
+    """Optional knobs for the session workspace-package capture (S0.5)."""
+
+    work_item_id: int | None = None
+
+
+class PackageOut(BaseModel):
+    """Result of packaging a session workspace: the two evidence rows
+    (`package` zip + standalone `manifest`) and whether they pre-existed
+    (idempotent per session × commit)."""
+
+    package: EvidenceOut
+    manifest: EvidenceOut | None
+    existing: bool
+
+
 class ApprovalOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

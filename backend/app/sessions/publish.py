@@ -44,24 +44,29 @@ _EXCLUDED_DIRS = {
 }
 
 
-def _publishable_files(workspace: str) -> list[str]:
+def _publishable_files(
+    workspace: str, *, extra_excluded_top: frozenset[str] = frozenset()
+) -> list[str]:
     """Relative paths of the workspace's static assets (excludes .git, SESSION.md,
-    and package/build artifact dirs at any depth — D-0029)."""
+    and package/build artifact dirs at any depth — D-0029). `extra_excluded_top`
+    lets the workspace-packaging walk add its own top-level exclusions
+    (the projected context dir + working ledger) without duplicating this walk."""
     out: list[str] = []
+    excluded_top = _EXCLUDED_TOP | extra_excluded_top
     root = os.path.abspath(workspace)
     for dirpath, dirnames, filenames in os.walk(root):
         rel_dir = os.path.relpath(dirpath, root)
         top = "" if rel_dir == "." else rel_dir.split(os.sep)[0]
-        if top in _EXCLUDED_TOP:
+        if top in excluded_top:
             dirnames[:] = []
             continue
         # Prune excluded top-level entries and package/build dirs at every level.
         dirnames[:] = [
             d for d in dirnames
-            if d not in _EXCLUDED_DIRS and not (rel_dir == "." and d in _EXCLUDED_TOP)
+            if d not in _EXCLUDED_DIRS and not (rel_dir == "." and d in excluded_top)
         ]
         for name in filenames:
-            if rel_dir == "." and name in _EXCLUDED_TOP:
+            if rel_dir == "." and name in excluded_top:
                 continue
             full = os.path.join(dirpath, name)
             # Never follow symlinks out of the workspace. build_bundle/zip_workspace

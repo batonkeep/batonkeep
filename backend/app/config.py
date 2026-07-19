@@ -207,6 +207,10 @@ class Settings(BaseSettings):
     # Evidence store root (substrate): files land under
     # <evidence_dir>/project_<id>/, indexed append-only by the Evidence table.
     evidence_dir: str = "/data/evidence"
+    # Ceiling for one workspace package (the zip captured as `package` evidence).
+    # The package is an artifact snapshot, not a backup — anything bigger belongs
+    # in the export/restore path.
+    package_max_bytes: int = 64 * 1024 * 1024  # 64 MiB
 
     # ── Agent filesystem isolation (P-0022 / D-0020) ────────────────────────────
     # Privilege separation: the backend runs as `batond`; agent CLIs are launched

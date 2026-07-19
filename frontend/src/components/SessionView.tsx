@@ -494,6 +494,9 @@ export default function SessionView({
   const [mode, setMode] = useState<"chat" | "terminal" | "files">("chat"); // center-pane lane
   const [files, setFiles] = useState<FileEntry[]>([]); // workspace files (Files tab)
   const [filesLoading, setFilesLoading] = useState(false);
+  // S0.5: workspace → evidence package capture (Files-tab header action).
+  const [pkgBusy, setPkgBusy] = useState(false);
+  const [pkgMsg, setPkgMsg] = useState<string | null>(null);
   const [detail, setDetail] = useState<Session | null>(null);
   const [turns, setTurns] = useState<SessionTurn[]>([]);
   const [message, setMessage] = useState("");
@@ -684,6 +687,25 @@ export default function SessionView({
       .catch(() => setFiles([]))
       .finally(() => setFilesLoading(false));
   }, [selectedId]);
+
+  // S0.5: snapshot the workspace at HEAD into the project's evidence store
+  // (zip + MANIFEST.json). Idempotent per commit — the backend returns the
+  // existing rows when nothing changed; 409 surfaces as the message.
+  const capturePackage = useCallback(() => {
+    if (!selectedId || pkgBusy) return;
+    setPkgBusy(true);
+    setPkgMsg(null);
+    api.packageWorkspace(selectedId)
+      .then((res) =>
+        setPkgMsg(
+          res.existing
+            ? "Already captured for this version"
+            : `Captured as evidence #${res.package.id}`,
+        ),
+      )
+      .catch((err: Error) => setPkgMsg(err.message))
+      .finally(() => setPkgBusy(false));
+  }, [selectedId, pkgBusy]);
 
   // Load the selected session detail (for the preview token) + its turn history.
   useEffect(() => {
@@ -1854,12 +1876,42 @@ export default function SessionView({
                 </Suspense>
               </div>
             ) : mode === "files" ? (
-              <FileBrowser
-                entries={files}
-                loading={filesLoading}
-                onOpen={viewFile}
-                activePath={openFile?.path}
-              />
+              <div className="flex min-h-0 flex-1 flex-col">
+                {/* S0.5: capture the workspace at HEAD as an immutable evidence
+                    package (zip + manifest) — the durable artifact a later work
+                    item can pin and a cold operator can reproduce from. */}
+                <div className="flex items-center justify-between gap-2 border-b border-edge px-3 py-1.5">
+                  <span className="shrink-0 font-mono text-[11px] uppercase tracking-widest text-muted">
+                    Workspace files
+                  </span>
+                  <div className="flex min-w-0 items-center gap-2">
+                    {pkgMsg && (
+                      <span className="min-w-0 truncate text-[11px] text-muted" title={pkgMsg}>
+                        {pkgMsg}
+                      </span>
+                    )}
+                    <button
+                      onClick={capturePackage}
+                      disabled={pkgBusy}
+                      title="Snapshot the workspace at its latest version into the project's evidence (zip + manifest)"
+                      className="inline-flex shrink-0 items-center gap-1 rounded-md border border-edge px-2 py-1 text-[11px] text-muted transition hover:text-ink disabled:opacity-50"
+                    >
+                      {pkgBusy ? (
+                        <Loader2 size={12} className="animate-spin" />
+                      ) : (
+                        <Archive size={12} />
+                      )}
+                      Capture package
+                    </button>
+                  </div>
+                </div>
+                <FileBrowser
+                  entries={files}
+                  loading={filesLoading}
+                  onOpen={viewFile}
+                  activePath={openFile?.path}
+                />
+              </div>
             ) : (
             <>
             <div

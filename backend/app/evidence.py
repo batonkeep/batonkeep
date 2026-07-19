@@ -40,7 +40,13 @@ from app.redact import redact_text
 logger = logging.getLogger(__name__)
 _settings = get_settings()
 
-EVIDENCE_KINDS = ("report", "diff", "log", "verification", "decision", "asset-ref")
+EVIDENCE_KINDS = (
+    "report", "diff", "log", "verification", "decision", "asset-ref",
+    # Workspace packaging (S0.5): `package` = zip of the tree at a commit with
+    # MANIFEST.json at zip root; `manifest` = that manifest as a standalone
+    # viewable file. Captured together by the session package route.
+    "package", "manifest",
+)
 
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _MAX_NAME = 128

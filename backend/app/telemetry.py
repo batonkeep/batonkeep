@@ -59,10 +59,17 @@ def classify_error(run: Run) -> str:
     err = (run.error or "").lower()
     if "interrupted by backend restart" in err or "reaped" in err:
         return "interrupted"
+    if "timed out" in err or "timeout" in err:
+        return "timed_out"
     if "cooling" in err:
         return "cooling"
     if "rate" in err and "limit" in err:
         return "rate_limited"
+    # Empty-output nonzero exit (P-0069 item 4): the near-silent handoff failure —
+    # the agent produced no terminal result (only reasoning/thoughts, or a nonzero
+    # exit with no text). A distinct class so it stops hiding inside generic "error".
+    if "without output" in err or "without producing" in err:
+        return "empty_output"
     if "unavailable" in err or "no candidates" in err or "no provider" in err:
         return "unavailable"
 

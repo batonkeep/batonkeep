@@ -713,6 +713,9 @@ class SessionTurnOut(BaseModel):
     # D-0017 thread 2: the per-file artifacts this turn produced (the headline
     # result). Stored as a JSON string on the model; parsed to a list here.
     changed_files: list[FileChangeOut] | None = None
+    # P-0069 item 6: free-default output flag — {"v":1,"unbacked":[...]} or None.
+    # Referenced files the response linked to that aren't in the committed tree.
+    output_flags: dict | None = None
     # Per-turn token/cost usage (API path) so the UI can show + sum session spend.
     tokens_in: int = 0
     tokens_out: int = 0

@@ -14,8 +14,42 @@ import os
 
 import pytest
 
-from app.providers.base import EventKind, ExecEvent, Executor
+from app.providers.base import EventKind, ExecEvent, ExecResult, Executor, Usage
 from app.providers.mock import MockExecutor
+
+
+class _ForeignArtifactExecutor(Executor):
+    """Writes a real workspace file (so the turn commits + succeeds) but reports the
+    deliverable at ANOTHER session's worktree path — the P43-D3 shape that the free
+    default output check (P-0069 item 6) must flag."""
+
+    name = "foreign"
+    tier = "mock"
+
+    def __init__(self, name: str = "foreign") -> None:
+        self.name = name
+        self.tier = "mock"
+
+    @property
+    def kind(self) -> str:
+        return "mock"
+
+    def is_healthy(self) -> bool:
+        return True
+
+    async def run_stream(self, prompt, *, workdir, tools_enabled=True,
+                         max_rounds=10, budget_usd=1.0, extra=None):
+        yield ExecEvent(kind=EventKind.phase, phase="running", message="[foreign] running")
+        with open(os.path.join(workdir, "notes.md"), "a", encoding="utf-8") as f:
+            f.write("progress\n")
+        usage = Usage(tokens_in=1, tokens_out=1, cost_usd=0.0)
+        result = ExecResult(
+            text="All done. Deliverable saved to "
+                 "file:///data/sessions/OTHER/deliverable.py",
+            usage=usage, provider=self.name, model="foreign-v1",
+        )
+        yield ExecEvent(kind=EventKind.result, message="[foreign] done",
+                        data={"result": result, "usage": usage.__dict__})
 
 
 class _WriteThenHangExecutor(Executor):
@@ -166,6 +200,19 @@ class TestWorkspace:
         # Standardised Python-dependency workflow: install into `.venv`, not a stray
         # `packages/` dir (the agy behaviour this guidance corrects).
         assert "Installing Python packages" in ctx and ".venv" in ctx
+        # P-0069 item 4c: checkpoint-at-phase-boundaries guidance is injected.
+        assert "Checkpoint at phase boundaries" in ctx
+
+    @pytest.mark.asyncio
+    async def test_cli_context_carries_packaging_cadence_guidance(self, tmp_path, monkeypatch):
+        """P-0069 item 4c: the CLI convention file also carries the guidance so both
+        lanes encourage phase-boundary checkpoints."""
+        from app.sessions import session_context as sc
+        from app.sessions import workspace as ws
+        monkeypatch.setattr(ws._settings, "sessions_dir", str(tmp_path), raising=False)
+        root = await ws.create_workspace("pk1", title="T", goal="G")
+        rendered = sc.render_session_context(root)
+        assert "Checkpoint at phase boundaries" in rendered
 
     async def test_turn_context_includes_recent_dialogue(self, tmp_path, monkeypatch):
         # A short follow-up keeps its referent via the replayed dialogue tail.
@@ -512,6 +559,42 @@ class TestCancelAndTimeoutSnapshot:
             assert len(ev) == 1
             assert ev[0].kind == "partial-diff"
             assert ev[0].project_id == "p1"
+
+
+class TestOutputFlags:
+    """P-0069 item 6: the free default output check flags response artifact links
+    not backed by this session's committed tree; a clean turn flags nothing."""
+
+    @pytest.mark.asyncio
+    async def test_foreign_artifact_link_is_flagged(self, session_env):
+        Maker, ws, orch, broadcasts = session_env
+        await _make_session(Maker, ws)
+        orch.get_executor = lambda name: _ForeignArtifactExecutor(name=name)
+
+        from app.models import SessionTurn
+        turn_id = await orch.run_turn("s1", "build it", owner_id="local")
+        async with Maker() as db:
+            turn = await db.get(SessionTurn, turn_id)
+            assert turn.status == "succeeded"        # advisory: the turn still succeeds
+            assert turn.output_flags is not None
+            assert turn.output_flags["unbacked"] == [
+                "file:///data/sessions/OTHER/deliverable.py"
+            ]
+        assert any(
+            (b.get("event") or {}).get("phase") == "outputs_check" for b in broadcasts
+        )
+
+    @pytest.mark.asyncio
+    async def test_clean_turn_flags_nothing(self, session_env):
+        Maker, ws, orch, broadcasts = session_env
+        await _make_session(Maker, ws)  # default MockExecutor: report has no file links
+
+        from app.models import SessionTurn
+        turn_id = await orch.run_turn("s1", "hello", owner_id="local")
+        async with Maker() as db:
+            turn = await db.get(SessionTurn, turn_id)
+            assert turn.status == "succeeded"
+            assert turn.output_flags is None
 
 
 # ── Rename endpoint (HTTP) ────────────────────────────────────────────────────

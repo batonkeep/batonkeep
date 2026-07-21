@@ -43,7 +43,10 @@ from app.providers.registry import (
 )
 from app.redact import redact_text
 from app.sessions import workspace as ws
-from app.sessions.preview import rewrite_workspace_file_links
+from app.sessions.preview import (
+    flag_unbacked_file_claims,
+    rewrite_workspace_file_links,
+)
 from app.ws import ws_manager
 
 logger = logging.getLogger(__name__)
@@ -635,6 +638,33 @@ async def run_turn_background(
             files=(version["files"] if version else None), lane="chat",
         )
 
+    # Free default output check (P-0069 item 6): flag response artifact links not
+    # backed by this session's committed tree — the P43-D3 misdirected-writes tell,
+    # made machine-checkable. Advisory (the turn still succeeds); persisted on the
+    # turn + surfaced live. Best-effort — never breaks the turn.
+    output_flags: dict | None = None
+    if final_result is not None and response_text:
+        try:
+            tracked = await ws.tracked_files(workspace)
+            unbacked = flag_unbacked_file_claims(response_text, session_id, tracked)
+            if unbacked:
+                output_flags = {"v": 1, "unbacked": unbacked}
+                logger.warning(
+                    "[session] turn %d: %d referenced file(s) not in committed tree: %s",
+                    turn_id, len(unbacked), unbacked,
+                )
+                await _broadcast_event(
+                    session_id, turn_id, seq, EventKind.log,
+                    message=(
+                        f"{len(unbacked)} referenced file(s) are not in this session's "
+                        "committed tree — the work may have landed elsewhere"
+                    ),
+                    phase="outputs_check",
+                    data={"unbacked": unbacked},
+                )
+        except Exception:
+            logger.exception("[session] turn %d output-check failed", turn_id)
+
     if version is not None:
         # Surface the per-turn diff in the live event view (M1.3 Verify gate).
         await _broadcast_event(
@@ -673,6 +703,8 @@ async def run_turn_background(
                 # Persist the per-file artifact list so reloads surface the same
                 # result (D-0017 thread 2), not just the live event stream.
                 turn.changed_files = json.dumps(version.get("files", []))
+            # P-0069 item 6: durable free-default output flag (NULL when clean).
+            turn.output_flags = output_flags
             await db.commit()
         session = await db.get(Session, session_id)
         if session is not None:

@@ -677,6 +677,11 @@ class SessionTurn(Base):
     # D-0017 thread 2: per-file artifact list (JSON) the turn produced — the result
     # surfaced to the user is the workspace files changed, not scraped agent text.
     changed_files: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # P-0069 item 6 (free default check): file paths the response links to that are
+    # NOT backed by this session's committed tree — {"v":1,"unbacked":[...]}. NULL =
+    # nothing flagged. Advisory (a turn can still succeed); the P43-D3 misdirected-
+    # writes tell, made machine-checkable instead of only human-visible.
+    output_flags: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # Token/cost usage for this turn (API path). Build-session spend was previously
     # not metered — these let it surface in Analytics + count toward the budget.
     tokens_in: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

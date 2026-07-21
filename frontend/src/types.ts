@@ -395,6 +395,9 @@ export interface SessionTurn {
   // D-0017 thread 2: the per-file artifacts this turn produced (the headline
   // result surfaced to the user, above any scraped agent text).
   changed_files: FileChange[] | null;
+  // P-0069 item 6: referenced files the response linked to that aren't in this
+  // session's committed tree (advisory) — {v, unbacked:[...]} or null when clean.
+  output_flags: { v: number; unbacked: string[] } | null;
   // Per-turn token/cost usage (API path).
   tokens_in?: number;
   tokens_out?: number;

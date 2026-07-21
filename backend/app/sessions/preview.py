@@ -196,3 +196,42 @@ def rewrite_workspace_file_links(text: str, session_id: str, workspace: str) -> 
     pattern = re.compile(r"file://" + re.escape(root) + r"(/[^\s)\]\"'>]*)")
     base = f"/api/sessions/{session_id}/files/raw"
     return pattern.sub(lambda m: base + m.group(1), text)
+
+
+# Free default output check (P-0069 item 6). Runs on the already-rewritten response:
+# this session's file:// links have become raw-file routes (rel paths), and any
+# leftover file:// link is an absolute/foreign-workspace path by construction.
+_RAW_ROUTE_RE = re.compile(r"/api/sessions/([^/\s]+)/files/raw/([^\s)\]\"'>]+)")
+_FILE_URL_RE = re.compile(r"file://(/[^\s)\]\"'>]+)")
+_MAX_FLAGS = 50
+
+
+def flag_unbacked_file_claims(
+    response_text: str, session_id: str, tracked: set[str]
+) -> list[str]:
+    """Return the file paths a turn's response links to that are NOT backed by this
+    session's committed tree — the machine-checkable form of the P43-D3 tell
+    (deliverables that landed in another session's worktree yet reported success).
+
+    Two suspect shapes, both keyed off explicit artifact links only (so prose file
+    mentions never false-positive): (a) a raw-file link to *this* session whose rel
+    path isn't tracked at HEAD (claimed but not committed — e.g. a gitignored or
+    absent path, or a foreign session's raw route); (b) any leftover `file://` link
+    (an absolute/foreign-workspace path the rewrite left untouched). De-duplicated,
+    order-preserving, bounded."""
+    if not response_text:
+        return []
+    flagged: list[str] = []
+    for m in _RAW_ROUTE_RE.finditer(response_text):
+        sid, rel = m.group(1), m.group(2)
+        if sid != session_id or rel not in tracked:
+            flagged.append(rel if sid == session_id else m.group(0))
+    for m in _FILE_URL_RE.finditer(response_text):
+        flagged.append(m.group(0))
+    seen: set[str] = set()
+    out: list[str] = []
+    for f in flagged:
+        if f not in seen:
+            seen.add(f)
+            out.append(f)
+    return out[:_MAX_FLAGS]

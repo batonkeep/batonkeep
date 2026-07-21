@@ -194,6 +194,28 @@ async def lifespan(app: FastAPI):
         except ImportError:
             pass
 
+    # P-0072: probe the workspace jail once at boot and say so out loud. Whether
+    # agents are actually confined depends on the host kernel, which is outside
+    # this deployment's control — an operator must not have to infer it from the
+    # absence of an error.
+    try:
+        if sandbox.available():
+            if sandbox.jail_mode() == "off":
+                logger.warning(
+                    "[sandbox] workspace jail DISABLED by SANDBOX_JAIL=off — agents "
+                    "can read and write other sessions' workspaces (P-0072)"
+                )
+            elif sandbox.jail_supported():
+                logger.info("[sandbox] workspace jail active (%s)", sandbox.jail_status())
+            else:
+                logger.warning(
+                    "[sandbox] workspace jail UNAVAILABLE on this kernel (needs Linux "
+                    ">= 5.13 with landlock) — agents can read and write other sessions' "
+                    "workspaces (P-0072). Set SANDBOX_JAIL=require to refuse instead."
+                )
+    except Exception:
+        logger.exception("sandbox jail probe failed")
+
     # D-0021: reconcile runs stranded by a previous restart before the scheduler
     # (and any re-enqueue) starts, so the run state is honest from boot.
     try:

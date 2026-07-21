@@ -68,7 +68,10 @@ class PtySession:
         # via the setuid helper (P-0022/D-0020). A clean setuid+execve inside the
         # helper preserves the controlling tty set up here. No-op outside the
         # container, where the helper is absent.
-        argv = sandbox.wrap(self._argv)
+        # Confined to the session's own cwd (P-0072). Interactive TUIs are the
+        # lane most able to wander, so this one matters even though the operator
+        # is driving it — the agent still runs inside.
+        argv = sandbox.wrap(self._argv, jail=self._cwd)
         self._proc = subprocess.Popen(
             argv,
             stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,

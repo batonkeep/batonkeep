@@ -48,14 +48,64 @@ def required() -> bool:
     return bool(_settings.require_sandbox)
 
 
-def wrap(cmd: list[str]) -> list[str]:
-    """Prefix `cmd` so it runs as the `sandbox` user via the setuid helper.
+_jail_supported: bool | None = None  # probe result, cached for the process
+_jail_warned = False
+
+
+def jail_mode() -> str:
+    """`require` · `warn` (default) · `off` — policy for the P-0072 path jail."""
+    mode = (_settings.sandbox_jail or "warn").strip().lower()
+    return mode if mode in {"require", "warn", "off"} else "warn"
+
+
+def jail_supported() -> bool:
+    """Whether the running kernel can enforce a Landlock jail (probed once).
+
+    The helper answers this, not Python: it is the process that must apply the
+    ruleset, and it is built with or without Landlock support at image time.
+    """
+    global _jail_supported
+    if _jail_supported is None:
+        if not available():
+            _jail_supported = False
+        else:
+            try:
+                proc = subprocess.run(
+                    [_settings.sandbox_spawn_path, "--jail-probe"],
+                    capture_output=True, timeout=10,
+                )
+                _jail_supported = proc.returncode == 0
+            except (OSError, subprocess.SubprocessError) as exc:
+                logger.warning("[sandbox] jail probe failed: %s", exc)
+                _jail_supported = False
+    return _jail_supported
+
+
+def jail_status() -> str:
+    """One line for logs/diagnostics — what the fence actually is right now."""
+    if not available():
+        return "jail: n/a (no spawner)"
+    return f"jail: mode={jail_mode()} kernel_support={jail_supported()}"
+
+
+def wrap(cmd: list[str], *, jail: str | None) -> list[str]:
+    """Prefix `cmd` so it runs as the `sandbox` user via the setuid helper,
+    confined to `jail` (P-0072).
 
     Fails CLOSED when `REQUIRE_SANDBOX` is set but the spawner is unavailable —
     raises `SandboxUnavailableError` rather than running un-sandboxed. Otherwise
     (local dev / tests, no spawner) it's a no-op and returns `cmd` unchanged so the
     same code path runs without the container's privilege split.
+
+    `jail` is **keyword-only and required** on purpose. Every session's agent runs
+    as the same uid, so the privilege drop alone does not separate one session's
+    workspace from another's — the jail is what does. Making the argument
+    unavoidable means a new launch path cannot quietly inherit the drop without
+    also deciding its confinement (the P-0078 lesson: reusing some seams does not
+    confer the rest). Pass `jail=None` explicitly for a launch with no workspace;
+    under `SANDBOX_JAIL=require` that is refused.
     """
+    global _jail_warned
     if not available():
         if required():
             raise SandboxUnavailableError(
@@ -65,7 +115,39 @@ def wrap(cmd: list[str]) -> list[str]:
             )
         logger.debug("[sandbox] spawner unavailable — running %s un-sandboxed", cmd[:1])
         return cmd
-    return [_settings.sandbox_spawn_path, "--", *cmd]
+
+    mode = jail_mode()
+    if mode == "off":
+        return [_settings.sandbox_spawn_path, "--", *cmd]
+    if jail is None:
+        if mode == "require":
+            raise SandboxUnavailableError(
+                "SANDBOX_JAIL=require but this launch has no workspace to confine "
+                f"({cmd[:1]}) — give it a working directory or relax SANDBOX_JAIL"
+            )
+        return [_settings.sandbox_spawn_path, "--", *cmd]
+    if not jail_supported():
+        if mode == "require":
+            raise SandboxUnavailableError(
+                "SANDBOX_JAIL=require but the kernel cannot enforce a Landlock jail "
+                "(needs Linux >= 5.13 with landlock enabled) — refusing to run an "
+                "agent that could reach another session's workspace"
+            )
+        if not _jail_warned:
+            _jail_warned = True
+            logger.warning(
+                "[sandbox] NO WORKSPACE JAIL — this kernel cannot enforce Landlock, so "
+                "an agent can read and write other sessions' workspaces (P-0072). "
+                "Set SANDBOX_JAIL=require to refuse instead of degrading."
+            )
+        return [_settings.sandbox_spawn_path, "--", *cmd]
+    # realpath: Landlock resolves the actual path, so a symlinked workdir must
+    # not confine the agent to somewhere it will never look.
+    return [
+        _settings.sandbox_spawn_path,
+        "--jail", os.path.realpath(jail),
+        "--", *cmd,
+    ]
 
 
 def git_trust_env(workdir: str | None) -> dict[str, str]:

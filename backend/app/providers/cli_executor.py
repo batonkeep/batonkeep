@@ -523,8 +523,11 @@ class CLIExecutor(Executor):
         # setuid helper so it cannot read /app or control-plane /data (P-0022/D-0020).
         # No-op outside the container, where the helper is absent — but fails CLOSED
         # under REQUIRE_SANDBOX rather than running the CLI as the control-plane user.
+        # The jail (P-0072) is what separates this agent from *other sessions'*
+        # workspaces — the privilege drop alone cannot, since every agent is the
+        # same uid. This is the lane where the pilot #43 cross-session write happened.
         try:
-            cmd = sandbox.wrap(cmd)
+            cmd = sandbox.wrap(cmd, jail=workdir)
         except sandbox.SandboxUnavailableError as exc:
             yield ExecEvent(kind=EventKind.error, message=f"[{self.name}] {exc}")
             return

@@ -82,7 +82,11 @@ class McpStdioToolProvider(ToolProvider):
         REQUIRE_SANDBOX). Raises if the server can't be spawned — callers decide
         whether that's fatal (startup discovery) or a per-call tool error."""
         command = self._command + (self._extra_args() if self._extra_args else [])
-        argv = sandbox.wrap(command) if self._sandboxed else command
+        # Jailed to the server's cwd when it has one. Startup discovery runs with
+        # cwd=None and is therefore unjailed under `warn` — acceptable only because
+        # MCP servers here are backend-configured (exec-env, Tier A), not
+        # agent-supplied; under `SANDBOX_JAIL=require` this refuses instead.
+        argv = sandbox.wrap(command, jail=cwd) if self._sandboxed else command
         params = StdioServerParameters(command=argv[0], args=list(argv[1:]), cwd=cwd)
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as session:

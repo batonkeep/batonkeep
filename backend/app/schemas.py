@@ -190,6 +190,31 @@ class WorkItemPatch(BaseModel):
         return v
 
 
+class SubtaskItemIn(BaseModel):
+    """One checklist item on the way in. `id` present → edit an existing item;
+    absent → mint a new one. `expected` (path/glob) makes it verifiable."""
+
+    id: str | None = None
+    label: str
+    expected: str | None = None
+    status: str | None = None      # set-only: proposed | confirmed | dropped
+    done: bool | None = None       # set-only: mark an asserted item done
+
+
+class SubtaskProposeIn(BaseModel):
+    """Append agent/operator-proposed items (status=proposed)."""
+
+    items: list[SubtaskItemIn]
+    proposed_by: str = "operator"
+
+
+class SubtaskSetIn(BaseModel):
+    """Authoritative confirm/modify: the operator's full desired checklist."""
+
+    items: list[SubtaskItemIn]
+    actor: str = "operator"
+
+
 class WorkItemOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -206,9 +231,22 @@ class WorkItemOut(BaseModel):
     signal: dict[str, Any] | None
     decisions: list[Any] | None
     pinned_evidence: dict[str, Any] | None
+    # P-0069 B2: the sub-task checklist (raw) + its grounded progress roll-up.
+    subtasks: dict[str, Any] | None = None
+    subtask_progress: dict[str, int] | None = None
     created_at: datetime
     updated_at: datetime
     closed_at: datetime | None
+
+    @model_validator(mode="after")
+    def _fill_progress(self):
+        from app import subtasks as _st
+        # Only compute when there's a checklist (keeps legacy work items lean).
+        object.__setattr__(
+            self, "subtask_progress",
+            _st.progress(self.subtasks) if self.subtasks else None,
+        )
+        return self
 
 
 class ContextSourceDeclare(BaseModel):

@@ -129,6 +129,12 @@ class WorkItem(Base):
     # here (work items are mutable state) so the Evidence table itself stays
     # append-only with no update path.
     pinned_evidence: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # P-0069 item 6 (B2): the sub-task checklist = output contract + grounded
+    # progress. {"v":1,"items":[{id,label,expected?,status,done,verified,...}]}.
+    # A verifiable item (declares `expected`) is done+verified only when its glob
+    # matches the committed tree; asserted items stay unverified. Agent-proposed,
+    # operator-confirmed (see app/subtasks.py + [[P-0078]] planner).
+    subtasks: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

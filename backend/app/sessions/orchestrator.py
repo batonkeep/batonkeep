@@ -33,7 +33,7 @@ from app import approvals
 from app.config import get_settings
 from app.db import AsyncSessionLocal
 from app.logging_config import owner_id_var, session_id_var
-from app.models import Session, SessionTurn
+from app.models import Session, SessionTurn, WorkItem
 from app.policy import resolve_effective_policy
 from app.providers.base import EventKind, ExecResult
 from app.providers.registry import (
@@ -638,15 +638,23 @@ async def run_turn_background(
             files=(version["files"] if version else None), lane="chat",
         )
 
-    # Free default output check (P-0069 item 6): flag response artifact links not
-    # backed by this session's committed tree — the P43-D3 misdirected-writes tell,
-    # made machine-checkable. Advisory (the turn still succeeds); persisted on the
-    # turn + surfaced live. Best-effort — never breaks the turn.
+    # After a successful turn, read the committed tree once — shared by the free
+    # default output check (item 6) and the sub-task contract verification (B2).
+    tracked: set[str] = set()
     output_flags: dict | None = None
-    if final_result is not None and response_text:
+    if final_result is not None:
         try:
             tracked = await ws.tracked_files(workspace)
-            unbacked = flag_unbacked_file_claims(response_text, session_id, tracked)
+        except Exception:
+            logger.exception("[session] turn %d tracked-files read failed", turn_id)
+        # Free default output check: flag response artifact links not backed by this
+        # session's committed tree — the P43-D3 misdirected-writes tell, made
+        # machine-checkable. Advisory (the turn still succeeds). Best-effort.
+        try:
+            unbacked = (
+                flag_unbacked_file_claims(response_text, session_id, tracked)
+                if response_text else []
+            )
             if unbacked:
                 output_flags = {"v": 1, "unbacked": unbacked}
                 logger.warning(
@@ -709,6 +717,30 @@ async def run_turn_background(
         session = await db.get(Session, session_id)
         if session is not None:
             session.updated_at = datetime.now(UTC)
+            # B2 (P-0069 item 6): re-verify the bound work item's sub-task contract
+            # against the committed tree — a verifiable item flips done+verified only
+            # when its expected artifact actually landed here, so progress derives
+            # from workspace truth, not a self-report. Best-effort.
+            if final_result is not None and session.work_item_id:
+                try:
+                    from app import subtasks as st
+                    wi = await db.get(WorkItem, session.work_item_id)
+                    if wi is not None and wi.subtasks:
+                        updated, changed = st.verify(wi.subtasks, tracked)
+                        if changed:
+                            wi.subtasks = updated
+                            prog = st.progress(updated)
+                            await _broadcast_event(
+                                session_id, turn_id, seq, EventKind.log,
+                                message=(
+                                    f"sub-tasks: {prog['verified']} verified / "
+                                    f"{prog['total']} confirmed"
+                                ),
+                                phase="subtasks_progress",
+                                data={"work_item_id": wi.id, "progress": prog},
+                            )
+                except Exception:
+                    logger.exception("[session] turn %d subtask verify failed", turn_id)
             # Substrate evidence: a turn that changed files gets its diff indexed
             # in the append-only store. Best-effort — never breaks the turn.
             if version is not None and session.project_id and version.get("diff"):

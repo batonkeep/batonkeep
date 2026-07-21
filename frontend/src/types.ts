@@ -679,9 +679,39 @@ export interface WorkItem {
   parent_id: number | null;
   signal: Record<string, unknown> | null;
   decisions: { ts: string; actor: string; text: string }[] | null;
+  // P-0069 B2: sub-task checklist = output contract + grounded progress.
+  subtasks: { v: number; items: SubtaskItem[] } | null;
+  subtask_progress: SubtaskProgress | null;
   created_at: string;
   updated_at: string;
   closed_at: string | null;
+}
+
+export interface SubtaskItem {
+  id: string;
+  label: string;
+  expected: string | null;       // path/glob → verifiable; null → asserted
+  status: "proposed" | "confirmed" | "dropped";
+  done: boolean;
+  verified: boolean;             // done AND backed by a committed artifact
+  verified_at: string | null;
+  proposed_by: string;
+}
+
+export interface SubtaskProgress {
+  total: number;                 // confirmed items
+  verified: number;              // artifact-backed
+  claimed: number;               // done but asserted/unverified
+  done: number;                  // verified + claimed
+  proposed: number;              // awaiting confirmation
+}
+
+export interface SubtaskItemInput {
+  id?: string;
+  label: string;
+  expected?: string | null;
+  status?: "proposed" | "confirmed" | "dropped";
+  done?: boolean;
 }
 
 export interface WorkItemInput {

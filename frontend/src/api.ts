@@ -50,6 +50,7 @@ import type {
   VersionDiff,
   VersionInfo,
   WorkItem,
+  SubtaskItemInput,
   WorkItemInput,
   WorkItemPatchInput,
 } from "./types";
@@ -112,6 +113,16 @@ export const api = {
     req<WorkItem>(`/projects/${projectId}/work-items`, { method: "POST", body: JSON.stringify(body) }),
   updateWorkItem: (itemId: number, body: WorkItemPatchInput) =>
     req<WorkItem>(`/work-items/${itemId}`, { method: "PATCH", body: JSON.stringify(body) }),
+  // P-0069 B2: append agent/operator-proposed sub-tasks (status=proposed).
+  proposeSubtasks: (itemId: number, items: SubtaskItemInput[], proposedBy = "operator") =>
+    req<WorkItem>(`/work-items/${itemId}/subtasks`, {
+      method: "POST", body: JSON.stringify({ items, proposed_by: proposedBy }),
+    }),
+  // Authoritative confirm/modify: replace the checklist with the operator's list.
+  setSubtasks: (itemId: number, items: SubtaskItemInput[]) =>
+    req<WorkItem>(`/work-items/${itemId}/subtasks`, {
+      method: "PUT", body: JSON.stringify({ items }),
+    }),
   listContextSources: (projectId: string) =>
     req<ContextSource[]>(`/projects/${projectId}/context-sources`),
   // rel_path null → import every source the project manifest declares.

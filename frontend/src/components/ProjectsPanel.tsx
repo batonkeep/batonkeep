@@ -31,6 +31,7 @@ import type {
 import { WORK_ITEM_TRANSITIONS } from "../types";
 import { Badge, Button, Card, Field, Input, Modal, Select, Tabs, type Tone } from "../ui";
 import { fmtTime } from "../format";
+import SubtaskChecklist from "./SubtaskChecklist";
 
 interface Props {
   projects: Project[];
@@ -672,6 +673,7 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
                   )}
                 </div>
               )}
+              <SubtaskChecklist item={w} onChanged={loadDetail} />
             </Card>
           ))}
         </div>

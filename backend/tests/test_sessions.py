@@ -597,6 +597,54 @@ class TestOutputFlags:
             assert turn.output_flags is None
 
 
+class TestSubtaskVerification:
+    """P-0069 B2: a turn under a bound WorkItem re-verifies its sub-task contract
+    against the committed tree — a verifiable item flips to verified only when its
+    expected artifact actually lands, grounding progress in workspace truth."""
+
+    @pytest.mark.asyncio
+    async def test_bound_turn_verifies_expected_artifact(self, session_env):
+        Maker, ws, orch, broadcasts = session_env
+        from app import subtasks as st
+        from app.models import Project, Session as SessionModel, WorkItem
+
+        # Project + work item with a confirmed verifiable item expecting index.html
+        # (the file the MockExecutor writes in session mode).
+        root = await ws.create_workspace("sb", title="P", goal="G")
+        checklist = st.append_proposed(
+            None, [{"label": "landing page", "expected": "index.html"}], proposed_by="agy"
+        )
+        checklist = st.set_items(checklist, [{**checklist["items"][0], "status": "confirmed"}])
+        async with Maker() as db:
+            db.add(Project(id="pb", owner_id="local", name="P"))
+            db.add(WorkItem(id=7, owner_id="local", project_id="pb", title="WI",
+                            subtasks=checklist))
+            db.add(SessionModel(id="sb", owner_id="local", title="P", provider="mock",
+                                workspace_path=root, status="active",
+                                project_id="pb", work_item_id=7))
+            await db.commit()
+
+        # Not yet verified.
+        async with Maker() as db:
+            wi = await db.get(WorkItem, 7)
+            assert wi.subtasks["items"][0]["verified"] is False
+
+        await orch.run_turn("sb", "build the landing page", owner_id="local")
+
+        async with Maker() as db:
+            wi = await db.get(WorkItem, 7)
+            item = wi.subtasks["items"][0]
+            assert item["verified"] is True and item["done"] is True
+            assert item["verified_at"] is not None
+            assert st.progress(wi.subtasks) == {
+                "total": 1, "verified": 1, "claimed": 0, "done": 1, "proposed": 0
+            }
+        # A progress event was broadcast.
+        assert any(
+            (b.get("event") or {}).get("phase") == "subtasks_progress" for b in broadcasts
+        )
+
+
 # ── Rename endpoint (HTTP) ────────────────────────────────────────────────────
 
 class TestSessionRename:

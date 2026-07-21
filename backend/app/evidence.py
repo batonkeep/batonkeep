@@ -46,6 +46,10 @@ EVIDENCE_KINDS = (
     # MANIFEST.json at zip root; `manifest` = that manifest as a standalone
     # viewable file. Captured together by the session package route.
     "package", "manifest",
+    # P-0069 items 2+3: a turn that was interrupted (user cancel or timeout) but
+    # had already written partial edits — its snapshot diff, labeled distinct from
+    # a completed turn's `diff` so salvage/forensics can tell partial from done.
+    "partial-diff",
 )
 
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")

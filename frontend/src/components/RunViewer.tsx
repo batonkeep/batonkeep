@@ -6,7 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { Ban, Download, RotateCw, X } from "lucide-react";
-import type { Run, RunAsset, RunEvent } from "../types";
+import type { Run, RunAsset, RunAttempt, RunEvent, RunStatus } from "../types";
 import { api } from "../api";
 import { useRunEvents } from "../useLiveFeed";
 import { STATUS_META, fmtCost, fmtCount, fmtDuration, fmtTime } from "../format";
@@ -33,6 +33,24 @@ function fmtBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+const TERMINAL_RUN_STATUSES: RunStatus[] = ["succeeded", "failed", "deferred", "cancelled"];
+
+// A finalized run must never render a live "pending" hop (P-0069 item 1). Older
+// runs stored a stale "pending" for the executed candidate — the backend now
+// terminalizes every attempt, but the DB routing outcome is authoritative, so
+// reconcile the *display* against the run's actual outcome rather than trusting
+// a possibly-stale per-hop value. The executed provider's hop inherits the run
+// status; any other still-pending candidate on a terminal run was abandoned.
+type HopOutcome = RunAttempt["outcome"] | "abandoned";
+function hopOutcome(a: RunAttempt, run: Run): HopOutcome {
+  if (a.outcome !== "pending") return a.outcome;
+  if (!TERMINAL_RUN_STATUSES.includes(run.status)) return "pending"; // genuinely in flight
+  if (run.provider && a.provider === run.provider) {
+    return run.status === "succeeded" ? "success" : "error";
+  }
+  return "abandoned";
 }
 
 const KIND_COLOR: Record<string, string> = {
@@ -195,13 +213,14 @@ export default function RunViewer({ run, taskName, now, onRequeue, onCancel, onC
         <div className="flex flex-wrap items-center gap-1.5 border-b border-edge px-4 py-2 font-mono text-[11px]">
           <span className="text-muted">hops:</span>
           {run.attempts.map((a, i) => {
+            const outcome = hopOutcome(a, run);
             const tone =
-              a.outcome === "success" ? "ok" :
-              a.outcome === "rate_limited" ? "defer" :
-              a.outcome === "error" || a.outcome === "unavailable" ? "bad" : "neutral";
+              outcome === "success" ? "ok" :
+              outcome === "rate_limited" ? "defer" :
+              outcome === "error" || outcome === "unavailable" ? "bad" : "neutral";
             return (
               <Badge key={i} tone={tone as "ok" | "defer" | "bad" | "neutral"}>
-                {a.provider} · {a.outcome}
+                {a.provider} · {outcome}
               </Badge>
             );
           })}

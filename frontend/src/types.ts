@@ -877,6 +877,18 @@ export interface Approval {
 
 export interface ApprovalDecideResult {
   approval: Approval;
-  // canonical_write + approved: what was applied ({rel_path, commit}).
+  // canonical_write + approved: what was applied — {rel_path, commit,
+  // declared_source} (the last null when nothing needed declaring).
   applied: Record<string, unknown> | null;
+}
+
+// P-0073: what the canonical root holds that no declared source covers — i.e.
+// what a session's projection would silently lack. `undeclared_count` is a
+// floor when `truncated` (the scan is bounded); `sample` is illustrative.
+export interface ContextCoverage {
+  root_bound: boolean;
+  declared_count: number;
+  undeclared_count: number;
+  sample: string[];
+  truncated: boolean;
 }

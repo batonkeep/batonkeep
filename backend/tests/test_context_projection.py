@@ -366,11 +366,14 @@ async def test_projection_materializes_read_only_and_persists_receipt(proj_db, t
             workdir=str(workdir), run_id=None,
         )
     assert receipt is not None and receipt.id is not None
-    assert receipt.projection_version == "proj-v2"
+    assert receipt.projection_version == "proj-v3"
     assert [s["rel_path"] for s in receipt.sources] == ["README.md", "runbooks"]
     assert all(s["revision"] for s in receipt.sources)
     assert receipt.approx_bytes > 0
-    assert receipt.exclusions is None
+    # Nothing declared was *cut* — but the root holds docs/plan.md, which no
+    # source declares, so the P-0073 coverage warning is the only exclusion.
+    assert [x["reason"] for x in receipt.exclusions] == ["undeclared"]
+    assert receipt.exclusions[0]["count"] == 1
 
     ctx = workdir / "context"
     assert (ctx / "README.md").read_text() == "# readme"

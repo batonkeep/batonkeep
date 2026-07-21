@@ -77,6 +77,7 @@ from app.schemas import (
     CloudflareStatusOut,
     CockpitOut,
     ConsoleConfig,
+    ContextCoverageOut,
     ContextReceiptOut,
     ContextSourceDeclare,
     ContextSourceOut,
@@ -934,6 +935,42 @@ async def list_context_sources(
     return [ContextSourceOut.model_validate(s) for s in result.scalars().all()]
 
 
+@app.get(
+    "/api/projects/{project_id}/context-coverage",
+    response_model=ContextCoverageOut,
+    tags=["projects"],
+)
+async def get_context_coverage(
+    project_id: str,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """What the context root holds that no declared source covers (P-0073).
+
+    The same measurement a projection records as an `undeclared` exclusion,
+    exposed *before* a session runs — the operator's chance to declare the gap
+    rather than read about it in a receipt afterwards.
+    """
+    from app import project_context
+
+    project = await _get_owned_project(db, owner_id, project_id)
+    sources = list(
+        (
+            await db.execute(
+                select(ContextSource).where(ContextSource.project_id == project_id)
+            )
+        ).scalars().all()
+    )
+    coverage = project_context.scan_undeclared(project, sources)
+    return ContextCoverageOut(
+        root_bound=bool(project.root_path),
+        declared_count=len(sources),
+        undeclared_count=coverage.count,
+        sample=coverage.sample,
+        truncated=coverage.truncated,
+    )
+
+
 @app.post(
     "/api/projects/{project_id}/context-sources",
     response_model=ContextSourcesOut,
@@ -1283,7 +1320,9 @@ async def decide_approval(
         if project is None or project.owner_id != owner_id:
             raise HTTPException(status_code=404, detail="Project not found")
         try:
-            applied = await canonical.apply(db, row, project)
+            applied = await canonical.apply(
+                db, row, project, declare_source=body.declare_source
+            )
         except canonical.CanonicalWriteError as exc:
             # Approval and apply land together or not at all: an approval that
             # applied nothing would carry no commit and no decision evidence.

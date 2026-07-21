@@ -22,6 +22,7 @@ import DOMPurify from "dompurify";
 import { api } from "../api";
 import type {
   Approval,
+  ContextCoverage,
   ContextSource,
   Evidence,
   PlannerRun,
@@ -136,6 +137,7 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
   const [sources, setSources] = useState<ContextSource[]>([]);
   const [evidence, setEvidence] = useState<Evidence[]>([]);
   const [approvals, setApprovals] = useState<Approval[]>([]);
+  const [coverage, setCoverage] = useState<ContextCoverage | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // ── Document viewer modal (evidence AND context sources — one viewer) ───────
@@ -235,6 +237,7 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
     api.listContextSources(selectedId).then(setSources).catch(() => setSources([]));
     api.listEvidence(selectedId).then(setEvidence).catch(() => setEvidence([]));
     api.listApprovals({ project_id: selectedId }).then(setApprovals).catch(() => setApprovals([]));
+    api.getContextCoverage(selectedId).then(setCoverage).catch(() => setCoverage(null));
     api.listProjectPlannerRuns(selectedId).then(setPlannerHistory).catch(() => setPlannerHistory([]));
   }, [selectedId]);
 
@@ -243,6 +246,8 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
     setSources([]);
     setEvidence([]);
     setApprovals([]);
+    setCoverage(null);
+    setDeclaredNote(null);
     // Clear the planner surfaces too, so switching projects never shows the previous
     // project's selection or spend while the new one loads.
     setPlannerSettings(null);
@@ -477,12 +482,23 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
   // ── Approvals (canonical writes) ───────────────────────────────────────────
   const [openDiffId, setOpenDiffId] = useState<number | null>(null);
   const [decidingId, setDecidingId] = useState<number | null>(null);
+  // P-0073: approving also declares the path as a context source. Opt-out is
+  // per-proposal and default-off (i.e. declaring is the default) — the failure
+  // it prevents is silent, the cost of an unwanted row is visible.
+  const [skipDeclare, setSkipDeclare] = useState<Record<number, boolean>>({});
+  const [declaredNote, setDeclaredNote] = useState<string | null>(null);
 
   const handleDecide = async (a: Approval, approved: boolean) => {
     setDecidingId(a.id);
     setError(null);
     try {
-      await api.decideApproval(a.id, approved);
+      const res = await api.decideApproval(a.id, approved, !skipDeclare[a.id]);
+      const declared = res.applied?.declared_source as { rel_path?: string } | null;
+      setDeclaredNote(
+        declared?.rel_path
+          ? `Declared ${declared.rel_path} as a context source — sessions will now receive it.`
+          : null,
+      );
       loadDetail(); // approve applies the write + records decision evidence
     } catch (e) {
       setError(e instanceof Error ? e.message : "Decision failed.");
@@ -1134,6 +1150,23 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
                     {open ? "hide diff" : "show diff"}
                   </button>
                   {open && <div className="mt-2"><DiffView diff={diff} /></div>}
+                  {/* Approving canon and making it reach sessions used to be two
+                      separate acts, and the gap was silent — one decision now
+                      does both unless the approver says otherwise. */}
+                  <label className="mt-3 flex cursor-pointer items-start gap-2 text-[11px] text-muted">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 accent-brand"
+                      checked={!skipDeclare[a.id]}
+                      onChange={(e) =>
+                        setSkipDeclare((s) => ({ ...s, [a.id]: !e.target.checked }))
+                      }
+                    />
+                    <span>
+                      Declare as a context source so later sessions receive it.
+                      Skipped automatically if an existing source already covers this path.
+                    </span>
+                  </label>
                   <div className="mt-3 flex justify-end gap-2">
                     <Button
                       variant="outline"
@@ -1204,6 +1237,35 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
             {importWarnings.length > 0 && (
               <div className="rounded-lg border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn">
                 {importWarnings.map((w, i) => <p key={i}>{w}</p>)}
+              </div>
+            )}
+            {declaredNote && (
+              <div className="rounded-lg border border-ok/40 bg-ok/10 px-3 py-2 text-xs text-ok">
+                {declaredNote}
+              </div>
+            )}
+            {/* P-0073: a projection that is a strict subset of the root is
+                otherwise silent until an agent goes looking for what it was
+                briefed to read. Shown before a session runs, not after. */}
+            {coverage && coverage.undeclared_count > 0 && (
+              <div className="rounded-lg border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn">
+                <p className="font-semibold">
+                  {coverage.undeclared_count}
+                  {coverage.truncated ? "+" : ""} file
+                  {coverage.undeclared_count === 1 ? "" : "s"} in the context root
+                  {coverage.declared_count === 0
+                    ? " are not declared as sources"
+                    : " are not covered by any declared source"}
+                  .
+                </p>
+                <p className="mt-1 opacity-80">
+                  Sessions receive only declared sources, so this material is not in
+                  their projection — declare it below, or from the manifest.
+                </p>
+                <p className="mt-1 font-mono opacity-70">
+                  {coverage.sample.join(" · ")}
+                  {coverage.undeclared_count > coverage.sample.length && " · …"}
+                </p>
               </div>
             )}
             {!selected.root_path && (

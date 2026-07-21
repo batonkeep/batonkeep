@@ -7,6 +7,7 @@ import type {
   AuthStatus,
   Cockpit,
   ConsoleConfig,
+  ContextCoverage,
   ContextSource,
   ContextSourcesResult,
   CloudflareConfig,
@@ -198,11 +199,18 @@ export const api = {
   },
   // Decide a pending canonical-write proposal (code-exec approvals go through
   // their session route — the backend refuses them here).
-  decideApproval: (approvalId: number, approved: boolean) =>
+  // `declareSource` (P-0073): approving also declares the written path as a
+  // context source so the write reaches later sessions. Defaults to true
+  // server-side; a no-op when an existing source already covers the path.
+  decideApproval: (approvalId: number, approved: boolean, declareSource = true) =>
     req<ApprovalDecideResult>(`/approvals/${approvalId}/decide`, {
       method: "POST",
-      body: JSON.stringify({ approved }),
+      body: JSON.stringify({ approved, declare_source: declareSource }),
     }),
+  // What the context root holds that no declared source covers — the gap a
+  // session's projection would silently have.
+  getContextCoverage: (projectId: string) =>
+    req<ContextCoverage>(`/projects/${projectId}/context-coverage`),
 
   // ── Tasks ──────────────────────────────────────────────────────────────
   listTasks: () => req<Task[]>("/tasks"),

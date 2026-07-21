@@ -47,7 +47,7 @@ from app.work_ledger import (
 logger = logging.getLogger(__name__)
 _settings = get_settings()
 
-PROJECTION_VERSION = "proj-v2"
+PROJECTION_VERSION = "proj-v3"  # v3: P-0073 undeclared-content coverage warning
 CONTEXT_DIRNAME = "context"
 # Where a work item's pinned evidence is materialized inside the projected
 # context dir: <workdir>/context/evidence/<evidence_id>_<basename>.
@@ -199,6 +199,94 @@ def _iter_files(base: str):
             if os.path.isfile(abs_path):
                 collected.append((os.path.relpath(abs_path, base), abs_path))
     yield from sorted(collected)
+
+
+def covers(source_rel: str, file_rel: str) -> bool:
+    """Does a declared source at `source_rel` contain `file_rel`? A source of
+    "." is the whole root. Shared by projection-coverage and by the canonical
+    apply path, so "already reachable" means the same thing in both."""
+    return (
+        source_rel == "."
+        or file_rel == source_rel
+        or file_rel.startswith(source_rel + os.sep)
+    )
+
+
+@dataclass
+class Coverage:
+    """What the canonical root holds that no declared source covers — the
+    P-0073 warning. `count` is a floor when `truncated` (the scan is bounded);
+    `sample` is illustrative, never the full list."""
+
+    count: int = 0
+    sample: list[str] = field(default_factory=list)
+    truncated: bool = False
+
+
+COVERAGE_SAMPLE_MAX = 10
+
+
+def scan_undeclared(project: Project, sources: list[ContextSource]) -> Coverage:
+    """Files under the project's context root that no *declared* source covers.
+
+    This is the seam P-0073 exists for: "approved into canon" and "projected
+    into sessions" read as one promise but are two systems, and a projection
+    that is a strict subset of the root is otherwise silent. Measured against
+    *declared* sources, not projected ones, so a source cut for budget/missing
+    keeps its own exclusion reason instead of being double-reported here.
+
+    Bounded and best-effort: a walk error or the file cap ends the scan rather
+    than failing a projection, since this only ever produces a warning.
+    """
+    if not project.root_path or not os.path.isdir(project.root_path):
+        return Coverage()
+    rels = [s.rel_path for s in sources]
+    if any(r == "." for r in rels):
+        return Coverage()  # the whole root is declared — nothing to scan
+
+    # The manifest describes the context; it is not context. Same for the
+    # evidence dir, which is the evidence store's own tree.
+    skip = {DEFAULT_MANIFEST_REL}
+    try:
+        manifest = load_manifest(project)
+    except ManifestError:
+        manifest = None
+    if manifest is not None and manifest.evidence_dir:
+        rels = [*rels, manifest.evidence_dir]
+
+    cov = Coverage()
+    scanned = 0
+    cap = _settings.context_coverage_scan_max_files
+    root = project.root_path
+    try:
+        for dirpath, dirnames, filenames in os.walk(root):
+            base = os.path.relpath(dirpath, root)
+            base = "" if base == "." else base
+            # Prune: a declared directory needs no walking (it is covered
+            # wholesale), and .git is never context. Pruning is what keeps the
+            # scan proportional to the *undeclared* part of the root.
+            dirnames[:] = sorted(
+                d for d in dirnames
+                if d != ".git"
+                and not any(covers(r, os.path.join(base, d)) for r in rels)
+            )
+            for name in sorted(filenames):
+                file_rel = os.path.join(base, name)
+                if not os.path.isfile(os.path.join(dirpath, name)):
+                    continue
+                scanned += 1
+                if scanned > cap:
+                    cov.truncated = True
+                    return cov
+                if file_rel in skip or any(covers(r, file_rel) for r in rels):
+                    continue
+                cov.count += 1
+                if len(cov.sample) < COVERAGE_SAMPLE_MAX:
+                    cov.sample.append(file_rel)
+    except OSError as exc:
+        logger.warning("coverage scan of %s stopped: %s", root, exc)
+        cov.truncated = True
+    return cov
 
 
 def _sha256_file(path: str) -> str:
@@ -484,6 +572,22 @@ async def project_for_execution(
     elif sources:
         exclusions = [{"rel_path": s.rel_path, "reason": "no-root"} for s in sources]
 
+    # P-0073: a projection that is a strict subset of the canonical root is
+    # otherwise silent — the pilot #43 failure mode, where an actor briefed to
+    # read approved canon received a projection that simply lacked it and went
+    # looking for the files on disk. Recorded against the root itself so the
+    # two required keys stay present for any consumer, with the count/sample
+    # carrying the detail.
+    coverage = scan_undeclared(project, sources)
+    if coverage.count:
+        exclusions.append({
+            "rel_path": ".",
+            "reason": "undeclared",
+            "count": coverage.count,
+            "sample": coverage.sample,
+            "truncated": coverage.truncated,
+        })
+
     # Evidence index for the ledger: paths + digests only (never content) —
     # PROJECT-WIDE, not just the bound work item. The whole point of durable
     # evidence is that a *fresh* work item's operator can see its predecessors'
@@ -569,6 +673,7 @@ async def project_for_execution(
         changed_files=changed_files or [],
         evidence_index=evidence_index,
         pinned_inputs=[m["rel_path"] for m in materialized],
+        undeclared_count=coverage.count,
     )
     ledger_path = os.path.join(workdir, LEDGER_FILENAME)
     try:

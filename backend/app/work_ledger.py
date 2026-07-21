@@ -9,6 +9,12 @@ inputs**: that is the property `ContextReceipt.ledger_sha` pins, and what the
 cross-provider cold-handoff proof relies on (a fresh provider continues from
 projection + ledger alone).
 
+One input is not a DB field: `undeclared_count` (P-0073) measures the
+projection against the canonical root, because an actor must be told when its
+view is a strict subset of the truth store. It is still *recorded* state — the
+projection writes it to the receipt's exclusions — so the reproducibility
+contract holds against the receipt, which is what a cold reproducer has.
+
 Determinism rules: no wall-clock reads, no row timestamps (two identical work
 items created at different times must hash identically), stored iteration
 order only (decision `ts` values appear because they are stored facts, not
@@ -70,6 +76,7 @@ def render_ledger(
     evidence_index: Sequence[Mapping[str, Any]] = (),
     pending_approvals: Sequence[str] = (),
     pinned_inputs: Sequence[str] = (),
+    undeclared_count: int = 0,
 ) -> str:
     """Render the working ledger. Pure function of its inputs — same inputs,
     same bytes (see module docstring for what must stay out of here)."""
@@ -109,6 +116,24 @@ def render_ledger(
         [format_evidence_line(e) for e in evidence_index] or ["- (none)"]
     )
     out.append("")
+    # P-0073: only rendered when the projection is a strict subset of the
+    # canonical root, so a fully-declared project's ledger keeps its exact
+    # prior bytes. The closing instruction is the point: an actor whose view is
+    # short must say so, not go hunting on disk for what it was briefed to read
+    # (the pilot #43 chain that ended in a cross-session write).
+    if undeclared_count > 0:
+        out.append("## Context coverage")
+        out.append(
+            f"- INCOMPLETE: {undeclared_count} file(s) under this project's context "
+            "root are not covered by any declared source, so they are NOT in your "
+            "projection."
+        )
+        out.append(
+            "- If your brief refers to material you cannot find under `context/`, "
+            "this is why. Record what is missing and stop; do not search the "
+            "filesystem for it."
+        )
+        out.append("")
     out.append("## Next action")
     out.append(
         _line(work_item.next_action if work_item is not None else None, "(none recorded)")

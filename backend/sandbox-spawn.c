@@ -168,10 +168,11 @@ static int allow_path(int ruleset_fd, const char *path, __u64 access) {
  * writable HOME. Must be called AFTER the privilege drop and immediately before
  * execvp — the restriction is inherited across exec and cannot be undone. */
 static int apply_jail(const char *jail, const char *home) {
+    errno = 0;
     int abi = landlock_abi();
     if (abi < 0) {
-        fprintf(stderr, "sandbox-spawn: landlock unavailable "
-                        "(needs Linux >= 5.13 with landlock enabled)\n");
+        fprintf(stderr, "sandbox-spawn: landlock unavailable (%s) — needs Linux "
+                        ">= 5.13 with landlock enabled\n", strerror(errno));
         return -1;
     }
 
@@ -231,9 +232,18 @@ static int apply_jail(const char *jail, const char *home) {
  * drops the Landlock headers fails the build instead of silently shipping an
  * unfenced helper. */
 static int do_jail_probe(void) {
+    errno = 0;
     int abi = landlock_abi();
     if (abi < 0) {
-        fprintf(stderr, "landlock: compiled in, unavailable on this kernel\n");
+        /* errno separates the two very different causes an operator would
+         * otherwise have to diagnose by hand: ENOSYS = this kernel has no
+         * Landlock at all (e.g. Docker Desktop's LinuxKit VM); EPERM/EACCES =
+         * present but blocked, typically by a seccomp profile. */
+        const char *why =
+            errno == ENOSYS ? "kernel has no landlock support"
+          : (errno == EPERM || errno == EACCES) ? "blocked (seccomp profile?)"
+          : strerror(errno);
+        fprintf(stderr, "landlock: compiled in, unavailable — %s\n", why);
         return 1;
     }
     printf("landlock: abi %d\n", abi);

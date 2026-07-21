@@ -43,6 +43,18 @@ jobs:
       - name: Tests (pytest + alembic drift guard)
         run: uv run pytest tests/ -q
 
+  # P-0072: the workspace jail is kernel-enforced, so unit tests can only cover
+  # the policy around it. This job proves the fence itself on a Landlock-capable
+  # kernel — the one place in the pipeline that can. It skips loudly (never
+  # silently) if the runner image ever ships without Landlock.
+  jail:
+    name: sandbox — workspace jail (Landlock)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Verify an agent cannot reach another session's workspace
+        run: sudo backend/scripts/verify-jail.sh
+
   frontend:
     name: frontend — typecheck + build
     runs-on: ubuntu-latest

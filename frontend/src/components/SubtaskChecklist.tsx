@@ -116,7 +116,16 @@ export default function SubtaskChecklist({
               ) : (
                 <Glyph item={s} />
               )}
-              <span className={s.verified ? "text-ink" : "text-muted"}>{s.label}</span>
+              <span
+                className={s.verified ? "text-ink" : "text-muted"}
+                title={
+                  s.verified && s.verified_by
+                    ? `verified by ${s.verified_by.lane} ${s.verified_by.ref}`
+                    : undefined
+                }
+              >
+                {s.label}
+              </span>
               {s.expected && (
                 <span className="font-mono text-[10px] text-muted/70">{s.expected}</span>
               )}

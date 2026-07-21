@@ -586,6 +586,7 @@ class RunOut(BaseModel):
     tool_calls: int
     markdown_path: str | None
     json_path: str | None
+    output_flags: dict | None = None  # P-0069: outputs_missing advisory (NULL = clean)
     # Run assets (P-0050) are fetched via GET /api/runs/{id}/assets, not inlined here
     # — keeps the base RunOut free of an eager-load on every list/broadcast.
     created_at: datetime

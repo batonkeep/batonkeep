@@ -111,6 +111,8 @@ export interface Run {
   tool_calls: number;
   markdown_path: string | null;
   json_path: string | null;
+  // P-0069: outputs_missing sub-task-contract advisory (NULL = clean).
+  output_flags: OutputFlags | null;
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
@@ -395,9 +397,10 @@ export interface SessionTurn {
   // D-0017 thread 2: the per-file artifacts this turn produced (the headline
   // result surfaced to the user, above any scraped agent text).
   changed_files: FileChange[] | null;
-  // P-0069 item 6: referenced files the response linked to that aren't in this
-  // session's committed tree (advisory) — {v, unbacked:[...]} or null when clean.
-  output_flags: { v: number; unbacked: string[] } | null;
+  // P-0069 item 6: workspace-truth output advisories (all optional; null = clean).
+  // `unbacked` = referenced files not in this session's committed tree; `outputs_missing`
+  // = confirmed verifiable sub-tasks whose artifact this turn left unmet.
+  output_flags: OutputFlags | null;
   // Per-turn token/cost usage (API path).
   tokens_in?: number;
   tokens_out?: number;
@@ -695,7 +698,17 @@ export interface SubtaskItem {
   done: boolean;
   verified: boolean;             // done AND backed by a committed artifact
   verified_at: string | null;
+  // P-0069 tail: which unit of work grounded this verification. `ref` is globally
+  // unique (session id / run:<id>); `seq` alone collides across same-WI sessions.
+  verified_by: { lane: string; ref: string; seq?: number; at: string } | null;
   proposed_by: string;
+}
+
+// P-0069: workspace-truth output advisories on a turn/run (all optional).
+export interface OutputFlags {
+  v: number;
+  unbacked?: string[];
+  outputs_missing?: { id?: string; label: string; expected: string | null }[];
 }
 
 export interface SubtaskProgress {

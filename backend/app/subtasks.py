@@ -64,6 +64,7 @@ def make_item(
         "done": False,
         "verified": False,
         "verified_at": None,
+        "verified_by": None,
         "proposed_by": (proposed_by or "operator")[:96],
     }
 
@@ -120,6 +121,7 @@ def set_items(
             # carry verification forward when the target is unchanged
             item["verified"] = bool(old.get("verified"))
             item["verified_at"] = old.get("verified_at")
+            item["verified_by"] = old.get("verified_by")
             item["done"] = bool(old.get("done"))
         # an asserted item may be explicitly marked done by the operator
         if item["expected"] is None and bool(r.get("done")):
@@ -128,14 +130,26 @@ def set_items(
     return {"v": SUBTASKS_VERSION, "items": out}
 
 
-def verify(subtasks: dict | None, tracked: set[str]) -> tuple[dict[str, Any] | None, bool]:
+def verify(
+    subtasks: dict | None,
+    tracked: set[str],
+    *,
+    source: dict | None = None,
+) -> tuple[dict[str, Any] | None, bool]:
     """Re-verify confirmed **verifiable** items against the committed tree. A verifiable
     item is done+verified iff its `expected` glob matches a tracked file. Idempotent;
-    returns (updated_subtasks_or_None, changed). Asserted items are untouched."""
+    returns (updated_subtasks_or_None, changed). Asserted items are untouched.
+
+    `source` (optional) stamps provenance on an item that *newly* verifies:
+    `verified_by = {lane, ref, seq?, at}`. Because a WorkItem may be worked across
+    several sessions/runs whose per-lane turn `seq` both start at 1, `seq` alone is
+    ambiguous WorkItem-wide; the globally-unique `ref` (session id / `run:<id>`)
+    disambiguates which unit of work grounded each verification (P-0069 tail)."""
     items = _items(subtasks)
     if not items:
         return subtasks, False
     changed = False
+    stamp = _verified_by(source) if source else None
     out: list[dict] = []
     for i in items:
         item = dict(i)
@@ -146,17 +160,43 @@ def verify(subtasks: dict | None, tracked: set[str]) -> tuple[dict[str, Any] | N
                 item["verified"] = True
                 item["done"] = True
                 item["verified_at"] = _now()
+                item["verified_by"] = stamp
                 changed = True
             elif not hit and item.get("verified"):
                 # the artifact disappeared (e.g. reverted) — reflect truth
                 item["verified"] = False
                 item["done"] = False
                 item["verified_at"] = None
+                item["verified_by"] = None
                 changed = True
         out.append(item)
     if not changed:
         return subtasks, False
     return {"v": SUBTASKS_VERSION, "items": out}, True
+
+
+def _verified_by(source: dict) -> dict[str, Any]:
+    """Normalize a verification-provenance stamp. `lane` ("session"|"task") + a
+    globally-unique `ref` are the disambiguators; `seq` is kept for display only."""
+    stamp: dict[str, Any] = {
+        "lane": str(source.get("lane") or "")[:16] or "unknown",
+        "ref": str(source.get("ref") or "")[:96],
+        "at": _now(),
+    }
+    if source.get("seq") is not None:
+        stamp["seq"] = source["seq"]
+    return stamp
+
+
+def unverified_verifiable(subtasks: dict | None) -> list[dict[str, Any]]:
+    """Confirmed **verifiable** items whose artifact is not (yet) present — the
+    contract's still-open obligations. Used to derive the `outputs_missing` advisory:
+    a succeeded turn/run that committed work yet left these unmet (P-0069 tail)."""
+    return [
+        {"id": i.get("id"), "label": i.get("label"), "expected": i.get("expected")}
+        for i in _items(subtasks)
+        if i.get("status") == "confirmed" and i.get("expected") and not i.get("verified")
+    ]
 
 
 def progress(subtasks: dict | None) -> dict[str, int]:

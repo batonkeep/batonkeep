@@ -636,6 +636,47 @@ async def _do_execute(run_id: int, task: Task) -> None:
             run.provider or "unknown", final_usage.tokens_in + final_usage.tokens_out
         )
 
+        # P-0069 tail: verify the bound work item's sub-task contract against the
+        # artifacts this run actually produced (the task-lane analog of the session
+        # verify — its "committed tree" is the promoted output rel_paths). A verifiable
+        # item flips done+verified only when its glob matches a produced artifact;
+        # an unmet contract on a succeeded run records an `outputs_missing` advisory.
+        # Best-effort — verification must never fail the run that produced the work.
+        if run.work_item_id:
+            try:
+                from app import subtasks as st
+                from app.models import WorkItem
+                produced = {c["rel_path"] for c in captured}
+                if run.markdown_path:
+                    produced.add("output.md")
+                if run.json_path:
+                    produced.add("output.json")
+                wi = await db.get(WorkItem, run.work_item_id)
+                if wi is not None and wi.subtasks:
+                    updated, changed = st.verify(
+                        wi.subtasks, produced,
+                        source={"lane": "task", "ref": f"run:{run_id}"},
+                    )
+                    if changed:
+                        wi.subtasks = updated
+                    after = st.progress(updated)
+                    missing = st.unverified_verifiable(updated)
+                    # A run is a single terminal unit of work (unlike a multi-turn
+                    # session), so ANY unmet verifiable obligation at completion is
+                    # under-delivery — no "advanced nothing" noise gate needed here.
+                    if missing:
+                        run.output_flags = {"v": 1, "outputs_missing": missing}
+                    if changed:
+                        await ws_manager.broadcast({
+                            "type": "subtasks.progress",
+                            "work_item_id": wi.id,
+                            "progress": after,
+                        })
+            except Exception:
+                logger.exception(
+                    "[orchestrator] run %d: subtask verify failed", run_id
+                )
+
         await db.commit()
         await _record_routing_outcome(db, run)  # P-0053 slice 2
         await _broadcast_run(run)

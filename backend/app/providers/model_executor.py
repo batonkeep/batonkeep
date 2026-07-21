@@ -28,7 +28,12 @@ from app.providers.registry import ProviderDef, ProviderInstance
 # never imports a tool module directly — it lists schemas and dispatches calls
 # through the registry, so a future external-MCP-server provider drops in
 # transparently.
-from app.providers.tools.registry import PLANNER_TOOL_NAMES, get_tool_registry
+from app.providers.tools.registry import (
+    PLANNER_ITEM_TOOL_NAMES,
+    PLANNER_PROJECT_TOOL_NAMES,
+    PLANNER_TOOL_NAMES,
+    get_tool_registry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,20 +52,26 @@ _GATED_TOOL_NAMES = {_CODE_EXEC_NAME, _IMAGE_GEN_NAME, *PLANNER_TOOL_NAMES}
 _BASE_TOOL_SCHEMAS = [s for s in TOOL_SCHEMAS if s["name"] not in _GATED_TOOL_NAMES]
 _CODE_EXEC_SCHEMA = next((s for s in TOOL_SCHEMAS if s["name"] == _CODE_EXEC_NAME), None)
 _IMAGE_GEN_SCHEMA = next((s for s in TOOL_SCHEMAS if s["name"] == _IMAGE_GEN_NAME), None)
-_PLANNER_SCHEMAS = [s for s in TOOL_SCHEMAS if s["name"] in PLANNER_TOOL_NAMES]
+_PLANNER_ITEM_SCHEMAS = [s for s in TOOL_SCHEMAS if s["name"] in PLANNER_ITEM_TOOL_NAMES]
+_PLANNER_PROJECT_SCHEMAS = [s for s in TOOL_SCHEMAS if s["name"] in PLANNER_PROJECT_TOOL_NAMES]
 
 
 def _active_tool_schemas(extra: dict | None) -> list[dict]:
     """The tool schemas offered for a run. A **planning turn** (P-0078,
     `extra['planning']`) gets *only* the planner toolset — its distinct work class
-    is fenced from the build/research tools. Otherwise: the base set plus `code_exec`
-    when the run's execution policy permits (P-0046), plus `image_generate` when the
-    active provider is image-capable (slice 6 / P-0037)."""
+    is fenced from the build/research tools — and only the half matching its scope:
+    a turn bound to a work item gets the item tools, a project-level turn gets the
+    project tools. Offering a tool that can only answer "no work item is bound"
+    wastes a round and invites the model to keep retrying it. Otherwise: the base set
+    plus `code_exec` when the run's execution policy permits (P-0046), plus
+    `image_generate` when the active provider is image-capable (slice 6 / P-0037)."""
     from app.providers.tools.code_exec import policy_offers_tool
 
     extra = extra or {}
     if extra.get("planning"):
-        return list(_PLANNER_SCHEMAS)
+        if extra.get("work_item_id"):
+            return list(_PLANNER_ITEM_SCHEMAS)
+        return list(_PLANNER_PROJECT_SCHEMAS)
     schemas = list(_BASE_TOOL_SCHEMAS)
     if _CODE_EXEC_SCHEMA and policy_offers_tool(
         extra.get("exec_policy"), bool(extra.get("human_in_loop"))
@@ -89,9 +100,27 @@ _PLANNING_SYSTEM_PROMPT = (
     "propose_subtasks to lay out the concrete sub-tasks that would complete it — give an "
     "`expected` file path/glob for any sub-task that produces a file, so progress can be "
     "verified against real artifacts; (2) call set_next_action with the single most "
-    "honest next step. Your sub-tasks are proposals the operator reviews and confirms — "
-    "you cannot mark them done. Be specific and concise; do not invent work beyond the "
-    "objective. When you have proposed the plan, stop and give a one-paragraph summary."
+    "honest next step. Use decompose only for a piece that is genuinely its own unit of "
+    "work with its own objective and lifecycle — sub-tasks are the right tool for steps "
+    "inside this work item, and a child work item costs the operator a separate review. "
+    "Everything you produce is a proposal the operator reviews and confirms — you cannot "
+    "mark sub-tasks done, and child work items do nothing until accepted. Be specific and "
+    "concise; do not invent work beyond the objective. When you have proposed the plan, "
+    "stop and give a one-paragraph summary."
+)
+
+
+_PROJECT_PLANNING_SYSTEM_PROMPT = (
+    "You are the planner for this project as a whole — a proposer, not an executor. No "
+    "single work item is in scope: you are reading the ledger. Do two things: (1) call "
+    "summarize_project with an honest one-line headline plus the work item ids that "
+    "deserve attention now and the ones that look stalled — reference items by their "
+    "numeric id, and do not claim progress the ledger does not show; (2) call "
+    "triage_signal for work this project clearly needs that no existing work item covers "
+    "— check the list you were given first and do not duplicate. Prefer a short, honest "
+    "read-out over a long one, and propose no work item you cannot justify from the "
+    "state you were shown. New work items land as proposals the operator accepts or "
+    "rejects. When done, stop and give a one-paragraph summary."
 )
 
 
@@ -99,11 +128,14 @@ def _base_system_prompt(extra: dict | None) -> str:
     """The system prompt for a run — `_SYSTEM_PROMPT` plus the exec-env capability
     blurb when code-exec is offered (P-0046), so the model knows the pinned
     toolchain it can rely on rather than probing for it. A planning turn (P-0078)
-    uses a wholly different, planner-flavored prompt."""
+    uses a wholly different, planner-flavored prompt — item-scoped or project-scoped
+    to match the toolset it was actually given."""
     from app.providers.tools.code_exec import policy_offers_tool
 
     if extra and extra.get("planning"):
-        return _PLANNING_SYSTEM_PROMPT
+        if extra.get("work_item_id"):
+            return _PLANNING_SYSTEM_PROMPT
+        return _PROJECT_PLANNING_SYSTEM_PROMPT
 
     prompt = _SYSTEM_PROMPT
     if extra and extra.get("image_gen"):

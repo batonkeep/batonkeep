@@ -100,6 +100,16 @@ def test_state_machine_stamps_and_clears_closed_at(client, project_id):
     ).status_code == 422
 
 
+def test_api_cannot_push_work_back_into_proposed(client, project_id):
+    """`proposed` is the P-0078 planner's entry state: only the planner mints one, and
+    the accept/reject edges lead out of it. No edge leads *in*, so an operator can
+    never demote confirmed work back into the proposal queue."""
+    wi = _create(client, project_id)
+    assert client.patch(
+        f"/api/work-items/{wi['id']}", json={"state": "proposed"}
+    ).status_code == 400
+
+
 def test_invalid_transition_open_to_reopened(client, project_id):
     wi = _create(client, project_id)
     resp = client.patch(f"/api/work-items/{wi['id']}", json={"state": "reopened"})

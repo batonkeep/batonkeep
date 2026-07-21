@@ -131,9 +131,17 @@ export const api = {
     req<PlannerRun>(`/work-items/${itemId}/plan`, {
       method: "POST", body: JSON.stringify(body),
     }),
+  // Project-level planning turn (P-0078 slice 2): reads the open ledger, records a
+  // digest, and triages missing work into `proposed` items. Same running/poll shape.
+  planProject: (projectId: string, body: PlanRequestInput = {}) =>
+    req<PlannerRun>(`/projects/${projectId}/plan`, {
+      method: "POST", body: JSON.stringify(body),
+    }),
   getPlannerRun: (runId: number) => req<PlannerRun>(`/planner-runs/${runId}`),
   listWorkItemPlannerRuns: (itemId: number) =>
     req<PlannerRun[]>(`/work-items/${itemId}/planner-runs`),
+  listProjectPlannerRuns: (projectId: string) =>
+    req<PlannerRun[]>(`/projects/${projectId}/planner-runs`),
   listContextSources: (projectId: string) =>
     req<ContextSource[]>(`/projects/${projectId}/context-sources`),
   // rel_path null → import every source the project manifest declares.

@@ -19,6 +19,7 @@ from fastapi import (
     File,
     Header,
     HTTPException,
+    Query,
     Request,
     UploadFile,
     WebSocket,
@@ -96,6 +97,8 @@ from app.schemas import (
     PackageIn,
     PackageOut,
     PlannerRunOut,
+    PlannerSettingsIn,
+    PlannerSettingsOut,
     PlanRequestIn,
     ProjectCreate,
     ProjectOut,
@@ -746,6 +749,7 @@ async def plan_work_item(
          tags=["projects"])
 async def list_work_item_planner_runs(
     item_id: int,
+    limit: int = Query(20, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
     owner_id: str = Depends(_owner_id),
 ):
@@ -756,6 +760,7 @@ async def list_work_item_planner_runs(
             select(PlannerRun)
             .where(PlannerRun.owner_id == owner_id, PlannerRun.work_item_id == item_id)
             .order_by(PlannerRun.id.desc())
+            .limit(limit)
         )
     ).scalars().all()
     return [PlannerRunOut.model_validate(r) for r in rows]
@@ -792,6 +797,7 @@ async def plan_project(
          tags=["projects"])
 async def list_project_planner_runs(
     project_id: str,
+    limit: int = Query(20, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
     owner_id: str = Depends(_owner_id),
 ):
@@ -803,9 +809,83 @@ async def list_project_planner_runs(
             select(PlannerRun)
             .where(PlannerRun.owner_id == owner_id, PlannerRun.project_id == project_id)
             .order_by(PlannerRun.id.desc())
+            .limit(limit)
         )
     ).scalars().all()
     return [PlannerRunOut.model_validate(r) for r in rows]
+
+
+def _planner_settings(project: Project) -> PlannerSettingsOut:
+    """Resolve the project's stored planner default into what would actually run,
+    explaining any gap. Resolution lives in one place (`resolve_planner_selection`),
+    so this surface can never drift from what a real planning turn does."""
+    from app import planner
+
+    stored = PlannerSettingsOut(
+        provider=project.planner_provider, model=project.planner_model,
+        effective_provider=None, effective_model=None, local_pinned=False,
+    )
+    try:
+        prov, mdl, pinned = planner.resolve_planner_selection(project)
+    except planner.PlannerError as exc:
+        stored.note = str(exc)
+        return stored
+    stored.effective_provider, stored.effective_model = prov, mdl
+    stored.local_pinned = pinned
+    if pinned and prov != project.planner_provider:
+        stored.note = (
+            f"this project is confidential, so its planner is pinned to the local "
+            f"model {prov!r} (P-0009 sovereignty fence)"
+        )
+    elif pinned:
+        stored.note = "this project is confidential — its planner must stay local"
+    elif not project.planner_provider:
+        stored.note = f"no default set — falls back to {prov!r}"
+    return stored
+
+
+@app.get("/api/projects/{project_id}/planner", response_model=PlannerSettingsOut,
+         tags=["projects"])
+async def get_project_planner(
+    project_id: str,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """The project's planner selection (P-0078): stored default + what would run."""
+    project = await _get_owned_project(db, owner_id, project_id)
+    return _planner_settings(project)
+
+
+@app.put("/api/projects/{project_id}/planner", response_model=PlannerSettingsOut,
+         tags=["projects"])
+async def set_project_planner(
+    project_id: str,
+    body: PlannerSettingsIn,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """Set or clear the project's planner default (P-0078 slice 3). An unknown
+    provider is refused here rather than at planning time — a typo that only
+    surfaces when a turn fails is a much worse trade than a 400 now."""
+    from app.providers.registry import get_instance
+
+    project = await _get_owned_project(db, owner_id, project_id)
+    provider = (body.provider or "").strip() or None
+    model = (body.model or "").strip() or None
+    if provider is not None and get_instance(provider) is None:
+        raise HTTPException(
+            status_code=400, detail=f"unknown provider instance {provider!r}"
+        )
+    if provider is None and model is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="a planner model needs a provider — set both, or clear both",
+        )
+    project.planner_provider = provider
+    project.planner_model = model
+    await db.commit()
+    await db.refresh(project)
+    return _planner_settings(project)
 
 
 @app.get("/api/planner-runs/{run_id}", response_model=PlannerRunOut, tags=["projects"])

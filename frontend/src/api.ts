@@ -23,6 +23,8 @@ import type {
   Mode,
   ModelPricing,
   PlannerRun,
+  PlannerSettings,
+  PlannerSettingsInput,
   PlanRequestInput,
   Project,
   ProjectInput,
@@ -138,10 +140,18 @@ export const api = {
       method: "POST", body: JSON.stringify(body),
     }),
   getPlannerRun: (runId: number) => req<PlannerRun>(`/planner-runs/${runId}`),
-  listWorkItemPlannerRuns: (itemId: number) =>
-    req<PlannerRun[]>(`/work-items/${itemId}/planner-runs`),
-  listProjectPlannerRuns: (projectId: string) =>
-    req<PlannerRun[]>(`/projects/${projectId}/planner-runs`),
+  listWorkItemPlannerRuns: (itemId: number, limit = 20) =>
+    req<PlannerRun[]>(`/work-items/${itemId}/planner-runs?limit=${limit}`),
+  listProjectPlannerRuns: (projectId: string, limit = 20) =>
+    req<PlannerRun[]>(`/projects/${projectId}/planner-runs?limit=${limit}`),
+  // P-0078 slice 3: the per-project planner default. GET reports what would
+  // actually run (fallback + sovereignty fence applied), not just what is stored.
+  getPlannerSettings: (projectId: string) =>
+    req<PlannerSettings>(`/projects/${projectId}/planner`),
+  setPlannerSettings: (projectId: string, body: PlannerSettingsInput) =>
+    req<PlannerSettings>(`/projects/${projectId}/planner`, {
+      method: "PUT", body: JSON.stringify(body),
+    }),
   listContextSources: (projectId: string) =>
     req<ContextSource[]>(`/projects/${projectId}/context-sources`),
   // rel_path null → import every source the project manifest declares.

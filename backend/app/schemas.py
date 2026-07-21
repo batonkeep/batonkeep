@@ -110,8 +110,38 @@ class ProjectOut(BaseModel):
     root_path: str | None
     manifest_rel: str | None
     description: str | None
+    # P-0078: the project's planner default (null → fall back to the first available
+    # instance). What would *actually* run is GET /api/projects/{id}/planner, which
+    # applies the sovereignty fence on top of this.
+    planner_provider: str | None = None
+    planner_model: str | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class PlannerSettingsIn(BaseModel):
+    """Set (or clear) a project's planner default. Both null → fall back to the
+    first available instance, which is the default posture: a planner is never a
+    mandatory per-project decision."""
+
+    provider: str | None = None
+    model: str | None = None
+
+
+class PlannerSettingsOut(BaseModel):
+    """A project's planner selection: what is *stored*, and what would actually run.
+    The two differ when the stored provider is absent (fallback) or when the
+    sovereignty fence pins a confidential project's planner to a local model — so the
+    UI shows the operator the truth instead of re-deriving the fence client-side."""
+
+    provider: str | None
+    model: str | None
+    effective_provider: str | None
+    effective_model: str | None
+    local_pinned: bool
+    # Why the effective selection differs from the stored one — or, when nothing can
+    # run, why not. Null when the stored selection is exactly what would run.
+    note: str | None = None
 
 
 # Valid WorkItem state machine (S0): validated on PATCH; closed_at is stamped on

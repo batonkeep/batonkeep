@@ -2063,7 +2063,7 @@ export default function SessionView({
                   {t.changed_files && t.changed_files.length > 0 && (
                     <ArtifactList files={t.changed_files} onOpen={viewFile} />
                   )}
-                  {t.output_flags && t.output_flags.unbacked.length > 0 && (
+                  {t.output_flags?.unbacked && t.output_flags.unbacked.length > 0 && (
                     <div className="mx-1 rounded border border-edge bg-edge/10 px-2 py-1.5 text-xs text-defer">
                       <span className="font-medium">
                         ⚠ {t.output_flags.unbacked.length} referenced file
@@ -2073,6 +2073,22 @@ export default function SessionView({
                       <span className="text-muted"> — the work may have landed elsewhere:</span>
                       <div className="mt-1 font-mono text-[11px] text-muted break-all">
                         {t.output_flags.unbacked.join(", ")}
+                      </div>
+                    </div>
+                  )}
+                  {t.output_flags?.outputs_missing &&
+                    t.output_flags.outputs_missing.length > 0 && (
+                    <div className="mx-1 rounded border border-edge bg-edge/10 px-2 py-1.5 text-xs text-defer">
+                      <span className="font-medium">
+                        ⚠ {t.output_flags.outputs_missing.length} contract sub-task
+                        {t.output_flags.outputs_missing.length > 1 ? "s" : ""} not
+                        satisfied by this turn
+                      </span>
+                      <span className="text-muted"> — committed, but expected outputs are missing:</span>
+                      <div className="mt-1 font-mono text-[11px] text-muted break-all">
+                        {t.output_flags.outputs_missing
+                          .map((m) => m.expected)
+                          .join(", ")}
                       </div>
                     </div>
                   )}

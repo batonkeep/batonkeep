@@ -110,6 +110,73 @@ class TestChecklistPure:
         p = st.progress(s)
         assert p["total"] == 0 and p["proposed"] == 2
 
+    # ── P-0069 slice C tails ────────────────────────────────────────────────────
+    def test_verify_stamps_provenance_on_new_verification(self):
+        s = st.append_proposed(None, [{"label": "x", "expected": "out.md"}], proposed_by="op")
+        s = st.set_items(s, [{**s["items"][0], "status": "confirmed"}])
+        s, changed = st.verify(
+            s, {"out.md"}, source={"lane": "session", "ref": "sess-abc", "seq": 3}
+        )
+        vb = s["items"][0]["verified_by"]
+        assert changed and vb["lane"] == "session" and vb["ref"] == "sess-abc"
+        assert vb["seq"] == 3 and "at" in vb
+
+    def test_verify_provenance_disambiguates_same_wi_across_lanes(self):
+        # Two verifiable items, each grounded by a different unit of work whose per-lane
+        # seq both start at 1 — provenance ref is what tells them apart WorkItem-wide.
+        s = st.append_proposed(
+            None,
+            [{"label": "a", "expected": "a.md"}, {"label": "b", "expected": "b.md"}],
+            proposed_by="op",
+        )
+        s = st.set_items(s, [
+            {**s["items"][0], "status": "confirmed"},
+            {**s["items"][1], "status": "confirmed"},
+        ])
+        s, _ = st.verify(s, {"a.md"}, source={"lane": "session", "ref": "sess-1", "seq": 1})
+        s, _ = st.verify(s, {"a.md", "b.md"}, source={"lane": "task", "ref": "run:9", "seq": 1})
+        refs = {i["label"]: i["verified_by"]["ref"] for i in s["items"]}
+        assert refs == {"a": "sess-1", "b": "run:9"}
+
+    def test_verify_clears_provenance_on_disappearance(self):
+        s = st.append_proposed(None, [{"label": "x", "expected": "out.md"}], proposed_by="op")
+        s = st.set_items(s, [{**s["items"][0], "status": "confirmed"}])
+        s, _ = st.verify(s, {"out.md"}, source={"lane": "task", "ref": "run:1"})
+        assert s["items"][0]["verified_by"] is not None
+        s, changed = st.verify(s, set(), source={"lane": "task", "ref": "run:2"})
+        assert changed and s["items"][0]["verified_by"] is None
+
+    def test_set_items_carries_provenance_forward(self):
+        s = st.append_proposed(None, [{"label": "x", "expected": "out.md"}], proposed_by="op")
+        iid = s["items"][0]["id"]
+        s = st.set_items(s, [{"id": iid, "label": "x", "expected": "out.md",
+                              "status": "confirmed"}])
+        s, _ = st.verify(s, {"out.md"}, source={"lane": "session", "ref": "sess-1"})
+        s2 = st.set_items(s, [{"id": iid, "label": "x2", "expected": "out.md",
+                               "status": "confirmed"}])
+        assert s2["items"][0]["verified_by"]["ref"] == "sess-1"
+
+    def test_unverified_verifiable_is_the_open_contract(self):
+        s = st.append_proposed(
+            None,
+            [
+                {"label": "made", "expected": "a.md"},
+                {"label": "missing", "expected": "b.md"},
+                {"label": "asserted"},
+            ],
+            proposed_by="op",
+        )
+        s = st.set_items(s, [
+            {**s["items"][0], "status": "confirmed"},
+            {**s["items"][1], "status": "confirmed"},
+            {**s["items"][2], "status": "confirmed"},
+        ])
+        s, _ = st.verify(s, {"a.md"})  # only the first landed
+        missing = st.unverified_verifiable(s)
+        # asserted item (no expected) is never "outputs_missing"; verified one drops out
+        assert [m["label"] for m in missing] == ["missing"]
+        assert missing[0]["expected"] == "b.md"
+
 
 class TestSubtaskApi:
     def _client(self, tmp_path):

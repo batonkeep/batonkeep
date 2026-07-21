@@ -375,6 +375,78 @@ class TestOrchestratorSmoke:
                 setattr(orch_mod._settings, k, v)
 
     @pytest.mark.asyncio
+    async def test_bound_run_verifies_subtask_contract(self, fresh_db, monkeypatch):
+        """P-0069 tail 2: a task run bound to a WorkItem re-verifies its sub-task
+        contract against the artifacts the run produced (the task-lane analog of the
+        session verify). The MockExecutor produces output.md, so a verifiable item
+        expecting output.md flips to verified with `task`-lane provenance; a second
+        item expecting a never-produced artifact is recorded as outputs_missing."""
+        engine, Session, base_path = fresh_db
+        import app.orchestrator as orch_mod
+        from app import subtasks as st
+        from app.models import Project, Run, Task, WorkItem
+
+        monkeypatch.setattr(orch_mod, "AsyncSessionLocal", Session)
+        monkeypatch.setattr(
+            orch_mod._settings, "outputs_dir", str(base_path / "outputs"), raising=False
+        )
+        monkeypatch.setattr(
+            orch_mod._settings, "work_dir", str(base_path / "work"), raising=False
+        )
+
+        checklist = st.append_proposed(
+            None,
+            [
+                {"label": "the report", "expected": "output.md"},
+                {"label": "a chart", "expected": "charts/*.png"},
+            ],
+            proposed_by="agy",
+        )
+        checklist = st.set_items(checklist, [
+            {**checklist["items"][0], "status": "confirmed"},
+            {**checklist["items"][1], "status": "confirmed"},
+        ])
+        async with Session() as db:
+            db.add(Project(id="pt", owner_id="local", name="P"))
+            db.add(WorkItem(id=3, owner_id="local", project_id="pt", title="WI",
+                            subtasks=checklist))
+            task = Task(
+                owner_id="local", name="T", prompt_template="do {x}", params={"x": "it"},
+                project_id="pt", work_item_id=3,
+                routing={"strategy": "capability", "candidates": ["mock"],
+                         "capability_tags": [], "failover": True, "max_attempts": 1},
+                want_markdown=True, want_json=False,
+            )
+            db.add(task)
+            await db.commit()
+            await db.refresh(task)
+            task_id = task.id
+
+        run = await orch_mod.enqueue_run(task_id, trigger="test")
+        run_id = run.id
+        bg = orch_mod._cancel_handles.get(run_id)
+        if bg:
+            try:
+                await asyncio.wait_for(asyncio.shield(bg), timeout=8.0)
+            except asyncio.TimeoutError:
+                pass
+        await asyncio.sleep(0.2)
+
+        async with Session() as db:
+            run = await db.get(Run, run_id)
+            assert run.status == "succeeded", f"status={run.status} error={run.error}"
+            wi = await db.get(WorkItem, 3)
+            items = {i["label"]: i for i in wi.subtasks["items"]}
+            # output.md landed → verified, with task-lane provenance.
+            assert items["the report"]["verified"] is True
+            vb = items["the report"]["verified_by"]
+            assert vb["lane"] == "task" and vb["ref"] == f"run:{run_id}"
+            # the chart never came → still unverified, recorded as outputs_missing.
+            assert items["a chart"]["verified"] is False
+            missing = run.output_flags["outputs_missing"]
+            assert [m["expected"] for m in missing] == ["charts/*.png"]
+
+    @pytest.mark.asyncio
     async def test_scheduled_run_filters_no_headless_candidate(self, fresh_db, tmp_path, monkeypatch):
         """D-0016: a scheduled run drops a no-headless candidate from rotation and
         proceeds on a headless-capable provider, emitting a cron_no_headless_filter

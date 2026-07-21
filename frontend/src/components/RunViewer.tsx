@@ -227,6 +227,22 @@ export default function RunViewer({ run, taskName, now, onRequeue, onCancel, onC
         </div>
       )}
 
+      {/* P-0069: outputs_missing — a succeeded run whose bound sub-task contract has
+          unmet verifiable obligations (workspace-truth under-delivery advisory). */}
+      {run.output_flags?.outputs_missing &&
+        run.output_flags.outputs_missing.length > 0 && (
+        <div className="border-b border-edge bg-edge/10 px-4 py-2 text-xs text-defer">
+          <span className="font-medium">
+            ⚠ {run.output_flags.outputs_missing.length} contract sub-task
+            {run.output_flags.outputs_missing.length > 1 ? "s" : ""} not satisfied
+          </span>
+          <span className="text-muted"> — expected outputs missing: </span>
+          <span className="font-mono text-[11px] text-muted break-all">
+            {run.output_flags.outputs_missing.map((m) => m.expected).join(", ")}
+          </span>
+        </div>
+      )}
+
       {/* Tabs + downloads */}
       <div className="flex items-center gap-2 border-b border-edge px-3 pt-2">
         <Tabs tabs={runTabs} active={tab} onChange={setTab} />

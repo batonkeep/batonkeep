@@ -711,9 +711,12 @@ async def run_turn_background(
                 # Persist the per-file artifact list so reloads surface the same
                 # result (D-0017 thread 2), not just the live event stream.
                 turn.changed_files = json.dumps(version.get("files", []))
-            # P-0069 item 6: durable free-default output flag (NULL when clean).
-            turn.output_flags = output_flags
-            await db.commit()
+            # output_flags is finalized in the session block below (it may gain an
+            # `outputs_missing` advisory from the sub-task contract verification).
+            _turn_for_flags = turn
+            await db.flush()
+        else:
+            _turn_for_flags = None
         session = await db.get(Session, session_id)
         if session is not None:
             session.updated_at = datetime.now(UTC)
@@ -726,21 +729,46 @@ async def run_turn_background(
                     from app import subtasks as st
                     wi = await db.get(WorkItem, session.work_item_id)
                     if wi is not None and wi.subtasks:
-                        updated, changed = st.verify(wi.subtasks, tracked)
+                        before = st.progress(wi.subtasks)
+                        updated, changed = st.verify(
+                            wi.subtasks, tracked,
+                            source={"lane": "session", "ref": session_id, "seq": seq},
+                        )
                         if changed:
                             wi.subtasks = updated
-                            prog = st.progress(updated)
+                        after = st.progress(updated)
+                        # outputs_missing (P-0069 tail): a turn that committed work
+                        # (version) yet advanced no contract item, while verifiable
+                        # obligations remain unmet, is the workspace-truth "succeeded
+                        # but under-delivered" tell — the success analog of the
+                        # cancel-snapshot. Advisory; the turn stays succeeded.
+                        missing = st.unverified_verifiable(updated)
+                        if (
+                            version is not None
+                            and missing
+                            and after["verified"] <= before["verified"]
+                            and _turn_for_flags is not None
+                        ):
+                            flags = dict(output_flags or {})
+                            flags.setdefault("v", 1)
+                            flags["outputs_missing"] = missing
+                            output_flags = flags
+                        if changed:
                             await _broadcast_event(
                                 session_id, turn_id, seq, EventKind.log,
                                 message=(
-                                    f"sub-tasks: {prog['verified']} verified / "
-                                    f"{prog['total']} confirmed"
+                                    f"sub-tasks: {after['verified']} verified / "
+                                    f"{after['total']} confirmed"
                                 ),
                                 phase="subtasks_progress",
-                                data={"work_item_id": wi.id, "progress": prog},
+                                data={"work_item_id": wi.id, "progress": after},
                             )
                 except Exception:
                     logger.exception("[session] turn %d subtask verify failed", turn_id)
+            # P-0069 item 6: durable free-default output flag + outputs_missing
+            # (NULL when clean). Written after the contract check so both land together.
+            if _turn_for_flags is not None:
+                _turn_for_flags.output_flags = output_flags
             # Substrate evidence: a turn that changed files gets its diff indexed
             # in the append-only store. Best-effort — never breaks the turn.
             if version is not None and session.project_id and version.get("diff"):

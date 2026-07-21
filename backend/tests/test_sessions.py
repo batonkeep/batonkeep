@@ -644,6 +644,73 @@ class TestSubtaskVerification:
             (b.get("event") or {}).get("phase") == "subtasks_progress" for b in broadcasts
         )
 
+    @pytest.mark.asyncio
+    async def test_verification_stamps_session_provenance(self, session_env):
+        # P-0069 tail 3: a verified item records which unit of work grounded it, so
+        # a WorkItem's verifications stay attributable across same-WI sessions.
+        Maker, ws, orch, _ = session_env
+        from app import subtasks as st
+        from app.models import Project, Session as SessionModel, WorkItem
+
+        root = await ws.create_workspace("sp", title="P", goal="G")
+        checklist = st.append_proposed(
+            None, [{"label": "page", "expected": "index.html"}], proposed_by="agy"
+        )
+        checklist = st.set_items(checklist, [{**checklist["items"][0], "status": "confirmed"}])
+        async with Maker() as db:
+            db.add(Project(id="pp", owner_id="local", name="P"))
+            db.add(WorkItem(id=8, owner_id="local", project_id="pp", title="WI",
+                            subtasks=checklist))
+            db.add(SessionModel(id="sp", owner_id="local", title="P", provider="mock",
+                                workspace_path=root, status="active",
+                                project_id="pp", work_item_id=8))
+            await db.commit()
+
+        await orch.run_turn("sp", "build the landing page", owner_id="local")
+
+        async with Maker() as db:
+            wi = await db.get(WorkItem, 8)
+            vb = wi.subtasks["items"][0]["verified_by"]
+            assert vb["lane"] == "session" and vb["ref"] == "sp" and vb["seq"] == 0
+
+    @pytest.mark.asyncio
+    async def test_committed_turn_records_outputs_missing_when_contract_unmet(
+        self, session_env
+    ):
+        # P-0069 tail 1: a turn that commits work (MockExecutor writes index.html) but
+        # satisfies no contract item (the item expects report.md) records an
+        # outputs_missing advisory on the turn — the "succeeded but under-delivered"
+        # tell, derived from workspace truth. The turn still succeeds.
+        Maker, ws, orch, _ = session_env
+        from app import subtasks as st
+        from app.models import Project, Session as SessionModel
+        from app.models import SessionTurn, WorkItem
+
+        root = await ws.create_workspace("sm", title="P", goal="G")
+        checklist = st.append_proposed(
+            None, [{"label": "the report", "expected": "report.md"}], proposed_by="agy"
+        )
+        checklist = st.set_items(checklist, [{**checklist["items"][0], "status": "confirmed"}])
+        async with Maker() as db:
+            db.add(Project(id="pm", owner_id="local", name="P"))
+            db.add(WorkItem(id=9, owner_id="local", project_id="pm", title="WI",
+                            subtasks=checklist))
+            db.add(SessionModel(id="sm", owner_id="local", title="P", provider="mock",
+                                workspace_path=root, status="active",
+                                project_id="pm", work_item_id=9))
+            await db.commit()
+
+        turn_id = await orch.run_turn("sm", "do some work", owner_id="local")
+
+        async with Maker() as db:
+            turn = await db.get(SessionTurn, turn_id)
+            assert turn.status == "succeeded"
+            assert turn.output_flags is not None
+            missing = turn.output_flags["outputs_missing"]
+            assert [m["expected"] for m in missing] == ["report.md"]
+            wi = await db.get(WorkItem, 9)
+            assert wi.subtasks["items"][0]["verified"] is False
+
 
 # ── Rename endpoint (HTTP) ────────────────────────────────────────────────────
 

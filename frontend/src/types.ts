@@ -873,6 +873,32 @@ export interface Approval {
   decided_by: string | null;
   created_at: string;
   decided_at: string | null;
+  // P-0077: shared across every row settled by one batch decision; null when
+  // decided individually.
+  batch_id: string | null;
+  // Computed on listing (pending canonical writes only): the target file has
+  // changed since this proposal was written against it. Proposals carry whole
+  // file bodies, so approving a stale one discards what landed underneath.
+  stale: boolean | null;
+}
+
+// P-0077: one decision over a related set. Not one transaction — each row's
+// settle+apply is atomic on its own, so one unappliable proposal cannot block
+// the rest of the set from clearing.
+export interface ApprovalBatchItem {
+  approval_id: number;
+  rel_path: string | null;
+  outcome: "decided" | "failed";
+  applied: Record<string, unknown> | null;
+  error: string | null;
+}
+
+export interface ApprovalBatchResult {
+  batch_id: string;
+  approved: boolean;
+  decided: number;
+  failed: number;
+  results: ApprovalBatchItem[];
 }
 
 export interface ApprovalDecideResult {

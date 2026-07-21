@@ -373,6 +373,10 @@ class Approval(Base):
     # Who proposed / who decided ("human", provider instance id, or "system").
     producer: Mapped[str] = mapped_column(String(96), nullable=False, default="system")
     decided_by: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    # P-0077: set when this row was decided as part of a batch — the shared id
+    # is what makes "one decision over a related set" reconstructable after the
+    # fact. NULL for every individually-decided row (including all history).
+    batch_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

@@ -14,6 +14,7 @@ import pytest
 from app.sessions.preview import (
     PreviewError,
     check_token,
+    flag_unbacked_file_claims,
     guess_media_type,
     guess_preview_media_type,
     resolve_preview_file,
@@ -169,10 +170,12 @@ class TestPreviewEndpoint:
 
     def test_preview_renders_built_page_with_token_and_blocks_without(self, tmp_path):
         from fastapi.testclient import TestClient
-        from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
         from app.db import Base, get_db
-        from app.models import Owner, Session as SessionModel
-        from app.main import app, _owner_id
+        from app.main import _owner_id, app
+        from app.models import Owner
+        from app.models import Session as SessionModel
 
         # Fresh in-process DB.
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/t.db", echo=False)
@@ -230,3 +233,42 @@ class TestPreviewEndpoint:
         finally:
             app.dependency_overrides.clear()
             asyncio.get_event_loop().run_until_complete(engine.dispose())
+
+
+class TestFlagUnbackedFileClaims:
+    """P-0069 item 6: the free default output check — flag response artifact links
+    not backed by this session's committed tree (the P43-D3 misdirected-writes tell)."""
+
+    def test_clean_when_all_links_tracked(self):
+        # This session's raw-file link whose rel path IS committed → not flagged.
+        text = "Done. See [report](/api/sessions/s1/files/raw/report.md)."
+        assert flag_unbacked_file_claims(text, "s1", {"report.md"}) == []
+
+    def test_flags_this_session_link_not_in_tree(self):
+        # Claimed a raw-file link, but the file isn't tracked at HEAD.
+        text = "Wrote [it](/api/sessions/s1/files/raw/out/deliverable.py)."
+        assert flag_unbacked_file_claims(text, "s1", {"README.md"}) == [
+            "out/deliverable.py"
+        ]
+
+    def test_flags_leftover_foreign_file_url(self):
+        # A file:// link the rewrite left untouched = another session / absolute path.
+        text = "See file:///data/sessions/OTHER/deliverable.py for the result."
+        out = flag_unbacked_file_claims(text, "s1", {"README.md"})
+        assert out == ["file:///data/sessions/OTHER/deliverable.py"]
+
+    def test_flags_foreign_session_raw_route(self):
+        # A raw route pointing at a different session id is flagged verbatim.
+        text = "[x](/api/sessions/OTHER/files/raw/a.py)"
+        out = flag_unbacked_file_claims(text, "s1", set())
+        assert out == ["/api/sessions/OTHER/files/raw/a.py"]
+
+    def test_prose_file_mentions_do_not_false_positive(self):
+        # Only explicit artifact links count; a bare path in prose is ignored.
+        text = "I updated config.py and ran the tests."
+        assert flag_unbacked_file_claims(text, "s1", set()) == []
+
+    def test_dedup_and_empty(self):
+        assert flag_unbacked_file_claims("", "s1", set()) == []
+        text = ("file:///x/a.py and again file:///x/a.py")
+        assert flag_unbacked_file_claims(text, "s1", set()) == ["file:///x/a.py"]

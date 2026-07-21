@@ -2063,6 +2063,19 @@ export default function SessionView({
                   {t.changed_files && t.changed_files.length > 0 && (
                     <ArtifactList files={t.changed_files} onOpen={viewFile} />
                   )}
+                  {t.output_flags && t.output_flags.unbacked.length > 0 && (
+                    <div className="mx-1 rounded border border-edge bg-edge/10 px-2 py-1.5 text-xs text-defer">
+                      <span className="font-medium">
+                        ⚠ {t.output_flags.unbacked.length} referenced file
+                        {t.output_flags.unbacked.length > 1 ? "s" : ""} not in this
+                        session's committed tree
+                      </span>
+                      <span className="text-muted"> — the work may have landed elsewhere:</span>
+                      <div className="mt-1 font-mono text-[11px] text-muted break-all">
+                        {t.output_flags.unbacked.join(", ")}
+                      </div>
+                    </div>
+                  )}
                   {t.response && (
                     <div className="group relative">
                       <div

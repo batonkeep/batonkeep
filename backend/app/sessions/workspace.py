@@ -402,6 +402,7 @@ def build_turn_context(
         f"{convo}"
         f"{GITIGNORE_GUIDANCE}\n\n"
         f"{PYTHON_DEPS_GUIDANCE}\n\n"
+        f"{PACKAGING_CADENCE_GUIDANCE}\n\n"
         f"## User message\n{user_message}\n"
     )
 
@@ -439,6 +440,23 @@ PYTHON_DEPS_GUIDANCE = (
     "Record dependencies in `requirements.txt` so the work stays reproducible. The "
     "`.venv/` is ephemeral and gitignored — if a missing-module error shows the "
     "environment was reset, recreate it and reinstall from `requirements.txt`."
+)
+
+
+# Checkpoint cadence (P-0069 item 4c). From the P49 chaos-drill: one explicit
+# checkpoint at a phase boundary raised a cold auditor's recovery grade D→B and
+# turned an interrupt from full-redo into salvage-and-continue. The engine
+# auto-commits every turn, so the actionable practice is to work in phase-sized
+# turns — don't defer every write to the end of one long turn, where an interrupt
+# or the turn timeout loses all uncheckpointed progress (slice A's cancel-snapshot
+# now captures what landed, but only committed phases are clean recovery points).
+PACKAGING_CADENCE_GUIDANCE = (
+    "## Checkpoint at phase boundaries\n"
+    "Work in phase-sized steps. Each turn's file changes are committed as a durable "
+    "checkpoint automatically, so when the work has several deliverables, finish and "
+    "write out each coherent phase — then state what is done and what is next — rather "
+    "than deferring all output to the very end. Incremental checkpoints make an "
+    "interruption salvage-and-continue instead of a full redo."
 )
 
 
@@ -612,6 +630,17 @@ async def commit_changed_files(workspace: str, sha: str) -> list[dict]:
             "deletions": dels,
         })
     return files
+
+
+async def tracked_files(workspace: str) -> set[str]:
+    """Set of file paths tracked at HEAD (`git ls-files`) — this session's committed
+    tree. Used by the free default output check (P-0069 item 6) to verify an agent's
+    claimed artifacts actually landed here. Best-effort: an empty set on git error
+    (the check then simply finds nothing, never a false positive)."""
+    code, out = await _git_out(workspace, "ls-files")
+    if code != 0:
+        return set()
+    return {ln.strip() for ln in out.splitlines() if ln.strip()}
 
 
 async def list_versions(workspace: str) -> list[dict]:

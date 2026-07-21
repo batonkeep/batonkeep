@@ -22,6 +22,8 @@ const ERROR_CLASS_COLOR: Record<string, string> = {
   cooling: "text-defer",
   unavailable: "text-defer",
   interrupted: "text-defer",
+  timed_out: "text-bad",
+  empty_output: "text-bad",
   error: "text-bad",
   other: "text-ink",
 };

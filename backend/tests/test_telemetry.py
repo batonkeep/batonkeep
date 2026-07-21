@@ -77,6 +77,24 @@ class TestClassifyError:
     def test_generic_failed_is_error(self):
         assert classify_error(Run(status="failed", error="boom")) == "error"
 
+    def test_empty_output_task_lane(self):
+        # P-0069 item 4: task-lane empty-output string classifies distinctly.
+        assert classify_error(Run(
+            status="failed", error="agent stream ended without producing any output"
+        )) == "empty_output"
+
+    def test_empty_output_cli_lane(self):
+        # The CLI executor's no-output string (used by both task + session lanes).
+        assert classify_error(Run(
+            status="failed", error="[agy] agent exited without output (returncode=1)"
+        )) == "empty_output"
+
+    def test_timed_out(self):
+        # P-0069: run/turn timeout is its own class, not generic error.
+        assert classify_error(Run(
+            status="failed", error="run timed out after 30 min (task limit)"
+        )) == "timed_out"
+
 
 class TestCockpit:
     @pytest.mark.asyncio

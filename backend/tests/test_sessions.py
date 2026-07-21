@@ -14,7 +14,51 @@ import os
 
 import pytest
 
+from app.providers.base import EventKind, ExecEvent, Executor
 from app.providers.mock import MockExecutor
+
+
+class _WriteThenHangExecutor(Executor):
+    """Writes a workspace file, emits a file_write tool event, then hangs — so a
+    user interrupt or the session-turn timeout fires while a real, uncommitted diff
+    exists in the tree (exercises P-0069 cancel-snapshot / timeout-snapshot)."""
+
+    name = "hang"
+    tier = "mock"
+
+    def __init__(self, name: str = "hang", *, hang_s: float = 30.0) -> None:
+        self.name = name
+        self.tier = "mock"
+        self._hang_s = hang_s
+
+    @property
+    def kind(self) -> str:
+        return "mock"
+
+    def is_healthy(self) -> bool:
+        return True
+
+    async def run_stream(self, prompt, *, workdir, tools_enabled=True,
+                         max_rounds=10, budget_usd=1.0, extra=None):
+        yield ExecEvent(kind=EventKind.phase, phase="running", message="[hang] running")
+        with open(os.path.join(workdir, "index.html"), "a", encoding="utf-8") as f:
+            f.write("<!-- partial work written before interrupt -->\n")
+        yield ExecEvent(kind=EventKind.tool, message="[hang] wrote index.html",
+                        data={"tool": "file_write", "path": "index.html"})
+        await asyncio.sleep(self._hang_s)  # hang — never reaches a result event
+        yield ExecEvent(kind=EventKind.result, message="unreachable", data={})
+
+
+async def _wait_for_file_write(broadcasts, *, tries=300, delay=0.02):
+    """Poll captured broadcasts until the hang executor's file_write is seen."""
+    for _ in range(tries):
+        await asyncio.sleep(delay)
+        if any(
+            (b.get("event") or {}).get("data", {}).get("tool") == "file_write"
+            for b in broadcasts
+        ):
+            return True
+    return False
 
 # ── Workspace unit tests ──────────────────────────────────────────────────────
 
@@ -362,6 +406,112 @@ class TestTurnInterrupt:
             assert nxt.status == "succeeded"
             assert nxt.provider == "grok-mock"
             assert nxt.seq > 0  # appended after the cancelled turn
+
+
+class TestCancelAndTimeoutSnapshot:
+    """P-0069 items 2+3+4 + 4b: an interrupted turn (user cancel or session-turn
+    timeout) snapshots its partial workspace edits before teardown, records a
+    kill-event, and (project-scoped) captures partial-diff evidence."""
+
+    @pytest.mark.asyncio
+    async def test_cancel_snapshots_partial_work(self, session_env):
+        Maker, ws, orch, broadcasts = session_env
+        await _make_session(Maker, ws)
+        orch.get_executor = lambda name: _WriteThenHangExecutor(name=name)
+
+        from app.models import SessionTurn
+        turn_id, _ = await orch.create_turn_record("s1", "build a page", owner_id="local")
+        task = orch.dispatch_turn(turn_id, "s1", owner_id="local")
+        assert await _wait_for_file_write(broadcasts), "executor never wrote the file"
+
+        assert await orch.cancel_turn(turn_id, "s1", owner_id="local") is True
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        # The partial edits were committed as a version and stamped on the turn.
+        async with Maker() as db:
+            turn = await db.get(SessionTurn, turn_id)
+            assert turn.status == "cancelled"
+            assert turn.commit_sha is not None
+            assert turn.changed_files and "index.html" in turn.changed_files
+
+        # A kill-event carrying the forensics was broadcast.
+        kills = [b for b in broadcasts if (b.get("event") or {}).get("phase") == "kill_event"]
+        assert kills, "no kill_event broadcast"
+        data = kills[-1]["event"]["data"]
+        assert data["reason"] == "cancelled"
+        assert data["commit"] is not None
+        assert any(
+            (f.get("path") if isinstance(f, dict) else f) == "index.html"
+            for f in data["files"]
+        )
+        assert data["last_file_mtime"] is not None
+
+    @pytest.mark.asyncio
+    async def test_timeout_fails_loudly_and_snapshots(self, session_env, monkeypatch):
+        Maker, ws, orch, broadcasts = session_env
+        await _make_session(Maker, ws)
+        orch.get_executor = lambda name: _WriteThenHangExecutor(name=name)
+        # Tighten the effective policy timeout (session default = run_timeout_seconds,
+        # the lru-cached settings singleton policy.py also reads).
+        monkeypatch.setattr(orch._settings, "run_timeout_seconds", 0.3, raising=False)
+
+        from app.models import SessionTurn
+        turn_id, _ = await orch.create_turn_record("s1", "do a long thing", owner_id="local")
+        task = orch.dispatch_turn(turn_id, "s1", owner_id="local")
+        # Timeout path returns normally (not cancelled) once the deadline fires.
+        await task
+
+        async with Maker() as db:
+            turn = await db.get(SessionTurn, turn_id)
+            assert turn.status == "failed"
+            assert "timed out" in (turn.error or "")
+            assert turn.commit_sha is not None            # partial work still captured
+            assert turn.changed_files and "index.html" in turn.changed_files
+
+        kills = [b for b in broadcasts if (b.get("event") or {}).get("phase") == "kill_event"]
+        assert kills and kills[-1]["event"]["data"]["reason"] == "timeout"
+        # The turn update surfaces the timeout distinctly from a plain failure.
+        assert any(
+            (b.get("turn") or {}).get("status") == "failed" and b["turn"].get("timeout")
+            for b in broadcasts
+        )
+
+    @pytest.mark.asyncio
+    async def test_cancel_captures_partial_diff_evidence(self, session_env, monkeypatch, tmp_path):
+        Maker, ws, orch, broadcasts = session_env
+        orch.get_executor = lambda name: _WriteThenHangExecutor(name=name)
+        from app import evidence as evidence_store
+        monkeypatch.setattr(
+            evidence_store._settings, "evidence_dir", str(tmp_path / "evidence"), raising=False
+        )
+
+        # A project-scoped session so the diff is indexed as evidence.
+        from app.models import Evidence, Project, Session as SessionModel
+        root = await ws.create_workspace("sp", title="P", goal="G")
+        async with Maker() as db:
+            db.add(Project(id="p1", owner_id="local", name="P1"))
+            db.add(SessionModel(
+                id="sp", owner_id="local", title="P", provider="mock",
+                workspace_path=root, status="active", project_id="p1",
+            ))
+            await db.commit()
+
+        turn_id, _ = await orch.create_turn_record("sp", "build", owner_id="local")
+        task = orch.dispatch_turn(turn_id, "sp", owner_id="local")
+        assert await _wait_for_file_write(broadcasts)
+        await orch.cancel_turn(turn_id, "sp", owner_id="local")
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        from sqlalchemy import select
+        async with Maker() as db:
+            ev = (await db.execute(
+                select(Evidence).where(Evidence.session_turn_id == turn_id)
+            )).scalars().all()
+            assert len(ev) == 1
+            assert ev[0].kind == "partial-diff"
+            assert ev[0].project_id == "p1"
 
 
 # ── Rename endpoint (HTTP) ────────────────────────────────────────────────────

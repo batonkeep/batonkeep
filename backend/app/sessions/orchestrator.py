@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -209,6 +210,111 @@ async def create_turn_record(
         )
 
     return turn_id, turn_out
+
+
+async def _snapshot_interrupted_turn(
+    *,
+    turn_id: int,
+    session_id: str,
+    seq: int,
+    provider: str,
+    workspace: str,
+    owner_id: str,
+    partial_text: str,
+    reason: str,  # "cancelled" (user interrupt) | "timeout" (session-turn limit)
+) -> None:
+    """Capture the workspace state of a turn interrupted mid-flight, before its
+    executor teardown discards it (P-0069 items 2+3+4b).
+
+    Applies the D-0008 engine-owns-the-commit-boundary principle to interruption:
+    whatever partial edits the agent wrote are committed as a version, recorded in
+    the ledger, and (when the session is project-scoped) indexed as `partial-diff`
+    evidence — labeled distinct from a completed turn's `diff` so salvage and
+    forensics can tell partial from done. A kill-event is broadcast so an auditor
+    can prove exactly what died and when (timestamp, files that landed, last file
+    touch). Best-effort throughout: a failure here must never mask the interrupt.
+    Sets the turn's commit fields; the caller owns the terminal status."""
+    label = "cancelled" if reason == "cancelled" else "timed out"
+    version: dict | None = None
+    try:
+        version = await ws.commit_snapshot(
+            workspace, message=f"turn {seq} ({provider}): {label} — partial snapshot"
+        )
+    except Exception:
+        logger.exception("[session] turn %d %s-snapshot commit failed", turn_id, reason)
+
+    # Kill-event forensics: the last file the agent touched before it died. git
+    # preserves working-tree mtimes across the snapshot commit, so this reflects
+    # the agent's real last write, not the commit time.
+    last_mtime: str | None = None
+    files = version.get("files") if version else None
+    if files:
+        try:
+            mtimes: list[float] = []
+            for f in files:
+                rel = f.get("path") if isinstance(f, dict) else f
+                if not rel:
+                    continue
+                p = os.path.join(workspace, str(rel))
+                if os.path.exists(p):
+                    mtimes.append(os.path.getmtime(p))
+            if mtimes:
+                last_mtime = datetime.fromtimestamp(max(mtimes), UTC).isoformat()
+        except Exception:
+            logger.exception("[session] turn %d kill-event mtime scan failed", turn_id)
+
+    if version is not None:
+        try:
+            ws.record_turn(
+                workspace, seq=seq, provider=provider,
+                summary=f"[{label}] {partial_text}", files=version.get("files"),
+                lane="chat",
+            )
+        except Exception:
+            logger.exception("[session] turn %d ledger record on %s failed", turn_id, reason)
+
+    async with AsyncSessionLocal() as db:
+        turn = await db.get(SessionTurn, turn_id)
+        if turn is not None and version is not None:
+            turn.commit_sha = version["commit"]
+            turn.diffstat = version["diffstat"]
+            turn.changed_files = json.dumps(version.get("files", []))
+        session = await db.get(Session, session_id)
+        if (
+            session is not None and version is not None
+            and session.project_id and version.get("diff")
+        ):
+            from app import evidence as evidence_store
+            await evidence_store.capture_safe(
+                db,
+                owner_id=owner_id,
+                project_id=session.project_id,
+                work_item_id=session.work_item_id,
+                session_turn_id=turn_id,
+                kind="partial-diff",
+                filename=f"turn_{seq}.partial.diff",
+                text=version["diff"],
+                producer=provider,
+            )
+        await db.commit()
+
+    await _broadcast_event(
+        session_id, turn_id, seq, EventKind.result,
+        message=(
+            f"{label}: partial snapshot {version['short']} committed"
+            if version else f"{label}: no file changes to snapshot"
+        ),
+        phase="kill_event",
+        data={
+            "reason": reason,
+            "at": datetime.now(UTC).isoformat(),
+            "commit": version["commit"] if version else None,
+            "short": version["short"] if version else None,
+            "diffstat": version["diffstat"] if version else None,
+            "files": version.get("files", []) if version else [],
+            "last_file_mtime": last_mtime,
+        },
+    )
 
 
 async def run_turn_background(
@@ -405,48 +511,65 @@ async def run_turn_background(
         )
         return approved
 
+    # Session-turn timeout (P-0069 item 4): bound the whole turn's wall-clock drive
+    # so a hung agent can't run unbounded (the dogfood's 81-min silent Agy handoff).
+    # A user interrupt (cancel_turn → task.cancel) surfaces here as CancelledError;
+    # the timeout's own expiry is converted to TimeoutError by the context manager's
+    # __aexit__ (it only converts when its deadline fired) — so the two handlers
+    # below stay cleanly distinct. Value is the effective declared policy timeout
+    # (D-0058 seam 1; session default = run_timeout_seconds, 1800s), same bound the
+    # task lane already enforces.
+    effective_timeout = policy.timeout_seconds
     try:
-        async for ev in executor.run_stream(
-            prompt,
-            workdir=workspace,
-            tools_enabled=_settings.autonomous_tools,
-            max_rounds=10,
-            budget_usd=turn_budget,
-            extra={
-                "session": True, "turn_seq": seq, "user_message": message,
-                # P-0046: interactive build sessions have a human in the loop; the
-                # session's policy gates whether code-exec is offered/runnable, and
-                # `confirmation` drives an approval round-trip via `_approve`.
-                "exec_policy": exec_policy, "human_in_loop": True, "approve": _approve,
-                # P-0046 slice 6: image-gen model override (None → provider default).
-                "image_model_id": image_model_id,
-                # P-0049: per-session model override for the API provider (None →
-                # the provider's catalog preferred.default).
-                "model": model_override,
-            },
-        ):
-            # Rewrite agent file:// links to the raw-file route so the result
-            # renders with clickable artifacts in the live view (P-0016 b).
-            ev_text = ev.text
-            if ev.kind == EventKind.result and ev_text:
-                ev_text = rewrite_workspace_file_links(ev_text, session_id, workspace)
-            elif ev.kind == EventKind.token and ev.text:
-                partial_chunks.append(ev.text)
-            await _broadcast_event(session_id, turn_id, seq, ev.kind,
-                                   message=ev.message, text=ev_text, phase=ev.phase, data=ev.data)
-            if ev.kind == EventKind.result:
-                final_result = ev.data.get("result")
-            elif ev.kind == EventKind.error:
-                error_msg = ev.message or "executor error"
-                break
+        async with asyncio.timeout(effective_timeout):
+            async for ev in executor.run_stream(
+                prompt,
+                workdir=workspace,
+                tools_enabled=_settings.autonomous_tools,
+                max_rounds=10,
+                budget_usd=turn_budget,
+                extra={
+                    "session": True, "turn_seq": seq, "user_message": message,
+                    # P-0046: interactive build sessions have a human in the loop; the
+                    # session's policy gates whether code-exec is offered/runnable, and
+                    # `confirmation` drives an approval round-trip via `_approve`.
+                    "exec_policy": exec_policy, "human_in_loop": True, "approve": _approve,
+                    # P-0046 slice 6: image-gen model override (None → provider default).
+                    "image_model_id": image_model_id,
+                    # P-0049: per-session model override for the API provider (None →
+                    # the provider's catalog preferred.default).
+                    "model": model_override,
+                },
+            ):
+                # Rewrite agent file:// links to the raw-file route so the result
+                # renders with clickable artifacts in the live view (P-0016 b).
+                ev_text = ev.text
+                if ev.kind == EventKind.result and ev_text:
+                    ev_text = rewrite_workspace_file_links(ev_text, session_id, workspace)
+                elif ev.kind == EventKind.token and ev.text:
+                    partial_chunks.append(ev.text)
+                await _broadcast_event(
+                    session_id, turn_id, seq, ev.kind,
+                    message=ev.message, text=ev_text, phase=ev.phase, data=ev.data)
+                if ev.kind == EventKind.result:
+                    final_result = ev.data.get("result")
+                elif ev.kind == EventKind.error:
+                    error_msg = ev.message or "executor error"
+                    break
     except asyncio.CancelledError:
         # User interrupt (P-0057/D-0051): best-effort cancel. The executor's
-        # `finally: proc.kill()` has terminated the underlying CLI/API work; persist
-        # whatever was streamed so the UI shows the partial output, mark the turn
-        # "cancelled", and re-raise so the task ends cancelled. No workspace commit —
-        # any partial edits are left as-is (best-effort, not transactional).
+        # `finally: proc.kill()` has terminated the underlying CLI/API work.
+        # Snapshot whatever partial edits landed before teardown (P-0069 items 2+3:
+        # cancel = snapshot — engine owns the commit boundary, D-0008), persist the
+        # streamed partial as the response, mark the turn "cancelled", and re-raise
+        # so the task ends cancelled.
         partial = "".join(partial_chunks).strip()
         logger.info("[session] turn %d cancelled by user (interrupt)", turn_id)
+        await _snapshot_interrupted_turn(
+            turn_id=turn_id, session_id=session_id, seq=seq, provider=chosen,
+            workspace=workspace, owner_id=owner_id, partial_text=partial,
+            reason="cancelled",
+        )
         async with AsyncSessionLocal() as db:
             t = await db.get(SessionTurn, turn_id)
             if t is not None and t.status == "running":
@@ -460,6 +583,36 @@ async def run_turn_background(
         await _broadcast_turn(turn_id, session_id, seq, chosen, "cancelled",
                               extra={"partial": bool(partial)})
         raise
+    except TimeoutError:
+        # Session-turn timeout (P-0069 item 4): the 81-min silent-hang class. The
+        # context manager cancelled the stream (executor teardown killed the CLI) and
+        # surfaced expiry here. Snapshot the partial work (same principle as cancel),
+        # then fail LOUDLY with a timeout error distinct from a user cancel.
+        partial = "".join(partial_chunks).strip()
+        minutes = effective_timeout / 60
+        logger.warning(
+            "[session] turn %d timed out after %ds (%.1f min)",
+            turn_id, effective_timeout, minutes,
+        )
+        await _snapshot_interrupted_turn(
+            turn_id=turn_id, session_id=session_id, seq=seq, provider=chosen,
+            workspace=workspace, owner_id=owner_id, partial_text=partial,
+            reason="timeout",
+        )
+        async with AsyncSessionLocal() as db:
+            t = await db.get(SessionTurn, turn_id)
+            if t is not None and t.status == "running":
+                t.status = "failed"
+                t.error = f"turn timed out after {minutes:g} min (session-turn limit)"
+                t.response = (
+                    rewrite_workspace_file_links(partial, session_id, workspace)
+                    if partial else None
+                )
+                t.finished_at = datetime.now(UTC)
+                await db.commit()
+        await _broadcast_turn(turn_id, session_id, seq, chosen, "failed",
+                              extra={"timeout": True, "partial": bool(partial)})
+        return
     except Exception as exc:  # pragma: no cover - defensive
         logger.exception("[session] turn %d executor error", turn_id)
         error_msg = str(exc)

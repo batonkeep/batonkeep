@@ -465,6 +465,25 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
     }
   };
 
+  // Declaring one undeclared path (P-0073). No bootstrap_order: back-filled
+  // material projects, but does not push itself into the manifest's ordered
+  // "read these first" set — that ordering is a deliberate authoring choice.
+  const [declaring, setDeclaring] = useState<string | null>(null);
+
+  const handleDeclareOne = async (relPath: string) => {
+    if (!selectedId) return;
+    setDeclaring(relPath);
+    setError(null);
+    try {
+      await api.declareContextSource(selectedId, relPath);
+      loadDetail(); // refreshes both the source list and the coverage count
+    } catch (e) {
+      setError(e instanceof Error ? e.message : `Could not declare ${relPath}.`);
+    } finally {
+      setDeclaring(null);
+    }
+  };
+
   const handleImportManifest = async () => {
     if (!selectedId) return;
     setImporting(true);
@@ -1386,12 +1405,30 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
                 </p>
                 <p className="mt-1 opacity-80">
                   Sessions receive only declared sources, so this material is not in
-                  their projection — declare it below, or from the manifest.
+                  their projection. Declare what belongs in canon — leave out what is
+                  incidental to the repo but not context for the work.
                 </p>
-                <p className="mt-1 font-mono opacity-70">
-                  {coverage.sample.join(" · ")}
-                  {coverage.undeclared_count > coverage.sample.length && " · …"}
-                </p>
+                <div className="mt-2 space-y-1">
+                  {coverage.sample.map((rel) => (
+                    <div key={rel} className="flex items-center gap-2">
+                      <span className="min-w-0 flex-1 truncate font-mono opacity-80">{rel}</span>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleDeclareOne(rel)}
+                        disabled={declaring === rel}
+                      >
+                        {declaring === rel ? "Declaring…" : "Declare"}
+                      </Button>
+                    </div>
+                  ))}
+                  {coverage.undeclared_count > coverage.sample.length && (
+                    <p className="font-mono opacity-70">
+                      …and {coverage.undeclared_count - coverage.sample.length} more (the next
+                      appear as these are declared)
+                    </p>
+                  )}
+                </div>
               </div>
             )}
             {!selected.root_path && (

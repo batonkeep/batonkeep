@@ -406,6 +406,66 @@ def test_coverage_endpoint_reports_the_gap_before_a_session_runs(client, tmp_pat
     assert closed["undeclared_count"] == 0
 
 
+def test_declaring_one_sampled_path_closes_that_much_of_the_gap(client, tmp_path):
+    """The remediation loop the coverage banner drives: declare a path, the
+    count drops by exactly that path."""
+    c, _ = client
+    pid = _mk_project(c, _make_root(tmp_path))
+
+    before = c.get(f"/api/projects/{pid}/context-coverage").json()
+    assert before["undeclared_count"] == 2
+
+    r = c.post(f"/api/projects/{pid}/context-sources", json={"rel_path": "docs/notes.md"})
+    assert r.status_code == 201, r.text
+
+    after = c.get(f"/api/projects/{pid}/context-coverage").json()
+    assert after["undeclared_count"] == 1
+    assert after["sample"] == ["README.md"]
+
+
+@pytest.mark.asyncio
+async def test_a_source_declared_without_bootstrap_order_still_projects(tmp_path, monkeypatch):
+    """Back-filled declarations carry no bootstrap_order — they must still reach
+    the workspace, or the coverage banner's "Declare" button would be theatre."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    import app.evidence as evidence_store
+    from app.db import Base
+    from app.models import ContextSource, Owner, Project
+    from app.project_context import project_for_execution
+
+    monkeypatch.setattr(
+        evidence_store._settings, "evidence_dir", str(tmp_path / "evidence")
+    )
+    root = _make_root(tmp_path)
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/nb.db")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    Maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with Maker() as db:
+        db.add(Owner(id="local", label="Me"))
+        db.add(Project(id="p1", owner_id="local", name="P", root_path=root))
+        db.add(ContextSource(owner_id="local", project_id="p1", kind="file",
+                             rel_path="README.md", bootstrap_order=0))
+        db.add(ContextSource(owner_id="local", project_id="p1", kind="file",
+                             rel_path="docs/notes.md", bootstrap_order=None))
+        await db.commit()
+
+    workdir = tmp_path / "ws"
+    workdir.mkdir()
+    async with Maker() as db:
+        receipt = await project_for_execution(
+            db, owner_id="local", project_id="p1", work_item_id=None,
+            workdir=str(workdir), run_id=None,
+        )
+
+    # Projected, and ordered after the explicitly-ordered bootstrap reads.
+    assert [s["rel_path"] for s in receipt.sources] == ["README.md", "docs/notes.md"]
+    assert (workdir / "context" / "docs" / "notes.md").read_text() == "notes\n"
+    assert receipt.exclusions is None  # the gap is fully closed
+    await engine.dispose()
+
+
 def test_coverage_endpoint_on_a_project_with_no_root(client):
     c, _ = client
     pid = c.post("/api/projects", json={"name": "Rootless"}).json()["id"]

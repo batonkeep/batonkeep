@@ -15,6 +15,7 @@ import {
   Lock,
   Plus,
   RefreshCw,
+  Sparkles,
 } from "lucide-react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
@@ -23,6 +24,7 @@ import type {
   Approval,
   ContextSource,
   Evidence,
+  PlannerRun,
   Project,
   ProjectInput,
   WorkItem,
@@ -300,6 +302,33 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
       loadDetail();
     } catch (e) {
       setError(e instanceof Error ? e.message : "State change refused.");
+    }
+  };
+
+  // ── Planner lane (P-0078) ──────────────────────────────────────────────────
+  // Proposer-only: a planning turn lands `proposed` sub-tasks + a suggested next
+  // action on the item, which the operator confirms in the checklist below it.
+  const [planningId, setPlanningId] = useState<number | null>(null);
+  const [plannerRuns, setPlannerRuns] = useState<Record<number, PlannerRun>>({});
+
+  const handlePlan = async (item: WorkItem) => {
+    setPlanningId(item.id);
+    setError(null);
+    try {
+      let run = await api.planWorkItem(item.id);
+      setPlannerRuns((m) => ({ ...m, [item.id]: run }));
+      // The lane drives in the background; poll the run to completion (~2 min cap,
+      // after which the row is still readable via its planner-run history).
+      for (let i = 0; i < 80 && run.status === "running"; i++) {
+        await new Promise((r) => setTimeout(r, 1500));
+        run = await api.getPlannerRun(run.id);
+      }
+      setPlannerRuns((m) => ({ ...m, [item.id]: run }));
+      loadDetail(); // pick up whatever the planner proposed
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Planning turn failed to start.");
+    } finally {
+      setPlanningId(null);
     }
   };
 
@@ -656,6 +685,16 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
                     <option key={s} value={s}>{s.replace(/_/g, " ")}</option>
                   ))}
                 </Select>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => handlePlan(w)}
+                  disabled={planningId != null}
+                  title="Run a planning turn — the planner proposes sub-tasks and a next action; you confirm them"
+                >
+                  <Sparkles size={13} />
+                  {planningId === w.id ? "Planning…" : "Plan with agent"}
+                </Button>
               </div>
               {(w.objective || w.next_action) && (
                 <div className="mt-2 space-y-1 text-xs">
@@ -672,6 +711,24 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
                     </p>
                   )}
                 </div>
+              )}
+              {plannerRuns[w.id] && (
+                <p className="mt-2 text-xs text-muted">
+                  <span className="font-mono text-[10px] uppercase tracking-wider">planner · </span>
+                  {plannerRuns[w.id].status === "failed" ? (
+                    <span className="text-bad">{plannerRuns[w.id].error ?? "failed"}</span>
+                  ) : (
+                    <span className="text-ink">
+                      {plannerRuns[w.id].status === "running"
+                        ? "thinking…"
+                        : `proposed ${Number(plannerRuns[w.id].proposals?.subtasks_proposed ?? 0)} sub-task(s)`}
+                    </span>
+                  )}
+                  <span className="ml-1 font-mono text-[10px]">
+                    {plannerRuns[w.id].model ?? plannerRuns[w.id].provider}
+                    {plannerRuns[w.id].local_pinned && " · local-pinned"}
+                  </span>
+                </p>
               )}
               <SubtaskChecklist item={w} onChanged={loadDetail} />
             </Card>

@@ -28,7 +28,7 @@ from app.providers.registry import ProviderDef, ProviderInstance
 # never imports a tool module directly — it lists schemas and dispatches calls
 # through the registry, so a future external-MCP-server provider drops in
 # transparently.
-from app.providers.tools.registry import get_tool_registry
+from app.providers.tools.registry import PLANNER_TOOL_NAMES, get_tool_registry
 
 logger = logging.getLogger(__name__)
 
@@ -41,19 +41,26 @@ TOOL_SCHEMAS = get_tool_registry().function_schemas()
 # base set excludes both; `_active_tool_schemas` re-adds each per-run.
 _CODE_EXEC_NAME = "code_exec"
 _IMAGE_GEN_NAME = "image_generate"
-_GATED_TOOL_NAMES = {_CODE_EXEC_NAME, _IMAGE_GEN_NAME}
+# Planning tools (P-0078) are dispatchable through the registry but offered ONLY on
+# a planning turn — they never appear in a build/research/task run's toolset.
+_GATED_TOOL_NAMES = {_CODE_EXEC_NAME, _IMAGE_GEN_NAME, *PLANNER_TOOL_NAMES}
 _BASE_TOOL_SCHEMAS = [s for s in TOOL_SCHEMAS if s["name"] not in _GATED_TOOL_NAMES]
 _CODE_EXEC_SCHEMA = next((s for s in TOOL_SCHEMAS if s["name"] == _CODE_EXEC_NAME), None)
 _IMAGE_GEN_SCHEMA = next((s for s in TOOL_SCHEMAS if s["name"] == _IMAGE_GEN_NAME), None)
+_PLANNER_SCHEMAS = [s for s in TOOL_SCHEMAS if s["name"] in PLANNER_TOOL_NAMES]
 
 
 def _active_tool_schemas(extra: dict | None) -> list[dict]:
-    """The tool schemas offered for a run: the base set plus `code_exec` when the
-    run's execution policy permits (P-0046), plus `image_generate` when the active
-    provider is image-capable (slice 6 / P-0037)."""
+    """The tool schemas offered for a run. A **planning turn** (P-0078,
+    `extra['planning']`) gets *only* the planner toolset — its distinct work class
+    is fenced from the build/research tools. Otherwise: the base set plus `code_exec`
+    when the run's execution policy permits (P-0046), plus `image_generate` when the
+    active provider is image-capable (slice 6 / P-0037)."""
     from app.providers.tools.code_exec import policy_offers_tool
 
     extra = extra or {}
+    if extra.get("planning"):
+        return list(_PLANNER_SCHEMAS)
     schemas = list(_BASE_TOOL_SCHEMAS)
     if _CODE_EXEC_SCHEMA and policy_offers_tool(
         extra.get("exec_policy"), bool(extra.get("human_in_loop"))
@@ -75,11 +82,28 @@ _SYSTEM_PROMPT = (
 )
 
 
+_PLANNING_SYSTEM_PROMPT = (
+    "You are the project planner for this work item — a proposer, not an executor. "
+    "You do not write code or produce deliverables; you decompose the work and keep it "
+    "honest. Read the work item's objective and current state, then: (1) call "
+    "propose_subtasks to lay out the concrete sub-tasks that would complete it — give an "
+    "`expected` file path/glob for any sub-task that produces a file, so progress can be "
+    "verified against real artifacts; (2) call set_next_action with the single most "
+    "honest next step. Your sub-tasks are proposals the operator reviews and confirms — "
+    "you cannot mark them done. Be specific and concise; do not invent work beyond the "
+    "objective. When you have proposed the plan, stop and give a one-paragraph summary."
+)
+
+
 def _base_system_prompt(extra: dict | None) -> str:
     """The system prompt for a run — `_SYSTEM_PROMPT` plus the exec-env capability
     blurb when code-exec is offered (P-0046), so the model knows the pinned
-    toolchain it can rely on rather than probing for it."""
+    toolchain it can rely on rather than probing for it. A planning turn (P-0078)
+    uses a wholly different, planner-flavored prompt."""
     from app.providers.tools.code_exec import policy_offers_tool
+
+    if extra and extra.get("planning"):
+        return _PLANNING_SYSTEM_PROMPT
 
     prompt = _SYSTEM_PROMPT
     if extra and extra.get("image_gen"):

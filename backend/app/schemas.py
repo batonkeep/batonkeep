@@ -775,6 +775,38 @@ class SessionTurnOut(BaseModel):
         return v
 
 
+class PlanRequestIn(BaseModel):
+    """Request a planning turn (P-0078). All fields optional: an operator note to
+    steer it, and a per-call provider/model override (else the project's planner
+    default → first available; a confidential project is pinned local regardless)."""
+
+    message: str | None = None
+    provider: str | None = None
+    model: str | None = None
+
+
+class PlannerRunOut(BaseModel):
+    """A planning-turn record (P-0078) — the audit + spend trail for the planner."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    project_id: str
+    work_item_id: int | None
+    status: str
+    provider: str | None
+    model: str | None
+    local_pinned: bool
+    response: str | None
+    error: str | None
+    proposals: dict | None
+    tokens_in: int = 0
+    tokens_out: int = 0
+    cost_usd: float = 0.0
+    created_at: datetime
+    finished_at: datetime | None
+
+
 class FileEntryOut(BaseModel):
     """One workspace file in the session file browser (P-0016 b)."""
 

@@ -22,6 +22,8 @@ import type {
   ImportResult,
   Mode,
   ModelPricing,
+  PlannerRun,
+  PlanRequestInput,
   Project,
   ProjectInput,
   ProviderCatalog,
@@ -123,6 +125,15 @@ export const api = {
     req<WorkItem>(`/work-items/${itemId}/subtasks`, {
       method: "PUT", body: JSON.stringify({ items }),
     }),
+  // P-0078: kick off a planning turn against a work item. Returns immediately with
+  // a `running` run — the lane drives in the background; poll getPlannerRun.
+  planWorkItem: (itemId: number, body: PlanRequestInput = {}) =>
+    req<PlannerRun>(`/work-items/${itemId}/plan`, {
+      method: "POST", body: JSON.stringify(body),
+    }),
+  getPlannerRun: (runId: number) => req<PlannerRun>(`/planner-runs/${runId}`),
+  listWorkItemPlannerRuns: (itemId: number) =>
+    req<PlannerRun[]>(`/work-items/${itemId}/planner-runs`),
   listContextSources: (projectId: string) =>
     req<ContextSource[]>(`/projects/${projectId}/context-sources`),
   // rel_path null → import every source the project manifest declares.

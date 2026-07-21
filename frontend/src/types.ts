@@ -747,6 +747,35 @@ export interface WorkItemPatchInput {
   decision_actor?: string;
 }
 
+// P-0078: a planning turn — the per-project planner agent's proposer-only lane.
+// Proposer-only by construction: its outputs land as `proposed` sub-tasks and a
+// suggested next action on the work item; a human confirms them. No workspace.
+export interface PlannerRun {
+  id: number;
+  project_id: string;
+  work_item_id: number | null;
+  status: "running" | "succeeded" | "failed";
+  provider: string | null;
+  model: string | null;
+  // Sovereignty fence pinned this turn to a local model (confidential project).
+  local_pinned: boolean;
+  response: string | null;
+  error: string | null;
+  // {"subtasks_proposed": n, "next_action_set": bool, …}
+  proposals: Record<string, unknown> | null;
+  tokens_in: number;
+  tokens_out: number;
+  cost_usd: number;
+  created_at: string;
+  finished_at: string | null;
+}
+
+export interface PlanRequestInput {
+  message?: string;
+  provider?: string;
+  model?: string;
+}
+
 export interface ContextSource {
   id: number;
   owner_id: string;

@@ -447,6 +447,82 @@ class TestProjectPlanningTurn:
         assert "shipped thing" not in run.request
 
     @pytest.mark.asyncio
+    async def test_prompt_carries_the_declared_context_inventory(self, planner_env):
+        """A project whose substance lives in its declared context (a wiki, a spec
+        set) read as empty to the planner, which then correctly reported having
+        nothing to say. Paths only — the prompt never carries source content."""
+        from app.models import ContextSource
+        Maker, planner = planner_env
+        async with Maker() as db:
+            db.add(ContextSource(owner_id="local", project_id="pr", kind="dir",
+                                 rel_path="context/world", domain="lore",
+                                 bootstrap_order=1, last_revision="abc123def456789"))
+            db.add(ContextSource(owner_id="local", project_id="pr", kind="file",
+                                 rel_path="context/rules.md"))
+            await db.commit()
+        run_id = await planner.start_planning_turn(
+            "pr", owner_id="local", provider="planner-mock"
+        )
+        async with Maker() as db:
+            req = (await db.get(PlannerRun, run_id)).request
+        assert "Declared context sources (2)" in req
+        assert "context/world [dir] · lore · rev abc123def456" in req
+        assert "context/rules.md [file] · unhashed" in req
+
+    @pytest.mark.asyncio
+    async def test_empty_project_is_told_to_bootstrap_not_to_report_emptiness(
+        self, planner_env
+    ):
+        """The reported defect: a project with no open work items produced
+        "no data · proposed nothing". With nothing to react to, bootstrapping is
+        the job — the prompt has to say so."""
+        Maker, planner = planner_env
+        async with Maker() as db:
+            wi = await db.get(WorkItem, 1)
+            wi.state = "done"
+            await db.commit()
+        run_id = await planner.start_planning_turn(
+            "pr", owner_id="local", provider="planner-mock"
+        )
+        async with Maker() as db:
+            req = (await db.get(PlannerRun, run_id)).request
+        assert "(none open)" in req
+        assert "bootstrapping is exactly the job" in req
+        assert "Do not answer that there is nothing to report" in req
+
+    @pytest.mark.asyncio
+    async def test_closed_work_is_counted_not_silently_dropped(self, planner_env):
+        """A finished project is not an empty one; the planner cannot tell them
+        apart from an empty open-ledger alone."""
+        Maker, planner = planner_env
+        async with Maker() as db:
+            db.add(WorkItem(id=2, owner_id="local", project_id="pr", title="shipped",
+                            state="done"))
+            db.add(WorkItem(id=3, owner_id="local", project_id="pr", title="abandoned",
+                            state="dropped"))
+            await db.commit()
+        run_id = await planner.start_planning_turn(
+            "pr", owner_id="local", provider="planner-mock"
+        )
+        async with Maker() as db:
+            req = (await db.get(PlannerRun, run_id)).request
+        assert "Also 2 closed work item(s)" in req
+        # Still summarized, not listed — closed detail is not the planner's input.
+        assert "shipped" not in req and "abandoned" not in req
+
+    @pytest.mark.asyncio
+    async def test_prompt_is_surfaced_on_the_run(self, planner_env):
+        """"It proposed nothing" is un-diagnosable without seeing what it was told."""
+        from app.schemas import PlannerRunOut
+        Maker, planner = planner_env
+        run_id = await planner.start_planning_turn(
+            "pr", owner_id="local", provider="planner-mock"
+        )
+        async with Maker() as db:
+            out = PlannerRunOut.model_validate(await db.get(PlannerRun, run_id))
+        assert out.request and "# Project: P" in out.request
+
+    @pytest.mark.asyncio
     async def test_item_turn_rollup_merges_with_tool_written_proposals(self, planner_env):
         """_finish must merge into `proposals`, not replace it — the tools have
         already written their attributed entries there during the drive."""

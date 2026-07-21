@@ -344,6 +344,7 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
   const [plannerRuns, setPlannerRuns] = useState<Record<number, PlannerRun>>({});
   const [projectRun, setProjectRun] = useState<PlannerRun | null>(null);
   const [plannerHistory, setPlannerHistory] = useState<PlannerRun[]>([]);
+  const [openRunId, setOpenRunId] = useState<number | null>(null);
   const planning = planningId != null || planningProject;
 
   // Selection settings (slice 3). `settings` is the server's resolution — stored
@@ -777,24 +778,61 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
               </div>
               <div className="space-y-1">
                 {plannerHistory.map((r) => (
-                  <div key={r.id} className="flex flex-wrap items-center gap-2 text-xs">
-                    <Badge tone={PLANNER_RUN_TONE[r.status] ?? "neutral"}>{r.status}</Badge>
-                    <span className="font-mono text-[11px] text-muted">
-                      {r.work_item_id != null ? `#${r.work_item_id}` : "project"}
-                    </span>
-                    <span className="min-w-0 flex-1 truncate text-muted">
-                      {r.status === "failed"
-                        ? r.error ?? "failed"
-                        : r.status === "running"
-                          ? "in flight…"
-                          : r.proposals?.summary?.headline ?? plannerRunOutcome(r)}
-                    </span>
-                    <span className="font-mono text-[10px] text-muted">
-                      {r.model ?? r.provider}
-                      {r.local_pinned && " · local"}
-                    </span>
-                    <span className="font-mono text-[10px] text-muted">{fmtCost(r.cost_usd)}</span>
-                    <span className="font-mono text-[10px] text-muted">{fmtTime(r.created_at)}</span>
+                  <div key={r.id}>
+                    <button
+                      className="flex w-full flex-wrap items-center gap-2 text-left text-xs"
+                      onClick={() => setOpenRunId(openRunId === r.id ? null : r.id)}
+                      title="Show what this turn was given and what it answered"
+                    >
+                      <Badge tone={PLANNER_RUN_TONE[r.status] ?? "neutral"}>{r.status}</Badge>
+                      <span className="font-mono text-[11px] text-muted">
+                        {r.work_item_id != null ? `#${r.work_item_id}` : "project"}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate text-muted">
+                        {r.status === "failed"
+                          ? r.error ?? "failed"
+                          : r.status === "running"
+                            ? "in flight…"
+                            : r.proposals?.summary?.headline ?? plannerRunOutcome(r)}
+                      </span>
+                      <span className="font-mono text-[10px] text-muted">
+                        {r.model ?? r.provider}
+                        {r.local_pinned && " · local"}
+                      </span>
+                      <span className="font-mono text-[10px] text-muted">{fmtCost(r.cost_usd)}</span>
+                      <span className="font-mono text-[10px] text-muted">{fmtTime(r.created_at)}</span>
+                      <ChevronDown
+                        size={12}
+                        className={`shrink-0 text-muted transition-transform ${
+                          openRunId === r.id ? "rotate-180" : ""
+                        }`}
+                      />
+                    </button>
+                    {/* A turn that proposed nothing is almost always a turn that was
+                        told nothing. Showing the exact prompt makes that visible
+                        instead of leaving the planner looking broken. */}
+                    {openRunId === r.id && (
+                      <div className="mt-1 space-y-2 rounded-lg border border-edge bg-base/60 p-2">
+                        <div>
+                          <span className="font-mono text-[10px] uppercase tracking-wider text-muted">
+                            what it was given
+                          </span>
+                          <pre className="mt-1 max-h-56 overflow-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-ink">
+                            {r.request ?? "—"}
+                          </pre>
+                        </div>
+                        {r.response && (
+                          <div>
+                            <span className="font-mono text-[10px] uppercase tracking-wider text-muted">
+                              what it answered
+                            </span>
+                            <pre className="mt-1 max-h-56 overflow-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-ink">
+                              {r.response}
+                            </pre>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>

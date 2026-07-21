@@ -27,13 +27,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import tempfile
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.config import get_settings
 from app.db import AsyncSessionLocal
-from app.models import PlannerRun, Project, WorkItem
+from app.models import ContextSource, Evidence, PlannerRun, Project, WorkItem
 from app.providers.base import EventKind, ExecResult
 from app.providers.registry import (
     get_executor,
@@ -123,30 +124,81 @@ def _ledger_line(item: WorkItem) -> str:
     return "  " + " ".join(bits)
 
 
+#: Declared context sources listed on a project-level turn. Same reasoning as the
+#: ledger cap: the planner runs on a tight round/spend budget.
+_SOURCES_LIMIT = 40
+
+
+@dataclass
+class ProjectFacts:
+    """What a project-level planning turn is told about the project besides its
+    open ledger. Without this the planner sees only a name and a list of work items,
+    so a project whose substance lives in its *declared context* (a wiki, a spec set,
+    a repo) reads as empty and the planner correctly reports having nothing to say."""
+
+    ledger: list[WorkItem]
+    sources: list[ContextSource]
+    closed_count: int
+    evidence_count: int
+
+
+def _source_line(source: ContextSource) -> str:
+    """One declared context source: where truth lives + how fresh it is. Paths and
+    revisions only — the row itself never holds content, and neither does this."""
+    bits = [f"{source.rel_path} [{source.kind}]"]
+    if source.domain:
+        bits.append(f"· {source.domain}")
+    if source.last_revision:
+        bits.append(f"· rev {source.last_revision[:12]}")
+    else:
+        bits.append("· unhashed")
+    return "  " + " ".join(bits)
+
+
 def _build_prompt(
     project: Project,
     work_item: WorkItem | None,
     message: str,
-    ledger: list[WorkItem] | None = None,
+    facts: ProjectFacts | None = None,
 ) -> str:
     """The planning turn's user prompt: project + work-item state so the planner
-    reasons from durable truth, not a transcript. Content-safe (no raw evidence).
-    A project-level turn (no bound work item) gets the work-item ledger instead —
-    it is triaging and summarizing across the project, so the ledger *is* its input."""
+    reasons from durable truth, not a transcript. Content-safe — paths, revisions and
+    counts, never raw evidence or source content. A project-level turn (no bound work
+    item) gets the ledger *and* the declared-context inventory: what the project is
+    made of is as much its state as what is open on it."""
     from app import subtasks as st
 
     lines = [f"# Project: {project.name}"]
     if project.description:
         lines.append(project.description.strip()[:800])
     if work_item is None:
-        rows = ledger or []
-        lines.append(f"\n## Work items ({len(rows)})")
+        f = facts or ProjectFacts([], [], 0, 0)
+        rows = f.ledger
+        lines.append(f"\n## Open work items ({len(rows)})")
         if rows:
             lines.extend(_ledger_line(i) for i in rows[:_LEDGER_LIMIT])
             if len(rows) > _LEDGER_LIMIT:
                 lines.append(f"  … and {len(rows) - _LEDGER_LIMIT} more (not shown)")
         else:
-            lines.append("  (none yet)")
+            lines.append("  (none open)")
+        # Closed work is summarized rather than listed: a project whose work is all
+        # finished is not the same as a project that never started, and the planner
+        # cannot tell those apart from an empty open-ledger alone.
+        if f.closed_count:
+            lines.append(f"\nAlso {f.closed_count} closed work item(s) (done or dropped).")
+        lines.append(f"\n## Declared context sources ({len(f.sources)})")
+        if f.sources:
+            lines.extend(_source_line(s) for s in f.sources[:_SOURCES_LIMIT])
+            if len(f.sources) > _SOURCES_LIMIT:
+                lines.append(f"  … and {len(f.sources) - _SOURCES_LIMIT} more (not shown)")
+            lines.append(
+                "  (paths only — you are seeing where this project's truth lives, "
+                "not its contents)"
+            )
+        else:
+            lines.append("  (none declared)")
+        if f.evidence_count:
+            lines.append(f"\n{f.evidence_count} evidence artifact(s) recorded so far.")
     if work_item is not None:
         lines.append(f"\n## Work item #{work_item.id}: {work_item.title}")
         lines.append(f"State: {work_item.state} · kind: {work_item.kind} · risk: {work_item.risk}")
@@ -168,14 +220,68 @@ def _build_prompt(
                 lines.append(f"  {mark} {i.get('label')}{exp}")
     if message.strip():
         lines.append(f"\n## Operator note\n{message.strip()[:1000]}")
-    lines.append(
-        "\nPropose the sub-task plan (with expected artifacts where a sub-task makes a "
-        "file) and set the single honest next action."
-        if work_item is not None else
-        "\nSummarize where this project stands, then propose work items for anything it "
-        "clearly needs that no item above already covers."
-    )
+    if work_item is not None:
+        lines.append(
+            "\nPropose the sub-task plan (with expected artifacts where a sub-task makes a "
+            "file) and set the single honest next action."
+        )
+    else:
+        f = facts or ProjectFacts([], [], 0, 0)
+        lines.append(
+            "\nSummarize where this project stands, then propose work items for anything "
+            "it clearly needs that no item above already covers."
+        )
+        if not f.ledger:
+            # A project with nothing open is the case where the planner is *most*
+            # useful and, left to itself, most likely to answer "no data" — it has
+            # no ledger to react to. Say plainly that bootstrapping is the job.
+            lines.append(
+                "This project has no open work items. Do not answer that there is "
+                "nothing to report — bootstrapping is exactly the job here. From the "
+                "project's stated purpose above, propose the first few concrete work "
+                "items that would move it forward, and say so in the summary."
+            )
     return "\n".join(lines)
+
+
+async def _gather_project_facts(db, owner_id: str, project_id: str) -> ProjectFacts:
+    """Everything a project-level turn is told about the project. The open ledger is
+    listed; closed work and evidence are counted (a finished project is not an empty
+    one); declared context sources are listed by path so the planner knows what the
+    project is *made of*, not just what is open on it."""
+    ledger = list((await db.execute(
+        select(WorkItem)
+        .where(
+            WorkItem.owner_id == owner_id,
+            WorkItem.project_id == project_id,
+            WorkItem.state.not_in(("done", "dropped")),
+        )
+        .order_by(WorkItem.id)
+    )).scalars().all())
+    closed = (await db.execute(
+        select(func.count()).select_from(WorkItem).where(
+            WorkItem.owner_id == owner_id,
+            WorkItem.project_id == project_id,
+            WorkItem.state.in_(("done", "dropped")),
+        )
+    )).scalar_one()
+    sources = list((await db.execute(
+        select(ContextSource)
+        .where(ContextSource.project_id == project_id)
+        .order_by(
+            ContextSource.bootstrap_order.is_(None),
+            ContextSource.bootstrap_order,
+            ContextSource.id,
+        )
+    )).scalars().all())
+    evidence = (await db.execute(
+        select(func.count()).select_from(Evidence).where(
+            Evidence.owner_id == owner_id, Evidence.project_id == project_id
+        )
+    )).scalar_one()
+    return ProjectFacts(
+        ledger=ledger, sources=sources, closed_count=closed, evidence_count=evidence
+    )
 
 
 async def start_planning_turn(
@@ -196,31 +302,21 @@ async def start_planning_turn(
         if project is None or project.owner_id != owner_id:
             raise PlannerError("project not found")
         work_item: WorkItem | None = None
-        ledger: list[WorkItem] | None = None
+        facts: ProjectFacts | None = None
         if work_item_id is not None:
             work_item = await db.get(WorkItem, work_item_id)
             if work_item is None or work_item.owner_id != owner_id \
                     or work_item.project_id != project_id:
                 raise PlannerError("work item not found in this project")
         else:
-            # Project-level turn: the ledger is the input. Closed work is excluded —
-            # the planner is asked what to do next, not to re-read finished history.
-            ledger = list((await db.execute(
-                select(WorkItem)
-                .where(
-                    WorkItem.owner_id == owner_id,
-                    WorkItem.project_id == project_id,
-                    WorkItem.state.not_in(("done", "dropped")),
-                )
-                .order_by(WorkItem.id)
-            )).scalars().all())
+            facts = await _gather_project_facts(db, owner_id, project_id)
         prov, mdl, local_pinned = resolve_planner_selection(
             project, requested_provider=provider, requested_model=model
         )
         run = PlannerRun(
             owner_id=owner_id, project_id=project_id, work_item_id=work_item_id,
             status="running", provider=prov, model=mdl, local_pinned=local_pinned,
-            request=_build_prompt(project, work_item, message, ledger),
+            request=_build_prompt(project, work_item, message, facts),
         )
         db.add(run)
         await db.commit()

@@ -25,14 +25,16 @@ import type {
   ContextSource,
   Evidence,
   PlannerRun,
+  PlannerSettings,
   Project,
   ProjectInput,
+  ProviderHealth,
   WorkItem,
   WorkItemState,
 } from "../types";
 import { WORK_ITEM_TRANSITIONS } from "../types";
 import { Badge, Button, Card, Field, Input, Modal, Select, Tabs, type Tone } from "../ui";
-import { fmtTime } from "../format";
+import { fmtCost, fmtTime } from "../format";
 import SubtaskChecklist from "./SubtaskChecklist";
 
 interface Props {
@@ -54,6 +56,24 @@ const WORK_STATE_TONE: Record<WorkItemState, Tone> = {
 };
 
 const RISK_TONE: Record<string, Tone> = { low: "neutral", medium: "warn", high: "bad" };
+
+const PLANNER_RUN_TONE: Record<string, Tone> = {
+  running: "live",
+  succeeded: "ok",
+  failed: "bad",
+};
+
+// One line for what a planning turn produced. Project turns carry a digest headline;
+// item turns are summarized from their counts. A succeeded turn that proposed nothing
+// says so — silence would read as "not run yet".
+function plannerRunOutcome(r: PlannerRun): string {
+  const subtasks = Number(r.proposals?.subtasks_proposed ?? 0);
+  const items = r.proposals?.work_items_proposed?.length ?? 0;
+  const parts: string[] = [];
+  if (subtasks) parts.push(`${subtasks} sub-task(s)`);
+  if (items) parts.push(`${items} work item(s)`);
+  return parts.length ? `proposed ${parts.join(" · ")}` : "proposed nothing";
+}
 
 const EVIDENCE_TONE: Record<string, Tone> = {
   report: "brand",
@@ -215,6 +235,7 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
     api.listContextSources(selectedId).then(setSources).catch(() => setSources([]));
     api.listEvidence(selectedId).then(setEvidence).catch(() => setEvidence([]));
     api.listApprovals({ project_id: selectedId }).then(setApprovals).catch(() => setApprovals([]));
+    api.listProjectPlannerRuns(selectedId).then(setPlannerHistory).catch(() => setPlannerHistory([]));
   }, [selectedId]);
 
   useEffect(() => {
@@ -222,6 +243,12 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
     setSources([]);
     setEvidence([]);
     setApprovals([]);
+    // Clear the planner surfaces too, so switching projects never shows the previous
+    // project's selection or spend while the new one loads.
+    setPlannerSettings(null);
+    setPlannerHistory([]);
+    setProjectRun(null);
+    setPlannerRuns({});
     setError(null);
     setTab("overview");
     loadDetail();
@@ -316,7 +343,55 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
   const [planningProject, setPlanningProject] = useState(false);
   const [plannerRuns, setPlannerRuns] = useState<Record<number, PlannerRun>>({});
   const [projectRun, setProjectRun] = useState<PlannerRun | null>(null);
+  const [plannerHistory, setPlannerHistory] = useState<PlannerRun[]>([]);
   const planning = planningId != null || planningProject;
+
+  // Selection settings (slice 3). `settings` is the server's resolution — stored
+  // default *and* what would actually run once fallback and the sovereignty fence
+  // are applied — so this panel can never disagree with the lane about what runs.
+  const [plannerSettings, setPlannerSettings] = useState<PlannerSettings | null>(null);
+  const [plannerDraft, setPlannerDraft] = useState({ provider: "", model: "" });
+  const [savingPlanner, setSavingPlanner] = useState(false);
+  const [providers, setProviders] = useState<ProviderHealth[]>([]);
+
+  useEffect(() => {
+    if (!selectedId) return;
+    api.getPlannerSettings(selectedId)
+      .then((s) => {
+        setPlannerSettings(s);
+        setPlannerDraft({ provider: s.provider ?? "", model: s.model ?? "" });
+      })
+      .catch(() => setPlannerSettings(null));
+  }, [selectedId]);
+
+  useEffect(() => {
+    api.listProviders().then(setProviders).catch(() => setProviders([]));
+  }, []);
+
+  const handleSavePlanner = async () => {
+    if (!selectedId) return;
+    setSavingPlanner(true);
+    setError(null);
+    try {
+      const next = await api.setPlannerSettings(selectedId, {
+        provider: plannerDraft.provider || null,
+        // A model without a provider is refused server-side; drop it so clearing
+        // the provider reads as "clear the whole default", which is what it means.
+        model: plannerDraft.provider ? plannerDraft.model || null : null,
+      });
+      setPlannerSettings(next);
+      setPlannerDraft({ provider: next.provider ?? "", model: next.model ?? "" });
+      onProjectsChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not save the planner default.");
+    } finally {
+      setSavingPlanner(false);
+    }
+  };
+
+  const plannerDirty =
+    plannerDraft.provider !== (plannerSettings?.provider ?? "") ||
+    plannerDraft.model !== (plannerSettings?.model ?? "");
 
   // The lane drives in the background; poll to completion (~2 min cap, after which
   // the row is still readable via the planner-run history endpoints).
@@ -614,6 +689,110 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
               </Card>
             ))}
           </div>
+
+          {/* Planner default (P-0078). Optional by design — a planner is never a
+              mandatory per-project decision, so "no default" is a valid answer and
+              the fallback is shown rather than hidden. */}
+          <Card className="space-y-3 p-4">
+            <div className="flex items-center gap-2">
+              <Sparkles size={14} className="shrink-0 text-brand" />
+              <span className="font-mono text-[11px] uppercase tracking-wider text-muted">
+                Planner · the model that proposes plans for this project
+              </span>
+            </div>
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <Field label="Provider — leave empty to use the first available">
+                <Select
+                  value={plannerDraft.provider}
+                  onChange={(e) =>
+                    setPlannerDraft({ ...plannerDraft, provider: e.target.value })
+                  }
+                >
+                  <option value="">no default (fall back)</option>
+                  {providers.map((p) => (
+                    <option key={p.name} value={p.name}>
+                      {p.label} · {p.name}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              <Field label="Model — optional, else the provider's own default">
+                <Input
+                  value={plannerDraft.model}
+                  onChange={(e) => setPlannerDraft({ ...plannerDraft, model: e.target.value })}
+                  disabled={!plannerDraft.provider}
+                  placeholder={plannerDraft.provider ? "provider default" : "pick a provider first"}
+                />
+              </Field>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {plannerSettings && (
+                <span className="text-xs text-muted">
+                  <span className="font-mono text-[10px] uppercase tracking-wider">runs as · </span>
+                  <span className="font-mono text-ink">
+                    {plannerSettings.effective_provider ?? "nothing available"}
+                    {plannerSettings.effective_model && ` / ${plannerSettings.effective_model}`}
+                  </span>
+                  {plannerSettings.local_pinned && (
+                    <Badge tone="ok" className="ml-2">
+                      <Lock size={10} /> local-pinned
+                    </Badge>
+                  )}
+                </span>
+              )}
+              <Button
+                className="ml-auto"
+                variant="primary"
+                size="sm"
+                onClick={handleSavePlanner}
+                disabled={savingPlanner || !plannerDirty}
+              >
+                {savingPlanner ? "Saving…" : "Save"}
+              </Button>
+            </div>
+            {plannerSettings?.note && (
+              <p className="text-xs text-muted">{plannerSettings.note}</p>
+            )}
+          </Card>
+
+          {/* Planning-turn history: the audit + spend trail. Planning is meant to be
+              cheap, frequent meta-work — showing what it costs is how that stays true. */}
+          {plannerHistory.length > 0 && (
+            <Card className="p-4">
+              <div className="mb-2 flex items-center gap-2">
+                <span className="font-mono text-[11px] uppercase tracking-wider text-muted">
+                  Planning turns · audit + spend
+                </span>
+                <span className="ml-auto font-mono text-[11px] text-muted">
+                  {plannerHistory.length} shown ·{" "}
+                  {fmtCost(plannerHistory.reduce((t, r) => t + r.cost_usd, 0))}
+                </span>
+              </div>
+              <div className="space-y-1">
+                {plannerHistory.map((r) => (
+                  <div key={r.id} className="flex flex-wrap items-center gap-2 text-xs">
+                    <Badge tone={PLANNER_RUN_TONE[r.status] ?? "neutral"}>{r.status}</Badge>
+                    <span className="font-mono text-[11px] text-muted">
+                      {r.work_item_id != null ? `#${r.work_item_id}` : "project"}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-muted">
+                      {r.status === "failed"
+                        ? r.error ?? "failed"
+                        : r.status === "running"
+                          ? "in flight…"
+                          : r.proposals?.summary?.headline ?? plannerRunOutcome(r)}
+                    </span>
+                    <span className="font-mono text-[10px] text-muted">
+                      {r.model ?? r.provider}
+                      {r.local_pinned && " · local"}
+                    </span>
+                    <span className="font-mono text-[10px] text-muted">{fmtCost(r.cost_usd)}</span>
+                    <span className="font-mono text-[10px] text-muted">{fmtTime(r.created_at)}</span>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
         </div>
       )}
 

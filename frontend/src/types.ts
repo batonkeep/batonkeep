@@ -632,8 +632,29 @@ export interface Project {
   root_path: string | null;
   manifest_rel: string | null;
   description: string | null;
+  // P-0078: the project's planner default (null → fall back to the first available
+  // instance). What would actually run is PlannerSettings, which applies the fence.
+  planner_provider: string | null;
+  planner_model: string | null;
   created_at: string;
   updated_at: string;
+}
+
+// The planner selection for a project: what is stored vs what would actually run.
+// The two differ on fallback, or when the sovereignty fence pins a confidential
+// project local — resolved server-side so this can never disagree with the lane.
+export interface PlannerSettings {
+  provider: string | null;
+  model: string | null;
+  effective_provider: string | null;
+  effective_model: string | null;
+  local_pinned: boolean;
+  note: string | null;
+}
+
+export interface PlannerSettingsInput {
+  provider?: string | null;
+  model?: string | null;
 }
 
 export interface ProjectInput {

@@ -561,6 +561,106 @@ class TestPlannerApi:
         finally:
             app.dependency_overrides.clear()
 
+    def test_planner_settings_round_trip(self, tmp_path, monkeypatch):
+        client, _, _ = self._client(tmp_path, monkeypatch)
+        try:
+            from app.providers import registry as preg
+            monkeypatch.setattr(
+                preg, "get_instance",
+                lambda i: object() if i in ("claude", "ollama") else None,
+            )
+
+            got = client.get("/api/projects/pr/planner").json()
+            assert got["provider"] is None  # never a mandatory per-project decision
+
+            saved = client.put("/api/projects/pr/planner",
+                               json={"provider": "claude", "model": "claude-x"})
+            assert saved.status_code == 200, saved.text
+            assert saved.json()["provider"] == "claude"
+            assert saved.json()["effective_provider"] == "claude"
+            assert saved.json()["note"] is None  # stored == what runs
+            assert client.get("/api/projects/pr").json()["planner_provider"] == "claude"
+
+            cleared = client.put("/api/projects/pr/planner", json={})
+            assert cleared.json()["provider"] is None
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_unknown_provider_refused_at_set_time(self, tmp_path, monkeypatch):
+        """A typo that only surfaces when a planning turn fails is a much worse
+        trade than a 400 at the moment the operator sets it."""
+        client, _, _ = self._client(tmp_path, monkeypatch)
+        try:
+            from app.providers import registry as preg
+            monkeypatch.setattr(preg, "get_instance", lambda i: None)
+            r = client.put("/api/projects/pr/planner", json={"provider": "cluade"})
+            assert r.status_code == 400 and "unknown provider" in r.json()["detail"]
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_model_without_provider_refused(self, tmp_path, monkeypatch):
+        client, _, _ = self._client(tmp_path, monkeypatch)
+        try:
+            r = client.put("/api/projects/pr/planner", json={"model": "some-model"})
+            assert r.status_code == 400
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_settings_surface_the_sovereignty_fence(self, tmp_path, monkeypatch):
+        """A confidential project shows the operator what would *actually* run, rather
+        than leaving the UI to re-derive the fence and risk disagreeing with the lane."""
+        client, Maker, _ = self._client(tmp_path, monkeypatch)
+        try:
+            import app.planner as planner
+            from app.providers import registry as preg
+            monkeypatch.setattr(preg, "get_instance", lambda i: object())
+            monkeypatch.setattr(planner, "is_local_instance", lambda p: p == "ollama")
+            monkeypatch.setattr(planner, "local_candidate_ids", lambda: ["ollama"])
+
+            async def _confidential():
+                async with Maker() as db:
+                    proj = await db.get(Project, "pr")
+                    proj.sensitivity = "confidential"
+                    proj.planner_provider = "claude"
+                    await db.commit()
+
+            asyncio.get_event_loop().run_until_complete(_confidential())
+
+            got = client.get("/api/projects/pr/planner").json()
+            assert got["provider"] == "claude"           # what the operator chose
+            assert got["effective_provider"] == "ollama"  # what the fence allows
+            assert got["local_pinned"] is True
+            assert "confidential" in got["note"]
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_settings_report_when_nothing_can_run(self, tmp_path, monkeypatch):
+        client, _, _ = self._client(tmp_path, monkeypatch)
+        try:
+            import app.planner as planner
+            monkeypatch.setattr(planner, "list_instances", lambda: [])
+            got = client.get("/api/projects/pr/planner").json()
+            assert got["effective_provider"] is None and got["note"]
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_planner_run_history_is_bounded(self, tmp_path, monkeypatch):
+        client, Maker, _ = self._client(tmp_path, monkeypatch)
+        try:
+            async def _seed():
+                async with Maker() as db:
+                    for _ in range(5):
+                        db.add(PlannerRun(owner_id="local", project_id="pr",
+                                          status="succeeded"))
+                    await db.commit()
+
+            asyncio.get_event_loop().run_until_complete(_seed())
+            rows = client.get("/api/projects/pr/planner-runs?limit=2").json()
+            assert len(rows) == 2
+            assert rows[0]["id"] > rows[1]["id"]  # newest first
+        finally:
+            app.dependency_overrides.clear()
+
     def test_plan_unknown_work_item_404(self, tmp_path, monkeypatch):
         client, _, _ = self._client(tmp_path, monkeypatch)
         try:

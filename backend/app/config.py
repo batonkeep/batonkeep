@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     per_provider_concurrency: int = 1
     max_concurrent_runs: int = 4
     run_timeout_seconds: int = 1800
+    # P-0078: planning turns are meant to be cheap, frequent meta-work — they read
+    # DB state and call a couple of proposal tools. They must NOT inherit the
+    # 30-minute run budget: a planner that takes half an hour has already failed at
+    # being cheap meta-work, and the operator is left watching a spinner.
+    planner_timeout_seconds: int = 240
 
     # ── Run retry (P-0025 #2) ─────────────────────────────────────────────────
     # Bounded in-process retry for *transient* failures: a run whose candidate

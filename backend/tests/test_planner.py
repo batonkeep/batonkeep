@@ -16,6 +16,7 @@ import asyncio
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.db import Base, get_db
@@ -463,6 +464,104 @@ class TestProjectPlanningTurn:
             run = await db.get(PlannerRun, run_id)
         assert run.proposals["work_items_proposed"] == [99]
         assert run.proposals["subtasks_proposed"] == 2
+
+
+# ── the lane always terminates ───────────────────────────────────────────────
+
+class TestNeverStrandsARun:
+    """A `running` PlannerRun is unrecoverable — nothing polls it, nothing
+    reconciles it, and the operator watches a spinner forever. Every exit from the
+    drive must therefore leave the row terminal. These are the paths that stranded a
+    real turn in Docker: a provider that hangs, a crash outside the stream loop,
+    cancellation at shutdown, and a process that dies mid-drive."""
+
+    @pytest.mark.asyncio
+    async def test_hung_provider_times_out(self, planner_env, monkeypatch):
+        Maker, planner = planner_env
+
+        class _Hanging(_PlanningExecutor):
+            async def run_stream(self, prompt, *, workdir, tools_enabled=True,
+                                 max_rounds=10, budget_usd=1.0, extra=None):
+                await asyncio.sleep(3600)
+                yield  # pragma: no cover — never reached
+
+        monkeypatch.setattr(planner, "get_executor", lambda name: _Hanging(name=name))
+        monkeypatch.setattr(planner._settings, "planner_timeout_seconds", 1)
+        run_id = await planner.start_planning_turn(
+            "pr", work_item_id=1, owner_id="local", provider="planner-mock"
+        )
+        await planner.drive_planning_turn(run_id)
+        async with Maker() as db:
+            run = await db.get(PlannerRun, run_id)
+        assert run.status == "failed" and "exceeded" in run.error
+        assert run.finished_at is not None
+
+    @pytest.mark.asyncio
+    async def test_crash_outside_the_stream_still_finishes(self, planner_env, monkeypatch):
+        """get_executor raising (not returning None) used to escape the drive
+        entirely, since the try block only wrapped the stream loop."""
+        Maker, planner = planner_env
+
+        def _boom(name):
+            raise RuntimeError("registry exploded")
+
+        monkeypatch.setattr(planner, "get_executor", _boom)
+        run_id = await planner.start_planning_turn(
+            "pr", work_item_id=1, owner_id="local", provider="planner-mock"
+        )
+        await planner.drive_planning_turn(run_id)
+        async with Maker() as db:
+            run = await db.get(PlannerRun, run_id)
+        assert run.status == "failed" and "registry exploded" in run.error
+
+    @pytest.mark.asyncio
+    async def test_cancellation_marks_the_row_before_propagating(self, planner_env, monkeypatch):
+        """CancelledError is a BaseException, so a bare `except Exception` misses it
+        and the row is stranded at shutdown."""
+        Maker, planner = planner_env
+
+        class _Cancelled(_PlanningExecutor):
+            async def run_stream(self, prompt, *, workdir, tools_enabled=True,
+                                 max_rounds=10, budget_usd=1.0, extra=None):
+                raise asyncio.CancelledError()
+                yield  # pragma: no cover
+
+        monkeypatch.setattr(planner, "get_executor", lambda name: _Cancelled(name=name))
+        run_id = await planner.start_planning_turn(
+            "pr", work_item_id=1, owner_id="local", provider="planner-mock"
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await planner.drive_planning_turn(run_id)
+        async with Maker() as db:
+            run = await db.get(PlannerRun, run_id)
+        assert run.status == "failed" and "cancelled" in run.error
+
+    @pytest.mark.asyncio
+    async def test_startup_reaper_clears_rows_orphaned_by_a_restart(self, planner_env):
+        Maker, planner = planner_env
+        async with Maker() as db:
+            db.add(PlannerRun(owner_id="local", project_id="pr", status="running"))
+            db.add(PlannerRun(owner_id="local", project_id="pr", status="succeeded"))
+            await db.commit()
+
+        assert await planner.reap_orphaned_planner_runs() == 1
+        async with Maker() as db:
+            rows = list((await db.execute(
+                select(PlannerRun).order_by(PlannerRun.id)
+            )).scalars().all())
+        assert rows[0].status == "failed" and "restart" in rows[0].error
+        assert rows[0].finished_at is not None
+        assert rows[1].status == "succeeded"  # terminal rows are left alone
+        # Idempotent: a second boot has nothing left to reap.
+        assert await planner.reap_orphaned_planner_runs() == 0
+
+    @pytest.mark.asyncio
+    async def test_planning_does_not_inherit_the_run_timeout(self):
+        """Planning is cheap, frequent meta-work; inheriting the 30-minute run budget
+        is what let a turn outlive the operator's patience by an order of magnitude."""
+        from app.config import get_settings
+        s = get_settings()
+        assert s.planner_timeout_seconds < s.run_timeout_seconds
 
 
 # ── HTTP lane ────────────────────────────────────────────────────────────────

@@ -43,6 +43,7 @@ interface Props {
 type Tab = "overview" | "work" | "context" | "evidence";
 
 const WORK_STATE_TONE: Record<WorkItemState, Tone> = {
+  proposed: "brand",
   open: "neutral",
   in_progress: "live",
   awaiting_approval: "warn",
@@ -306,29 +307,54 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
   };
 
   // ── Planner lane (P-0078) ──────────────────────────────────────────────────
-  // Proposer-only: a planning turn lands `proposed` sub-tasks + a suggested next
-  // action on the item, which the operator confirms in the checklist below it.
+  // Proposer-only, in two scopes. An item turn lands `proposed` sub-tasks + a
+  // suggested next action on the item (confirmed in the checklist below it) and may
+  // propose child work items; a project turn reads the ledger, records a digest, and
+  // triages missing work into `proposed` items. Nothing it produces is live until
+  // the operator accepts it.
   const [planningId, setPlanningId] = useState<number | null>(null);
+  const [planningProject, setPlanningProject] = useState(false);
   const [plannerRuns, setPlannerRuns] = useState<Record<number, PlannerRun>>({});
+  const [projectRun, setProjectRun] = useState<PlannerRun | null>(null);
+  const planning = planningId != null || planningProject;
+
+  // The lane drives in the background; poll to completion (~2 min cap, after which
+  // the row is still readable via the planner-run history endpoints).
+  const pollRun = async (run: PlannerRun, onTick: (r: PlannerRun) => void) => {
+    let cur = run;
+    onTick(cur);
+    for (let i = 0; i < 80 && cur.status === "running"; i++) {
+      await new Promise((r) => setTimeout(r, 1500));
+      cur = await api.getPlannerRun(cur.id);
+    }
+    onTick(cur);
+    loadDetail(); // pick up whatever the planner proposed
+  };
 
   const handlePlan = async (item: WorkItem) => {
     setPlanningId(item.id);
     setError(null);
     try {
-      let run = await api.planWorkItem(item.id);
-      setPlannerRuns((m) => ({ ...m, [item.id]: run }));
-      // The lane drives in the background; poll the run to completion (~2 min cap,
-      // after which the row is still readable via its planner-run history).
-      for (let i = 0; i < 80 && run.status === "running"; i++) {
-        await new Promise((r) => setTimeout(r, 1500));
-        run = await api.getPlannerRun(run.id);
-      }
-      setPlannerRuns((m) => ({ ...m, [item.id]: run }));
-      loadDetail(); // pick up whatever the planner proposed
+      const run = await api.planWorkItem(item.id);
+      await pollRun(run, (r) => setPlannerRuns((m) => ({ ...m, [item.id]: r })));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Planning turn failed to start.");
     } finally {
       setPlanningId(null);
+    }
+  };
+
+  const handlePlanProject = async () => {
+    if (!selectedId) return;
+    setPlanningProject(true);
+    setError(null);
+    try {
+      const run = await api.planProject(selectedId);
+      await pollRun(run, setProjectRun);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Planning turn failed to start.");
+    } finally {
+      setPlanningProject(false);
     }
   };
 
@@ -597,15 +623,76 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
             <span className="font-mono text-[11px] uppercase tracking-wider text-muted">
               Work items · durable intent, independent of any transcript
             </span>
-            <Button
-              variant="outline"
-              size="sm"
-              icon={<Plus size={13} />}
-              onClick={() => setShowNewWork((s) => !s)}
-            >
-              New work item
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                icon={<Sparkles size={13} />}
+                onClick={handlePlanProject}
+                disabled={planning}
+                title="Read this project's open ledger — the planner records a status digest and proposes work items for anything missing"
+              >
+                {planningProject ? "Planning…" : "Plan project"}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                icon={<Plus size={13} />}
+                onClick={() => setShowNewWork((s) => !s)}
+              >
+                New work item
+              </Button>
+            </div>
           </div>
+
+          {projectRun && (
+            <Card className="p-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <Sparkles size={13} className="shrink-0 text-brand" />
+                <span className="font-mono text-[10px] uppercase tracking-wider text-muted">
+                  Planner digest
+                </span>
+                <span className="ml-auto font-mono text-[10px] text-muted">
+                  {projectRun.model ?? projectRun.provider}
+                  {projectRun.local_pinned && " · local-pinned"}
+                </span>
+              </div>
+              {projectRun.status === "running" && (
+                <p className="mt-2 text-xs text-muted">Reading the ledger…</p>
+              )}
+              {projectRun.status === "failed" && (
+                <p className="mt-2 text-xs text-bad">{projectRun.error ?? "Planning turn failed."}</p>
+              )}
+              {projectRun.status === "succeeded" && (
+                <div className="mt-2 space-y-1 text-xs">
+                  <p className="text-ink">
+                    {projectRun.proposals?.summary?.headline ?? "No digest recorded."}
+                  </p>
+                  {projectRun.proposals?.summary?.notes && (
+                    <p className="text-muted">{projectRun.proposals.summary.notes}</p>
+                  )}
+                  {!!projectRun.proposals?.summary?.focus?.length && (
+                    <p className="text-muted">
+                      <span className="font-mono text-[10px] uppercase tracking-wider">focus · </span>
+                      {projectRun.proposals.summary.focus.map((n) => `#${n}`).join(" ")}
+                    </p>
+                  )}
+                  {!!projectRun.proposals?.summary?.stalled?.length && (
+                    <p className="text-muted">
+                      <span className="font-mono text-[10px] uppercase tracking-wider">stalled · </span>
+                      {projectRun.proposals.summary.stalled.map((n) => `#${n}`).join(" ")}
+                    </p>
+                  )}
+                  {!!projectRun.proposals?.work_items_proposed?.length && (
+                    <p className="text-muted">
+                      Proposed {projectRun.proposals.work_items_proposed.length} work item(s) below —
+                      accept or reject each one.
+                    </p>
+                  )}
+                </div>
+              )}
+            </Card>
+          )}
 
           {showNewWork && (
             <Card className="space-y-3 p-3">
@@ -672,30 +759,55 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
                 <Badge>{w.kind}</Badge>
                 <Badge tone={RISK_TONE[w.risk] ?? "neutral"}>{w.risk}</Badge>
                 <Badge tone={WORK_STATE_TONE[w.state]}>{w.state.replace(/_/g, " ")}</Badge>
-                <Select
-                  className="!h-8 w-40 text-xs"
-                  value=""
-                  onChange={(e) => {
-                    if (e.target.value) handleWorkState(w, e.target.value as WorkItemState);
-                  }}
-                  aria-label={`Change state of work item ${w.id}`}
-                >
-                  <option value="">move to…</option>
-                  {(WORK_ITEM_TRANSITIONS[w.state] ?? []).map((s) => (
-                    <option key={s} value={s}>{s.replace(/_/g, " ")}</option>
-                  ))}
-                </Select>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => handlePlan(w)}
-                  disabled={planningId != null}
-                  title="Run a planning turn — the planner proposes sub-tasks and a next action; you confirm them"
-                >
-                  <Sparkles size={13} />
-                  {planningId === w.id ? "Planning…" : "Plan with agent"}
-                </Button>
+                {/* A proposal is a decision, not a state change: give the operator the
+                    two edges out of `proposed` directly rather than burying accept in
+                    a "move to…" list. Planning a proposal is premature — it may not
+                    become work at all — so the planner button waits for acceptance. */}
+                {w.state === "proposed" ? (
+                  <>
+                    <Button variant="primary" size="sm"
+                            onClick={() => handleWorkState(w, "open")}>
+                      Accept
+                    </Button>
+                    <Button variant="ghost" size="sm"
+                            onClick={() => handleWorkState(w, "dropped")}>
+                      Reject
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <Select
+                      className="!h-8 w-40 text-xs"
+                      value=""
+                      onChange={(e) => {
+                        if (e.target.value) handleWorkState(w, e.target.value as WorkItemState);
+                      }}
+                      aria-label={`Change state of work item ${w.id}`}
+                    >
+                      <option value="">move to…</option>
+                      {(WORK_ITEM_TRANSITIONS[w.state] ?? []).map((s) => (
+                        <option key={s} value={s}>{s.replace(/_/g, " ")}</option>
+                      ))}
+                    </Select>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handlePlan(w)}
+                      disabled={planning}
+                      title="Run a planning turn — the planner proposes sub-tasks and a next action; you confirm them"
+                    >
+                      <Sparkles size={13} />
+                      {planningId === w.id ? "Planning…" : "Plan with agent"}
+                    </Button>
+                  </>
+                )}
               </div>
+              {w.state === "proposed" && (
+                <p className="mt-2 text-xs text-muted">
+                  Proposed by the planner{w.parent_id != null && <> · child of #{w.parent_id}</>}
+                  {" "}— nothing runs against it until you accept it.
+                </p>
+              )}
               {(w.objective || w.next_action) && (
                 <div className="mt-2 space-y-1 text-xs">
                   {w.objective && (
@@ -721,7 +833,12 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
                     <span className="text-ink">
                       {plannerRuns[w.id].status === "running"
                         ? "thinking…"
-                        : `proposed ${Number(plannerRuns[w.id].proposals?.subtasks_proposed ?? 0)} sub-task(s)`}
+                        : [
+                            `proposed ${Number(plannerRuns[w.id].proposals?.subtasks_proposed ?? 0)} sub-task(s)`,
+                            ...(plannerRuns[w.id].proposals?.work_items_proposed?.length
+                              ? [`${plannerRuns[w.id].proposals!.work_items_proposed!.length} child work item(s)`]
+                              : []),
+                          ].join(" · ")}
                     </span>
                   )}
                   <span className="ml-1 font-mono text-[10px]">

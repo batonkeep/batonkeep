@@ -29,6 +29,8 @@ import logging
 import tempfile
 from datetime import UTC, datetime
 
+from sqlalchemy import select
+
 from app.db import AsyncSessionLocal
 from app.models import PlannerRun, Project, WorkItem
 from app.providers.base import EventKind, ExecResult
@@ -97,14 +99,52 @@ def resolve_planner_selection(
     return provider, model, local_pinned
 
 
-def _build_prompt(project: Project, work_item: WorkItem | None, message: str) -> str:
+#: Work items shown on a project-level planning turn. The ledger is the planner's
+#: whole input, so it is capped — a project with hundreds of items would otherwise
+#: blow the context budget the tight planner round/spend cap assumes.
+_LEDGER_LIMIT = 60
+
+
+def _ledger_line(item: WorkItem) -> str:
+    """One work item as the project-level planner sees it: id + state + title, plus
+    grounded checklist progress so 'stalled' is read off real verification, not vibes."""
+    from app import subtasks as st
+
+    prog = st.progress(item.subtasks)
+    bits = [f"#{item.id} [{item.state}] {item.title}"]
+    if prog["total"]:
+        bits.append(f"({prog['verified']}/{prog['total']} verified)")
+    if prog["proposed"]:
+        bits.append(f"({prog['proposed']} sub-tasks awaiting confirmation)")
+    if item.next_action:
+        bits.append(f"— next: {item.next_action.strip()[:160]}")
+    return "  " + " ".join(bits)
+
+
+def _build_prompt(
+    project: Project,
+    work_item: WorkItem | None,
+    message: str,
+    ledger: list[WorkItem] | None = None,
+) -> str:
     """The planning turn's user prompt: project + work-item state so the planner
-    reasons from durable truth, not a transcript. Content-safe (no raw evidence)."""
+    reasons from durable truth, not a transcript. Content-safe (no raw evidence).
+    A project-level turn (no bound work item) gets the work-item ledger instead —
+    it is triaging and summarizing across the project, so the ledger *is* its input."""
     from app import subtasks as st
 
     lines = [f"# Project: {project.name}"]
     if project.description:
         lines.append(project.description.strip()[:800])
+    if work_item is None:
+        rows = ledger or []
+        lines.append(f"\n## Work items ({len(rows)})")
+        if rows:
+            lines.extend(_ledger_line(i) for i in rows[:_LEDGER_LIMIT])
+            if len(rows) > _LEDGER_LIMIT:
+                lines.append(f"  … and {len(rows) - _LEDGER_LIMIT} more (not shown)")
+        else:
+            lines.append("  (none yet)")
     if work_item is not None:
         lines.append(f"\n## Work item #{work_item.id}: {work_item.title}")
         lines.append(f"State: {work_item.state} · kind: {work_item.kind} · risk: {work_item.risk}")
@@ -129,6 +169,9 @@ def _build_prompt(project: Project, work_item: WorkItem | None, message: str) ->
     lines.append(
         "\nPropose the sub-task plan (with expected artifacts where a sub-task makes a "
         "file) and set the single honest next action."
+        if work_item is not None else
+        "\nSummarize where this project stands, then propose work items for anything it "
+        "clearly needs that no item above already covers."
     )
     return "\n".join(lines)
 
@@ -151,18 +194,31 @@ async def start_planning_turn(
         if project is None or project.owner_id != owner_id:
             raise PlannerError("project not found")
         work_item: WorkItem | None = None
+        ledger: list[WorkItem] | None = None
         if work_item_id is not None:
             work_item = await db.get(WorkItem, work_item_id)
             if work_item is None or work_item.owner_id != owner_id \
                     or work_item.project_id != project_id:
                 raise PlannerError("work item not found in this project")
+        else:
+            # Project-level turn: the ledger is the input. Closed work is excluded —
+            # the planner is asked what to do next, not to re-read finished history.
+            ledger = list((await db.execute(
+                select(WorkItem)
+                .where(
+                    WorkItem.owner_id == owner_id,
+                    WorkItem.project_id == project_id,
+                    WorkItem.state.not_in(("done", "dropped")),
+                )
+                .order_by(WorkItem.id)
+            )).scalars().all())
         prov, mdl, local_pinned = resolve_planner_selection(
             project, requested_provider=provider, requested_model=model
         )
         run = PlannerRun(
             owner_id=owner_id, project_id=project_id, work_item_id=work_item_id,
             status="running", provider=prov, model=mdl, local_pinned=local_pinned,
-            request=_build_prompt(project, work_item, message),
+            request=_build_prompt(project, work_item, message, ledger),
         )
         db.add(run)
         await db.commit()
@@ -204,6 +260,10 @@ async def drive_planning_turn(run_id: int) -> None:
                     "owner_id": owner_id,
                     "project_id": project_id,
                     "work_item_id": work_item_id,
+                    # The tools attribute what they minted back to this row, so
+                    # `proposals` is an exact record of the turn's output. It also
+                    # scopes the toolset: no work_item_id → the project-level half.
+                    "planner_run_id": run_id,
                     "model": mdl,
                 },
             ):
@@ -256,7 +316,9 @@ async def _finish(
     work_item_id: int | None = None,
 ) -> None:
     """Finalize the PlannerRun row + record what the turn proposed (a grounded
-    roll-up read back from the work item, not the planner's self-report)."""
+    roll-up read back from the work item, not the planner's self-report). Merges into
+    `proposals` rather than replacing it: the structural tools and summarize_project
+    have already written their own attributed entries there during the drive."""
     from app import subtasks as st
 
     async with AsyncSessionLocal() as db:
@@ -279,7 +341,9 @@ async def _finish(
             wi = await db.get(WorkItem, work_item_id)
             if wi is not None:
                 prog = st.progress(wi.subtasks)
+                # Reassign (never mutate in place) so the JSON column change is tracked.
                 run.proposals = {
+                    **(run.proposals or {}),
                     "subtasks_proposed": prog["proposed"],
                     "subtasks_confirmed": prog["total"],
                     "next_action": (wi.next_action or "")[:400] or None,

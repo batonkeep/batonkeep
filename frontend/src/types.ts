@@ -648,6 +648,7 @@ export interface ProjectInput {
 }
 
 export type WorkItemState =
+  | "proposed"
   | "open"
   | "in_progress"
   | "awaiting_approval"
@@ -658,7 +659,10 @@ export type WorkItemState =
 
 // Valid state machine (mirrors WORK_ITEM_TRANSITIONS in backend/app/schemas.py) so
 // the state select only offers transitions the PATCH will accept.
+// `proposed` is the P-0078 planner's entry state — agent-minted, awaiting the
+// operator's accept (→ open) or reject (→ dropped). Nothing transitions into it.
 export const WORK_ITEM_TRANSITIONS: Record<WorkItemState, WorkItemState[]> = {
+  proposed: ["open", "dropped"],
   open: ["in_progress", "blocked", "done", "dropped"],
   in_progress: ["open", "awaiting_approval", "blocked", "done", "dropped"],
   awaiting_approval: ["in_progress", "blocked", "done", "dropped"],
@@ -761,13 +765,28 @@ export interface PlannerRun {
   local_pinned: boolean;
   response: string | null;
   error: string | null;
-  // {"subtasks_proposed": n, "next_action_set": bool, …}
-  proposals: Record<string, unknown> | null;
+  // What this turn produced. Item turns: {subtasks_proposed, subtasks_confirmed,
+  // next_action}. Project turns: {summary: PlannerSummary}. Either scope may carry
+  // `work_items_proposed` (ids the structural tools minted, attributed by the tools
+  // themselves rather than inferred).
+  proposals: (Record<string, unknown> & {
+    summary?: PlannerSummary;
+    work_items_proposed?: number[];
+  }) | null;
   tokens_in: number;
   tokens_out: number;
   cost_usd: number;
   created_at: string;
   finished_at: string | null;
+}
+
+// A project-level planning turn's status digest. Referenced ids are filtered
+// server-side against the project's real work items, so they always resolve.
+export interface PlannerSummary {
+  headline: string;
+  focus: number[];
+  stalled: number[];
+  notes: string | null;
 }
 
 export interface PlanRequestInput {

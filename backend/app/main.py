@@ -709,7 +709,10 @@ async def set_subtasks(
     return WorkItemOut.model_validate(work_item)
 
 
-# ── /api/work-items/{id}/plan — the planner lane (P-0078) ────────────────────
+# ── the planner lane (P-0078) ────────────────────────────────────────────────
+# Two scopes: bound to a work item (decompose it, propose its checklist, keep its
+# next action honest) or to the project as a whole (read the ledger, summarize it,
+# triage what's missing into proposed work items). Both are proposer-only.
 
 @app.post("/api/work-items/{item_id}/plan", response_model=PlannerRunOut,
           status_code=202, tags=["projects"])
@@ -752,6 +755,53 @@ async def list_work_item_planner_runs(
         await db.execute(
             select(PlannerRun)
             .where(PlannerRun.owner_id == owner_id, PlannerRun.work_item_id == item_id)
+            .order_by(PlannerRun.id.desc())
+        )
+    ).scalars().all()
+    return [PlannerRunOut.model_validate(r) for r in rows]
+
+
+@app.post("/api/projects/{project_id}/plan", response_model=PlannerRunOut,
+          status_code=202, tags=["projects"])
+async def plan_project(
+    project_id: str,
+    body: PlanRequestIn,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """Run a **project-level** planning turn (P-0078 slice 2): the planner reads the
+    open work-item ledger, records a status digest, and triages work the project needs
+    but has no item for — as `proposed` work items the operator accepts or rejects.
+    Returns the `running` PlannerRun immediately; the drive runs in the background."""
+    from app import planner
+
+    await _get_owned_project(db, owner_id, project_id)
+    try:
+        run_id = await planner.start_planning_turn(
+            project_id, message=body.message or "",
+            owner_id=owner_id, provider=body.provider, model=body.model,
+        )
+    except planner.PlannerError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    planner.schedule_drive(run_id)
+    run = await db.get(PlannerRun, run_id)
+    return PlannerRunOut.model_validate(run)
+
+
+@app.get("/api/projects/{project_id}/planner-runs", response_model=list[PlannerRunOut],
+         tags=["projects"])
+async def list_project_planner_runs(
+    project_id: str,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """This project's planning-turn history, newest first — both scopes (a run with
+    `work_item_id` null is a project-level turn)."""
+    await _get_owned_project(db, owner_id, project_id)
+    rows = (
+        await db.execute(
+            select(PlannerRun)
+            .where(PlannerRun.owner_id == owner_id, PlannerRun.project_id == project_id)
             .order_by(PlannerRun.id.desc())
         )
     ).scalars().all()

@@ -117,7 +117,14 @@ class ProjectOut(BaseModel):
 # Valid WorkItem state machine (S0): validated on PATCH; closed_at is stamped on
 # done/dropped and cleared on reopen. Free transitions would let a client silently
 # resurrect closed work without the reopen event being visible in history.
+#
+# `proposed` (P-0078 slice 2) is the planner's entry state: the planner mints work
+# items (decompose / triage) but never approves durable intent, so its items land
+# here awaiting the operator's accept (→ open) or reject (→ dropped). Nothing
+# transitions *into* it — only the planner creates one — so an operator can never
+# push confirmed work back into the proposal queue.
 WORK_ITEM_TRANSITIONS: dict[str, set[str]] = {
+    "proposed": {"open", "dropped"},
     "open": {"in_progress", "blocked", "done", "dropped"},
     "in_progress": {"open", "awaiting_approval", "blocked", "done", "dropped"},
     "awaiting_approval": {"in_progress", "blocked", "done", "dropped"},

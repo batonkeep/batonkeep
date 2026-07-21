@@ -164,14 +164,21 @@ class PlannerToolProvider(ToolProvider):
     workdir work. Offered to the model *only* on a planning turn (the executor gates
     on `extra['planning']`); the tools take their WorkItem/Project scope from the run
     `context` the executor threads through dispatch. Proposer-only: never approves
-    durable truth. Slice 1 = propose_subtasks + set_next_action."""
+    durable truth — checklist items land `proposed`, and the structural tools mint
+    work items in the `proposed` state for the operator to accept or reject."""
 
     def list_tools(self) -> list[McpTool]:
         from app.providers.tools import planner_tools
 
         return [
             McpTool(name=s["name"], description=s["description"], input_schema=s["parameters"])
-            for s in (planner_tools.PROPOSE_SUBTASKS_SCHEMA, planner_tools.SET_NEXT_ACTION_SCHEMA)
+            for s in (
+                planner_tools.PROPOSE_SUBTASKS_SCHEMA,
+                planner_tools.SET_NEXT_ACTION_SCHEMA,
+                planner_tools.DECOMPOSE_SCHEMA,
+                planner_tools.TRIAGE_SIGNAL_SCHEMA,
+                planner_tools.SUMMARIZE_PROJECT_SCHEMA,
+            )
         ]
 
     async def call_tool(
@@ -179,16 +186,26 @@ class PlannerToolProvider(ToolProvider):
     ) -> str:
         from app.providers.tools import planner_tools
 
-        if name == "propose_subtasks":
-            return await planner_tools.propose_subtasks(**arguments, context=context)
-        if name == "set_next_action":
-            return await planner_tools.set_next_action(**arguments, context=context)
-        return f"[unknown planner tool: {name}]"
+        fn = {
+            "propose_subtasks": planner_tools.propose_subtasks,
+            "set_next_action": planner_tools.set_next_action,
+            "decompose": planner_tools.decompose,
+            "triage_signal": planner_tools.triage_signal,
+            "summarize_project": planner_tools.summarize_project,
+        }.get(name)
+        if fn is None:
+            return f"[unknown planner tool: {name}]"
+        return await fn(**arguments, context=context)
 
 
+#: Planner tools that need a bound WorkItem — offered on a work-item planning turn.
+PLANNER_ITEM_TOOL_NAMES = ("propose_subtasks", "set_next_action", "decompose")
+#: Planner tools that operate on the project as a whole — offered on a project-level
+#: planning turn, where no single work item is in scope.
+PLANNER_PROJECT_TOOL_NAMES = ("triage_signal", "summarize_project")
 #: Names offered only on a planning turn — excluded from every non-planning run's
 #: toolset (mirrors the code_exec / image_generate gating in model_executor).
-PLANNER_TOOL_NAMES = ("propose_subtasks", "set_next_action")
+PLANNER_TOOL_NAMES = (*PLANNER_ITEM_TOOL_NAMES, *PLANNER_PROJECT_TOOL_NAMES)
 
 
 class ToolRegistry:

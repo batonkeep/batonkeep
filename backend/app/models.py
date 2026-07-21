@@ -114,7 +114,9 @@ class WorkItem(Base):
     )
     # Free taxonomy: task | incident | change | investigation | review | chore | …
     kind: Mapped[str] = mapped_column(String(64), nullable=False, default="task")
-    # open | in_progress | awaiting_approval | blocked | done | dropped | reopened
+    # proposed | open | in_progress | awaiting_approval | blocked | done | dropped
+    # | reopened. `proposed` is the [[P-0078]] planner's entry state (agent-minted,
+    # operator accepts → open or rejects → dropped); API-created items start `open`.
     state: Mapped[str] = mapped_column(String(24), nullable=False, default="open", index=True)
     title: Mapped[str] = mapped_column(String(256), nullable=False)
     # Durable intent — what "done" means, independent of any transcript.

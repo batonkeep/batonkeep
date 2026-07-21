@@ -116,6 +116,8 @@ from app.schemas import (
     SessionUpdate,
     StatsOut,
     StorageUsageOut,
+    SubtaskProposeIn,
+    SubtaskSetIn,
     SummaryOut,
     TaskCreate,
     TaskOut,
@@ -639,6 +641,66 @@ async def update_work_item(
             {"v": 1, "items": [{"evidence_id": i} for i in ids]} if ids else None
         )
 
+    await db.commit()
+    await db.refresh(work_item)
+    return WorkItemOut.model_validate(work_item)
+
+
+# ── /api/work-items/{id}/subtasks (P-0069 B2: output-contract checklist) ──────
+
+async def _get_owned_work_item(db: AsyncSession, owner_id: str, item_id: int) -> WorkItem:
+    work_item = await db.get(WorkItem, item_id)
+    if work_item is None or work_item.owner_id != owner_id:
+        raise HTTPException(status_code=404, detail="Work item not found")
+    return work_item
+
+
+@app.post("/api/work-items/{item_id}/subtasks", response_model=WorkItemOut, tags=["projects"])
+async def propose_subtasks(
+    item_id: int,
+    body: SubtaskProposeIn,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """Append agent/operator-proposed checklist items (status=proposed). This is the
+    proposer path the [[P-0078]] planner will drive; an operator can propose too.
+    Confirming/modifying is the separate PUT below (AI proposes, humans decide)."""
+    from app import subtasks as st
+
+    work_item = await _get_owned_work_item(db, owner_id, item_id)
+    try:
+        work_item.subtasks = st.append_proposed(
+            work_item.subtasks,
+            [i.model_dump() for i in body.items],
+            proposed_by=body.proposed_by,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await db.commit()
+    await db.refresh(work_item)
+    return WorkItemOut.model_validate(work_item)
+
+
+@app.put("/api/work-items/{item_id}/subtasks", response_model=WorkItemOut, tags=["projects"])
+async def set_subtasks(
+    item_id: int,
+    body: SubtaskSetIn,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """Authoritative confirm/modify: replace the checklist with the operator's list
+    (accept proposals → confirmed, edit label/expected, drop, mark asserted items
+    done). Verification state is preserved for items whose id + expected are
+    unchanged; a changed target resets it (re-verified on the next bound turn)."""
+    from app import subtasks as st
+
+    work_item = await _get_owned_work_item(db, owner_id, item_id)
+    try:
+        work_item.subtasks = st.set_items(
+            work_item.subtasks, [i.model_dump() for i in body.items], actor=body.actor
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     await db.commit()
     await db.refresh(work_item)
     return WorkItemOut.model_validate(work_item)

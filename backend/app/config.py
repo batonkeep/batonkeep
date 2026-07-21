@@ -274,6 +274,10 @@ class Settings(BaseSettings):
     # Max pinned-evidence items per work item (pins are curated inputs, not a
     # second evidence table).
     evidence_pin_max: int = 32
+    # P-0077: ceiling on one batch approval. A batch is still one human
+    # decision, so it is bounded by what a person can plausibly have reviewed —
+    # a queue larger than this is cleared in several deliberate passes.
+    approval_batch_max: int = 100
     # P-0073 coverage scan: how many files under the context root a single
     # projection may walk when checking for content no declared source covers.
     # The scan is a *warning* mechanism, so it is bounded rather than exact —

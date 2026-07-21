@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
@@ -28,10 +29,11 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.datastructures import Headers
 
-from app import approvals, sandbox, totp
+from app import approvals, evidence, sandbox, totp
 from app import version as appversion
 from app.auth import SESSION_COOKIE, issue_session, password_matches, verify_session
 from app.config import get_settings
@@ -62,6 +64,9 @@ from app.projects import (
     resolve_work_item_id,
 )
 from app.schemas import (
+    ApprovalBatchDecideIn,
+    ApprovalBatchDecideOut,
+    ApprovalBatchItemOut,
     ApprovalDecideIn,
     ApprovalDecideOut,
     ApprovalDecision,
@@ -1276,7 +1281,40 @@ async def list_approvals(
     if project_id is not None:
         stmt = stmt.where(Approval.project_id == project_id)
     rows = (await db.execute(stmt)).scalars().all()
-    return [ApprovalOut.model_validate(r) for r in rows]
+
+    # Staleness is computed here rather than stored: it is a statement about the
+    # root *now*, and it goes stale itself the moment anything else is applied.
+    # Only pending canonical writes can be acted on, so only they are checked.
+    out: list[ApprovalOut] = []
+    roots: dict[str, str | None] = {}
+    for r in rows:
+        item = ApprovalOut.model_validate(r)
+        if r.kind == "canonical_write" and r.status == "pending" and r.project_id:
+            if r.project_id not in roots:
+                proj = await db.get(Project, r.project_id)
+                roots[r.project_id] = proj.root_path if proj else None
+            item.stale = _proposal_is_stale(roots[r.project_id], r.payload or {})
+        out.append(item)
+    return out
+
+
+def _proposal_is_stale(root_path: str | None, payload: dict) -> bool | None:
+    """Has the target file changed since this proposal was written against it?
+
+    Advisory (P-0077): proposals carry whole file bodies, so approving a stale
+    one silently discards whatever landed underneath it — which is exactly the
+    hazard batch approval multiplies. None when it cannot be determined.
+    """
+    from app.project_context import ManifestError, compute_revision
+
+    rel = str(payload.get("rel_path") or "")
+    if not root_path or not rel:
+        return None
+    try:
+        current = compute_revision(root_path, rel, "file")
+    except (ManifestError, OSError):
+        return None
+    return current != payload.get("base_revision")
 
 
 @app.post(
@@ -1333,6 +1371,163 @@ async def decide_approval(
     await db.commit()
     await db.refresh(row)
     return ApprovalDecideOut(approval=ApprovalOut.model_validate(row), applied=applied)
+
+
+@app.post(
+    "/api/approvals/batch-decide",
+    response_model=ApprovalBatchDecideOut,
+    tags=["approvals"],
+)
+async def batch_decide_approvals(
+    body: ApprovalBatchDecideIn,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """Decide a related set of canonical-write proposals as **one decision**
+    (P-0077).
+
+    A batch is one decision and one audit event, but deliberately **not one
+    transaction**: each row's settle+apply stays atomic on its own, so a single
+    unappliable proposal (missing evidence, unwritable root) cannot block the
+    rest of the set from clearing. Failed rows stay `pending` and are decidable
+    again — the exact property that makes this usable for draining a backlog.
+
+    The approver names the set; there is no "approve everything pending" form.
+    """
+    from app import canonical
+
+    ids = list(dict.fromkeys(body.approval_ids))  # de-dupe, keep order
+    if not ids:
+        raise HTTPException(status_code=400, detail="no approvals selected")
+    if len(ids) > settings.approval_batch_max:
+        raise HTTPException(
+            status_code=400,
+            detail=f"a batch is capped at {settings.approval_batch_max} proposals "
+                   f"({len(ids)} selected) — clear the queue in several passes",
+        )
+
+    rows = (
+        await db.execute(select(Approval).where(Approval.id.in_(ids)))
+    ).scalars().all()
+    by_id = {r.id: r for r in rows if r.owner_id == owner_id}
+    missing = [i for i in ids if i not in by_id]
+    if missing:
+        raise HTTPException(status_code=404, detail=f"approvals not found: {missing}")
+
+    ordered = [by_id[i] for i in sorted(by_id)]  # proposal order, not click order
+    bad_kind = [r.id for r in ordered if r.kind != "canonical_write"]
+    if bad_kind:
+        raise HTTPException(
+            status_code=400,
+            detail=f"only canonical_write approvals are decided here: {bad_kind}",
+        )
+    not_pending = [f"{r.id} ({r.status})" for r in ordered if r.status != "pending"]
+    if not_pending:
+        raise HTTPException(
+            status_code=409, detail=f"already decided: {', '.join(not_pending)}"
+        )
+    project_ids = {r.project_id for r in ordered}
+    if len(project_ids) > 1:
+        raise HTTPException(
+            status_code=400,
+            detail="a batch decides one project's proposals — the audit event is "
+                   "project-scoped; decide each project's set separately",
+        )
+
+    # Same-path collisions are refused rather than applied in order. Proposals
+    # carry whole file bodies, so applying two for one path means the second
+    # silently discards the first — and the approver, having selected both,
+    # would reasonably believe both landed.
+    seen: dict[str, int] = {}
+    collisions: list[str] = []
+    for r in ordered:
+        rel = str((r.payload or {}).get("rel_path") or "")
+        if rel in seen:
+            collisions.append(f"{rel} (#{seen[rel]} and #{r.id})")
+        else:
+            seen[rel] = r.id
+    if collisions:
+        raise HTTPException(
+            status_code=409,
+            detail="two proposals in this batch target the same path, and the "
+                   "later one would overwrite the earlier wholesale — decide "
+                   f"these individually, in order: {'; '.join(collisions)}",
+        )
+
+    project_id = ordered[0].project_id
+    project = await db.get(Project, project_id) if project_id else None
+    if body.approved and (project is None or project.owner_id != owner_id):
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    batch_id = uuid.uuid4().hex[:32]
+    # Snapshot what the loop needs as plain values. A rollback expires every
+    # ORM object in the session, and a later attribute read would then trigger a
+    # synchronous lazy-load inside async code — so nothing here may touch the
+    # rows again except through an explicit re-query.
+    plan = [
+        (r.id, r.request_id, str((r.payload or {}).get("rel_path") or "") or None)
+        for r in ordered
+    ]
+    results: list[ApprovalBatchItemOut] = []
+    for approval_id, request_id, rel in plan:
+        try:
+            settled = await approvals.settle(
+                db, request_id, approved=body.approved, decided_by="human"
+            )
+            if settled is None:  # raced with another decision
+                raise canonical.CanonicalWriteError("already settled")
+            settled.batch_id = batch_id
+            applied = None
+            if body.approved:
+                # Re-fetched per row: the previous iteration may have rolled back
+                # and expired it, and apply() reads root_path off it.
+                proj = await db.get(Project, project_id)
+                applied = await canonical.apply(
+                    db, settled, proj, declare_source=body.declare_source
+                )
+            await db.commit()
+            results.append(ApprovalBatchItemOut(
+                approval_id=approval_id, rel_path=rel, outcome="decided", applied=applied
+            ))
+        except (canonical.CanonicalWriteError, SQLAlchemyError, OSError) as exc:
+            # This row alone rolls back and stays pending; the batch continues.
+            await db.rollback()
+            logger.warning("[batch %s] approval %d failed: %s", batch_id, approval_id, exc)
+            results.append(ApprovalBatchItemOut(
+                approval_id=approval_id, rel_path=rel, outcome="failed", error=str(exc)
+            ))
+
+    decided = sum(1 for r in results if r.outcome == "decided")
+    failed = len(results) - decided
+
+    # The single audit event the batch is *for*. Per-file `decision` evidence
+    # still exists for forensics; this row is what says "these were decided
+    # together, by one person, at one moment".
+    verb = "approved" if body.approved else "denied"
+    lines = [f"- {r.rel_path or '?'} — {r.outcome}"
+             + (f": {r.error}" if r.error else "") for r in results]
+    await evidence.capture_safe(
+        db,
+        owner_id=owner_id,
+        project_id=project_id,
+        work_item_id=None,
+        kind="decision",
+        filename=f"batch_{batch_id[:12]}.md",
+        text=(
+            f"# Batch canonical decision ({verb})\n\n"
+            f"batch_id: {batch_id}\n"
+            f"decided_by: human\n"
+            f"outcome: {decided} {verb}, {failed} failed\n\n"
+            + "\n".join(lines) + "\n"
+        ),
+        producer="human",
+    )
+    await db.commit()
+
+    return ApprovalBatchDecideOut(
+        batch_id=batch_id, approved=body.approved,
+        decided=decided, failed=failed, results=results,
+    )
 
 
 # ── /api/tasks ────────────────────────────────────────────────────────────────

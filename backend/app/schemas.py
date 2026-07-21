@@ -411,6 +411,15 @@ class ApprovalOut(BaseModel):
     decided_by: str | None
     created_at: datetime
     decided_at: datetime | None
+    # P-0077: shared across every row settled by one batch decision; NULL when
+    # decided individually.
+    batch_id: str | None = None
+    # Computed on listing, not stored: the canonical root's current revision no
+    # longer matches the `base_revision` this proposal was written against, so
+    # its content was authored from a different version of the file. Advisory —
+    # proposals carry whole file bodies, so approving a stale one silently
+    # discards whatever changed underneath it.
+    stale: bool | None = None
 
 
 class CanonicalProposeIn(BaseModel):
@@ -446,6 +455,41 @@ class ApprovalDecideOut(BaseModel):
     # canonical_write + approved: what was applied — {"rel_path", "commit",
     # "declared_source"} (the last None when nothing needed declaring).
     applied: dict[str, Any] | None = None
+
+
+class ApprovalBatchDecideIn(BaseModel):
+    """P-0077: decide a related set of canonical-write proposals as one decision.
+
+    The approver **names the set** — there is deliberately no "approve everything
+    pending" form, because the whole value of the approval boundary is that a
+    human saw what they were approving.
+    """
+
+    approval_ids: list[int]
+    approved: bool
+    # Same meaning as the single-decision path (P-0073), applied to every row.
+    declare_source: bool = True
+
+
+class ApprovalBatchItemOut(BaseModel):
+    """Per-row outcome. A batch is one decision but **not** one transaction:
+    each row's settle+apply is atomic on its own, so one unappliable proposal
+    cannot block the rest of the set from clearing."""
+
+    approval_id: int
+    rel_path: str | None = None
+    # decided | failed
+    outcome: str
+    applied: dict[str, Any] | None = None
+    error: str | None = None
+
+
+class ApprovalBatchDecideOut(BaseModel):
+    batch_id: str
+    approved: bool
+    decided: int
+    failed: int
+    results: list[ApprovalBatchItemOut]
 
 
 class ContextCoverageOut(BaseModel):

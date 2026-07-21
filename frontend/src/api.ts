@@ -3,6 +3,7 @@
 
 import type {
   Approval,
+  ApprovalBatchResult,
   ApprovalDecideResult,
   AuthStatus,
   Cockpit,
@@ -206,6 +207,21 @@ export const api = {
     req<ApprovalDecideResult>(`/approvals/${approvalId}/decide`, {
       method: "POST",
       body: JSON.stringify({ approved, declare_source: declareSource }),
+    }),
+  // Decide a related set as one decision (P-0077). The caller names the set —
+  // there is deliberately no "approve everything pending" form.
+  batchDecideApprovals: (
+    approvalIds: number[],
+    approved: boolean,
+    declareSource = true,
+  ) =>
+    req<ApprovalBatchResult>(`/approvals/batch-decide`, {
+      method: "POST",
+      body: JSON.stringify({
+        approval_ids: approvalIds,
+        approved,
+        declare_source: declareSource,
+      }),
     }),
   // What the context root holds that no declared source covers — the gap a
   // session's projection would silently have.

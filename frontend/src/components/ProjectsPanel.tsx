@@ -22,6 +22,7 @@ import DOMPurify from "dompurify";
 import { api } from "../api";
 import type {
   Approval,
+  ApprovalBatchResult,
   ContextCoverage,
   ContextSource,
   Evidence,
@@ -504,6 +505,37 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
       setError(e instanceof Error ? e.message : "Decision failed.");
     } finally {
       setDecidingId(null);
+    }
+  };
+
+  // ── Batch decisions (P-0077) ───────────────────────────────────────────────
+  // Selection is the gesture that collapses; the review is not skipped. The
+  // set is named explicitly — there is no "approve everything" affordance.
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [batching, setBatching] = useState(false);
+  const [batchResult, setBatchResult] = useState<ApprovalBatchResult | null>(null);
+  // The batch carries its own declare choice rather than deriving one from the
+  // per-row boxes — a mixed selection has no honest single answer, and the
+  // backend takes one flag for the set.
+  const [batchDeclare, setBatchDeclare] = useState(true);
+
+  const toggleSelected = (id: number) =>
+    setSelectedIds((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
+
+  const handleBatchDecide = async (approved: boolean) => {
+    if (selectedIds.length === 0) return;
+    setBatching(true);
+    setError(null);
+    setBatchResult(null);
+    try {
+      const res = await api.batchDecideApprovals(selectedIds, approved, batchDeclare);
+      setBatchResult(res);
+      setSelectedIds(res.results.filter((r) => r.outcome === "failed").map((r) => r.approval_id));
+      loadDetail();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Batch decision failed.");
+    } finally {
+      setBatching(false);
     }
   };
 
@@ -1122,6 +1154,83 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
             <span className="font-mono text-[11px] uppercase tracking-wider text-muted">
               Pending canonical writes · approving applies the diff to the context root
             </span>
+            {/* Batch toolbar (P-0077): promoting a coherent set costs one
+                decision instead of N. Only shown when there is a set. */}
+            {pendingWrites.length > 1 && (
+              <div className="flex flex-wrap items-center gap-2 rounded-lg border border-edge bg-panel/60 px-3 py-2">
+                <label className="flex cursor-pointer items-center gap-2 text-xs text-muted">
+                  <input
+                    type="checkbox"
+                    className="accent-brand"
+                    checked={selectedIds.length === pendingWrites.length}
+                    ref={(el) => {
+                      if (el)
+                        el.indeterminate =
+                          selectedIds.length > 0 && selectedIds.length < pendingWrites.length;
+                    }}
+                    onChange={(e) =>
+                      setSelectedIds(e.target.checked ? pendingWrites.map((a) => a.id) : [])
+                    }
+                  />
+                  Select all {pendingWrites.length}
+                </label>
+                <span className="flex-1 font-mono text-[11px] text-muted">
+                  {selectedIds.length > 0
+                    ? `${selectedIds.length} selected · decided as one audit event`
+                    : "select proposals to decide them together"}
+                </span>
+                <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-muted">
+                  <input
+                    type="checkbox"
+                    className="accent-brand"
+                    checked={batchDeclare}
+                    onChange={(e) => setBatchDeclare(e.target.checked)}
+                  />
+                  declare sources
+                </label>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="hover:border-bad/50 hover:text-bad"
+                  onClick={() => handleBatchDecide(false)}
+                  disabled={batching || selectedIds.length === 0}
+                >
+                  Deny {selectedIds.length || ""}
+                </Button>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={() => handleBatchDecide(true)}
+                  disabled={batching || selectedIds.length === 0}
+                >
+                  {batching ? "Applying…" : `Approve ${selectedIds.length || ""}`}
+                </Button>
+              </div>
+            )}
+            {batchResult && (
+              <div
+                className={`rounded-lg border px-3 py-2 text-xs ${
+                  batchResult.failed > 0
+                    ? "border-warn/40 bg-warn/10 text-warn"
+                    : "border-ok/40 bg-ok/10 text-ok"
+                }`}
+              >
+                <p className="font-semibold">
+                  {batchResult.decided} {batchResult.approved ? "approved" : "denied"}
+                  {batchResult.failed > 0 && `, ${batchResult.failed} failed`} · batch{" "}
+                  {batchResult.batch_id.slice(0, 12)}
+                </p>
+                {/* Failed rows stay pending and are still selected, so the
+                    operator can retry them without hunting for them. */}
+                {batchResult.results
+                  .filter((r) => r.outcome === "failed")
+                  .map((r) => (
+                    <p key={r.approval_id} className="mt-1 font-mono opacity-80">
+                      {r.rel_path ?? `#${r.approval_id}`}: {r.error}
+                    </p>
+                  ))}
+              </div>
+            )}
             {pendingWrites.length === 0 && (
               <div className="rounded-lg border border-dashed border-edge p-4 text-center text-xs text-muted">
                 No pending proposals. Agents (and the API) propose edits to the context root; nothing is
@@ -1135,8 +1244,25 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
               return (
                 <Card key={a.id} active className="p-3">
                   <div className="flex flex-wrap items-center gap-2">
+                    {pendingWrites.length > 1 && (
+                      <input
+                        type="checkbox"
+                        className="shrink-0 cursor-pointer accent-brand"
+                        checked={selectedIds.includes(a.id)}
+                        onChange={() => toggleSelected(a.id)}
+                        aria-label={`Select ${rel}`}
+                      />
+                    )}
                     <FileText size={14} className="shrink-0 text-brand" />
                     <span className="min-w-0 flex-1 truncate font-mono text-sm text-ink">{rel}</span>
+                    {/* Whole file bodies, not patches: approving a proposal
+                        written against an older version of the file discards
+                        whatever landed underneath it. */}
+                    {a.stale && (
+                      <span title="The file changed after this was proposed — approving it will discard those changes">
+                        <Badge tone="warn">stale</Badge>
+                      </span>
+                    )}
                     <Badge tone="warn">pending</Badge>
                     <span className="font-mono text-[11px] text-muted">
                       by {a.producer} · {fmtTime(a.created_at)}

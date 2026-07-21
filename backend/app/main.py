@@ -44,6 +44,7 @@ from app.models import (
     Credential,
     Evidence,
     Owner,
+    PlannerRun,
     Project,
     Run,
     RunAsset,
@@ -94,6 +95,8 @@ from app.schemas import (
     ModeOut,
     PackageIn,
     PackageOut,
+    PlannerRunOut,
+    PlanRequestIn,
     ProjectCreate,
     ProjectOut,
     ProviderCatalogOut,
@@ -704,6 +707,68 @@ async def set_subtasks(
     await db.commit()
     await db.refresh(work_item)
     return WorkItemOut.model_validate(work_item)
+
+
+# ── /api/work-items/{id}/plan — the planner lane (P-0078) ────────────────────
+
+@app.post("/api/work-items/{item_id}/plan", response_model=PlannerRunOut,
+          status_code=202, tags=["projects"])
+async def plan_work_item(
+    item_id: int,
+    body: PlanRequestIn,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """Run a planning turn against this work item (P-0078): the per-project planner
+    agent decomposes it, proposes its sub-task checklist (operator-confirmed — AI
+    proposes, humans decide), and sets the honest next action. Returns the `running`
+    PlannerRun immediately; the drive runs in the background (poll GET below). No
+    workspace — planning is DB-state meta-work."""
+    from app import planner
+
+    work_item = await _get_owned_work_item(db, owner_id, item_id)
+    try:
+        run_id = await planner.start_planning_turn(
+            work_item.project_id, work_item_id=item_id, message=body.message or "",
+            owner_id=owner_id, provider=body.provider, model=body.model,
+        )
+    except planner.PlannerError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    planner.schedule_drive(run_id)
+    run = await db.get(PlannerRun, run_id)
+    return PlannerRunOut.model_validate(run)
+
+
+@app.get("/api/work-items/{item_id}/planner-runs", response_model=list[PlannerRunOut],
+         tags=["projects"])
+async def list_work_item_planner_runs(
+    item_id: int,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """This work item's planning-turn history, newest first (audit + spend trail)."""
+    await _get_owned_work_item(db, owner_id, item_id)
+    rows = (
+        await db.execute(
+            select(PlannerRun)
+            .where(PlannerRun.owner_id == owner_id, PlannerRun.work_item_id == item_id)
+            .order_by(PlannerRun.id.desc())
+        )
+    ).scalars().all()
+    return [PlannerRunOut.model_validate(r) for r in rows]
+
+
+@app.get("/api/planner-runs/{run_id}", response_model=PlannerRunOut, tags=["projects"])
+async def get_planner_run(
+    run_id: int,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """Poll a planning turn's status/result (the POST returns it `running`)."""
+    run = await db.get(PlannerRun, run_id)
+    if run is None or run.owner_id != owner_id:
+        raise HTTPException(status_code=404, detail="Planner run not found")
+    return PlannerRunOut.model_validate(run)
 
 
 # ── /api/projects/{id}/context-sources (S0 substrate) ────────────────────────

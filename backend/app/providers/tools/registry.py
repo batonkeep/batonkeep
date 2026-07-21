@@ -159,6 +159,38 @@ class ImageGenToolProvider(ToolProvider):
         )
 
 
+class PlannerToolProvider(ToolProvider):
+    """The per-project planner agent's toolset (P-0078) — DB-state meta-work, not
+    workdir work. Offered to the model *only* on a planning turn (the executor gates
+    on `extra['planning']`); the tools take their WorkItem/Project scope from the run
+    `context` the executor threads through dispatch. Proposer-only: never approves
+    durable truth. Slice 1 = propose_subtasks + set_next_action."""
+
+    def list_tools(self) -> list[McpTool]:
+        from app.providers.tools import planner_tools
+
+        return [
+            McpTool(name=s["name"], description=s["description"], input_schema=s["parameters"])
+            for s in (planner_tools.PROPOSE_SUBTASKS_SCHEMA, planner_tools.SET_NEXT_ACTION_SCHEMA)
+        ]
+
+    async def call_tool(
+        self, name: str, arguments: dict, *, workdir: str, context: dict | None = None
+    ) -> str:
+        from app.providers.tools import planner_tools
+
+        if name == "propose_subtasks":
+            return await planner_tools.propose_subtasks(**arguments, context=context)
+        if name == "set_next_action":
+            return await planner_tools.set_next_action(**arguments, context=context)
+        return f"[unknown planner tool: {name}]"
+
+
+#: Names offered only on a planning turn — excluded from every non-planning run's
+#: toolset (mirrors the code_exec / image_generate gating in model_executor).
+PLANNER_TOOL_NAMES = ("propose_subtasks", "set_next_action")
+
+
 class ToolRegistry:
     """Aggregates tool providers and presents a single dispatch surface to the
     executor. Tool names are unique; the first provider to claim a name wins."""
@@ -253,7 +285,7 @@ def get_tool_registry() -> ToolRegistry:
         _MCP_PROVIDERS.append(fetch)
         _REGISTRY = ToolRegistry(
             [BuiltinToolProvider(), FilesystemToolProvider(), CodeExecToolProvider(),
-             ImageGenToolProvider(), fetch]
+             ImageGenToolProvider(), PlannerToolProvider(), fetch]
         )
     return _REGISTRY
 

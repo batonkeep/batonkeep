@@ -76,6 +76,13 @@ class Project(Base):
     # Manifest path relative to root_path (parser lands in the next slice).
     manifest_rel: Mapped[str | None] = mapped_column(String(256), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # P-0078: the per-project planner default for meta-work (decompose · propose
+    # sub-tasks · maintain next_action). Optional — NULL falls back to the global
+    # executor default, so a planner is never a mandatory per-project decision. A
+    # confidential project's planner is pinned to a local model regardless (the
+    # P-0009 #1 sovereignty fence, enforced at run time).
+    planner_provider: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    planner_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -144,6 +151,51 @@ class WorkItem(Base):
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     project: Mapped[Project] = relationship(back_populates="work_items")
+
+
+class PlannerRun(Base):
+    """A planning-turn invocation (P-0078): the per-project planner agent's
+    proposer-only meta-work lane. A planning turn reads Project + WorkItem state
+    and calls planning tools (propose_subtasks, set_next_action, …) — it never
+    approves durable truth (the founder-approval boundary), so its outputs land as
+    *proposals* on the WorkItem/Project. This row is the audit + spend trail: which
+    model proposed what, when, and what it cost. No workspace — planning is DB-state
+    meta-work, not filesystem work (unlike a build session or a task run).
+    """
+
+    __tablename__ = "planner_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    owner_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("owners.id"), nullable=False, default="local", index=True
+    )
+    project_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("projects.id"), nullable=False, index=True
+    )
+    # A planning turn is usually scoped to one WorkItem (decompose it / keep its
+    # next_action honest); NULL means project-level meta-work (e.g. triage/summarize).
+    work_item_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("work_items.id"), nullable=True, index=True
+    )
+    # "running" | "succeeded" | "failed"
+    status: Mapped[str] = mapped_column(String(16), default="running", index=True)
+    provider: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # Whether the sovereignty fence pinned this to a local model (confidential project).
+    local_pinned: Mapped[bool] = mapped_column(Boolean, default=False)
+    request: Mapped[str | None] = mapped_column(Text, nullable=True)
+    response: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Structured summary of what the planning turn proposed this run:
+    # {"subtasks_proposed": int, "next_action_set": bool, ...}.
+    proposals: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    tokens_in: Mapped[int] = mapped_column(Integer, default=0)
+    tokens_out: Mapped[int] = mapped_column(Integer, default=0)
+    cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ContextSource(Base):

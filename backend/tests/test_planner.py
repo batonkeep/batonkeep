@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.db import Base, get_db
 from app.main import _owner_id, app
-from app.models import Owner, PlannerRun, Project, WorkItem
+from app.models import ContextSource, Owner, PlannerRun, Project, WorkItem
 from app.providers.base import EventKind, ExecEvent, ExecResult, Executor, Usage
 from app.providers.tools.registry import get_tool_registry
 
@@ -509,6 +509,139 @@ class TestProjectPlanningTurn:
         assert "Also 2 closed work item(s)" in req
         # Still summarized, not listed — closed detail is not the planner's input.
         assert "shipped" not in req and "abandoned" not in req
+
+    @pytest.mark.asyncio
+    async def test_excerpts_ground_the_planner_in_what_the_project_says(
+        self, planner_env, tmp_path
+    ):
+        """The point of excerpting: the planner reasons from the project's content,
+        not from a list of filenames."""
+        from app.models import ContextSource
+        Maker, planner = planner_env
+        root = tmp_path / "wiki"
+        (root / "context").mkdir(parents=True)
+        (root / "context" / "rules.md").write_text(
+            "Magic is bounded by the ley network.", encoding="utf-8"
+        )
+        async with Maker() as db:
+            proj = await db.get(Project, "pr")
+            proj.root_path = str(root)
+            db.add(ContextSource(owner_id="local", project_id="pr", kind="file",
+                                 rel_path="context/rules.md"))
+            await db.commit()
+        run_id = await planner.start_planning_turn(
+            "pr", owner_id="local", provider="planner-mock"
+        )
+        async with Maker() as db:
+            req = (await db.get(PlannerRun, run_id)).request
+        assert "## Context excerpts" in req
+        assert "Magic is bounded by the ley network." in req
+        # Excerpts are reference material, not commands to the planner.
+        assert "not instructions" in req
+
+    @pytest.mark.asyncio
+    async def test_confidential_source_is_not_excerpted_to_a_remote_planner(
+        self, planner_env, tmp_path, monkeypatch
+    ):
+        """The P-0009 fence at source granularity. A confidential *project* is
+        already local-pinned; this is the case that misses — a normal project
+        holding one confidential source."""
+        from app.models import ContextSource
+        Maker, planner = planner_env
+        root = tmp_path / "p"
+        (root / "secret").mkdir(parents=True)
+        (root / "secret" / "keys.md").write_text("SEKRIT ROSTER", encoding="utf-8")
+        (root / "open.md").write_text("public notes", encoding="utf-8")
+        async with Maker() as db:
+            proj = await db.get(Project, "pr")
+            proj.root_path = str(root)
+            proj.sensitivity = "normal"
+            db.add(ContextSource(owner_id="local", project_id="pr", kind="dir",
+                                 rel_path="secret", sensitivity="confidential"))
+            db.add(ContextSource(owner_id="local", project_id="pr", kind="file",
+                                 rel_path="open.md", sensitivity="inherit"))
+            await db.commit()
+
+        monkeypatch.setattr(planner, "is_local_instance", lambda p: False)
+        run_id = await planner.start_planning_turn(
+            "pr", owner_id="local", provider="remote-mock"
+        )
+        async with Maker() as db:
+            req = (await db.get(PlannerRun, run_id)).request
+        assert "SEKRIT ROSTER" not in req
+        assert "public notes" in req
+        # Withheld, and *said* to be withheld — a partial view must announce itself.
+        assert "Context NOT shown to you" in req
+        assert "secret — confidential source, remote planner" in req
+
+    @pytest.mark.asyncio
+    async def test_confidential_source_is_excerpted_to_a_local_planner(
+        self, planner_env, tmp_path, monkeypatch
+    ):
+        from app.models import ContextSource
+        Maker, planner = planner_env
+        root = tmp_path / "p2"
+        root.mkdir(parents=True)
+        (root / "notes.md").write_text("SEKRIT ROSTER", encoding="utf-8")
+        async with Maker() as db:
+            proj = await db.get(Project, "pr")
+            proj.root_path = str(root)
+            db.add(ContextSource(owner_id="local", project_id="pr", kind="file",
+                                 rel_path="notes.md", sensitivity="confidential"))
+            await db.commit()
+
+        monkeypatch.setattr(planner, "is_local_instance", lambda p: True)
+        run_id = await planner.start_planning_turn(
+            "pr", owner_id="local", provider="ollama"
+        )
+        async with Maker() as db:
+            req = (await db.get(PlannerRun, run_id)).request
+        assert "SEKRIT ROSTER" in req
+
+    @pytest.mark.asyncio
+    async def test_excerpting_cannot_escape_the_project_root(self, planner_env, tmp_path):
+        """Scope fence: a planning turn reads this project's context and nothing
+        else. Cross-project context is operator-approved, not a planner default."""
+        Maker, planner = planner_env
+        other = tmp_path / "other-project"
+        other.mkdir()
+        (other / "theirs.md").write_text("ANOTHER PROJECT", encoding="utf-8")
+        root = tmp_path / "mine"
+        root.mkdir()
+        async with Maker() as db:
+            proj = await db.get(Project, "pr")
+            proj.root_path = str(root)
+            db.add(ContextSource(owner_id="local", project_id="pr", kind="file",
+                                 rel_path="../other-project/theirs.md"))
+            await db.commit()
+        run_id = await planner.start_planning_turn(
+            "pr", owner_id="local", provider="planner-mock"
+        )
+        async with Maker() as db:
+            req = (await db.get(PlannerRun, run_id)).request
+        assert "ANOTHER PROJECT" not in req
+        assert "unsafe path" in req
+
+    @pytest.mark.asyncio
+    async def test_excerpts_respect_the_byte_budget(self, planner_env, tmp_path):
+        Maker, planner = planner_env
+        root = tmp_path / "big"
+        root.mkdir()
+        (root / "huge.md").write_text("x" * 100_000, encoding="utf-8")
+        async with Maker() as db:
+            proj = await db.get(Project, "pr")
+            proj.root_path = str(root)
+            db.add(ContextSource(owner_id="local", project_id="pr", kind="file",
+                                 rel_path="huge.md"))
+            await db.commit()
+        run_id = await planner.start_planning_turn(
+            "pr", owner_id="local", provider="planner-mock"
+        )
+        async with Maker() as db:
+            req = (await db.get(PlannerRun, run_id)).request
+        budget = planner._settings.planner_excerpt_budget_bytes
+        assert req.count("x") <= budget
+        assert "truncated" in req  # the cut is stated, not silent
 
     @pytest.mark.asyncio
     async def test_prompt_is_surfaced_on_the_run(self, planner_env):

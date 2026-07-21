@@ -258,6 +258,12 @@ class Settings(BaseSettings):
     # beyond it are excluded (recorded on the receipt, surfaced not silent) —
     # a mis-declared giant source must not balloon every run's workspace.
     context_projection_max_bytes: int = 10 * 1024 * 1024  # 10 MiB
+    # P-0078: byte budget for the *excerpts* of declared context a planning turn
+    # carries in its prompt. Orders of magnitude smaller than the projection budget
+    # above, and for a different reason: the planner has no workspace, so this goes
+    # straight into a model's context window on a tight round/spend cap. Excerpts
+    # exist so triage can reason about what a project *is*, not to reproduce it.
+    planner_excerpt_budget_bytes: int = 8 * 1024
     # Separate budget for materializing a work item's *pinned evidence* into the
     # workspace (`context/evidence/`) — evidence packages are bigger than text
     # sources, so they must not compete with (or blow) the source budget above.

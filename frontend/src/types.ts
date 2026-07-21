@@ -784,6 +784,9 @@ export interface PlannerRun {
   model: string | null;
   // Sovereignty fence pinned this turn to a local model (confidential project).
   local_pinned: boolean;
+  // The exact prompt the turn was given. Surfaced because "it proposed nothing" is
+  // un-diagnosable without it — usually the turn was told little, not misbehaving.
+  request: string | null;
   response: string | null;
   error: string | null;
   // What this turn produced. Item turns: {subtasks_proposed, subtasks_confirmed,

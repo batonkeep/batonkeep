@@ -834,6 +834,11 @@ class PlannerRunOut(BaseModel):
     provider: str | None
     model: str | None
     local_pinned: bool
+    # The exact prompt the planner was given. Surfaced because "it proposed nothing"
+    # is un-diagnosable without it — the usual cause is that the turn was told very
+    # little, not that the model misbehaved. Content-safe by construction (paths,
+    # counts and durable intent; never source content or raw evidence).
+    request: str | None
     response: str | None
     error: str | None
     proposals: dict | None

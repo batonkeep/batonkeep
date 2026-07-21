@@ -393,17 +393,24 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
     plannerDraft.provider !== (plannerSettings?.provider ?? "") ||
     plannerDraft.model !== (plannerSettings?.model ?? "");
 
-  // The lane drives in the background; poll to completion (~2 min cap, after which
-  // the row is still readable via the planner-run history endpoints).
+  // The lane drives in the background; poll to completion. The budget outlasts the
+  // server's own planner timeout, so a turn that is going to fail gets to *say* so
+  // rather than having us give up first and leave a spinner on screen — the exact
+  // way this surface lied to the operator before. Tight ticks at the start (a local
+  // model answers fast), slower after.
   const pollRun = async (run: PlannerRun, onTick: (r: PlannerRun) => void) => {
     let cur = run;
     onTick(cur);
-    for (let i = 0; i < 80 && cur.status === "running"; i++) {
-      await new Promise((r) => setTimeout(r, 1500));
-      cur = await api.getPlannerRun(cur.id);
+    for (let i = 0; i < 100 && cur.status === "running"; i++) {
+      await new Promise((r) => setTimeout(r, i < 10 ? 1000 : 3000));
+      try {
+        cur = await api.getPlannerRun(cur.id);
+      } catch {
+        break; // keep the last known state; the history list stays authoritative
+      }
     }
     onTick(cur);
-    loadDetail(); // pick up whatever the planner proposed
+    loadDetail(); // pick up whatever the planner proposed, and refresh the history
   };
 
   const handlePlan = async (item: WorkItem) => {
@@ -802,6 +809,7 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
             <span className="font-mono text-[11px] uppercase tracking-wider text-muted">
               Work items · durable intent, independent of any transcript
             </span>
+
             <div className="flex items-center gap-2">
               <Button
                 variant="ghost"
@@ -824,6 +832,17 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
             </div>
           </div>
 
+          {/* The two planner scopes are not discoverable from the button labels
+              alone — say which one runs what, so "where do I trigger a summary?"
+              has an answer on the screen where the answer lives. */}
+          <p className="text-xs text-muted">
+            <span className="font-mono text-[10px] uppercase tracking-wider">planner · </span>
+            <span className="text-ink">Plan project</span> summarizes this project's ledger and
+            triages missing work into proposals · <span className="text-ink">Plan with agent</span>{" "}
+            on a work item proposes its sub-tasks, its next action, and any child work items.
+            Everything it produces waits for you to accept it.
+          </p>
+
           {projectRun && (
             <Card className="p-3">
               <div className="flex flex-wrap items-center gap-2">
@@ -836,8 +855,16 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
                   {projectRun.local_pinned && " · local-pinned"}
                 </span>
               </div>
+              {/* A `running` row we are no longer polling is not "in progress" from
+                  the operator's side — say so, and point at where the answer lands,
+                  instead of showing a spinner that never resolves. */}
               {projectRun.status === "running" && (
-                <p className="mt-2 text-xs text-muted">Reading the ledger…</p>
+                <p className="mt-2 text-xs text-muted">
+                  {planningProject
+                    ? "Reading the ledger…"
+                    : "Still running on the server. It finishes in the background — " +
+                      "reopen this project to see the result in the planning-turn history."}
+                </p>
               )}
               {projectRun.status === "failed" && (
                 <p className="mt-2 text-xs text-bad">{projectRun.error ?? "Planning turn failed."}</p>
@@ -1011,7 +1038,9 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
                   ) : (
                     <span className="text-ink">
                       {plannerRuns[w.id].status === "running"
-                        ? "thinking…"
+                        ? planningId === w.id
+                          ? "thinking…"
+                          : "still running on the server — check the planning-turn history"
                         : [
                             `proposed ${Number(plannerRuns[w.id].proposals?.subtasks_proposed ?? 0)} sub-task(s)`,
                             ...(plannerRuns[w.id].proposals?.work_items_proposed?.length

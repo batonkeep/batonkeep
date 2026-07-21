@@ -31,6 +31,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import select
 
+from app.config import get_settings
 from app.db import AsyncSessionLocal
 from app.models import PlannerRun, Project, WorkItem
 from app.providers.base import EventKind, ExecResult
@@ -42,6 +43,7 @@ from app.providers.registry import (
 )
 
 logger = logging.getLogger(__name__)
+_settings = get_settings()
 
 # Planning is cheap, frequent meta-work — a tight budget/round cap keeps it so.
 _PLANNER_BUDGET_USD = 0.50
@@ -227,10 +229,45 @@ async def start_planning_turn(
 
 
 async def drive_planning_turn(run_id: int) -> None:
-    """Drive a `running` PlannerRun to completion: run the executor in planning mode
-    against the stored prompt, letting the planner tools land proposals on the work
-    item, then finalize the row. Best-effort — a planner failure is recorded on the
-    row, never raised (this runs as a fire-and-forget background task)."""
+    """Drive a `running` PlannerRun to completion, under a wall-clock bound, and
+    **always** leave the row in a terminal state.
+
+    The lane is a fire-and-forget background task with no durable queue, so a row
+    left `running` is unrecoverable: nothing polls it, nothing reconciles it, and the
+    operator watches a spinner forever. Every exit is therefore funnelled through
+    `_finish` — including the paths that are easy to forget: a hung provider stream
+    (no timeout of its own on the API path; the 30-minute *run* budget on the CLI
+    path, which is far too long for meta-work), a crash outside the stream loop, and
+    cancellation at shutdown (`CancelledError` is a BaseException, so a bare
+    `except Exception` would miss it and strand the row).
+    """
+    timeout = _settings.planner_timeout_seconds
+    try:
+        async with asyncio.timeout(timeout):
+            await _drive(run_id)
+    except TimeoutError:
+        logger.warning("[planner] run %d exceeded %ds", run_id, timeout)
+        await _finish(
+            run_id, status="failed",
+            error=(
+                f"planning turn exceeded {timeout}s and was cancelled — planning is "
+                f"meant to be quick meta-work; check the provider is reachable"
+            ),
+        )
+    except asyncio.CancelledError:
+        # Shutdown mid-drive. Record it before re-raising so the row is honest even
+        # if the startup reaper never sees it.
+        await _finish(run_id, status="failed", error="interrupted (planner cancelled)")
+        raise
+    except Exception as exc:
+        logger.exception("[planner] run %d failed", run_id)
+        await _finish(run_id, status="failed", error=str(exc))
+
+
+async def _drive(run_id: int) -> None:
+    """The planning drive itself: run the executor in planning mode against the
+    stored prompt, letting the planner tools land proposals, then finalize the row.
+    Raises on failure — `drive_planning_turn` owns turning that into a terminal row."""
     async with AsyncSessionLocal() as db:
         run = await db.get(PlannerRun, run_id)
         if run is None or run.status != "running":
@@ -272,8 +309,10 @@ async def drive_planning_turn(run_id: int) -> None:
                 elif ev.kind == EventKind.error:
                     error_msg = ev.message or "planner error"
                     break
-        except Exception as exc:  # a planner crash is recorded, never propagated up
-            logger.exception("[planner] run %d failed", run_id)
+        except Exception as exc:
+            # Keep the provider's own error text, which is more useful than the
+            # generic one the caller would otherwise record.
+            logger.exception("[planner] run %d: provider stream failed", run_id)
             error_msg = str(exc)
 
     if final_result is None:
@@ -303,6 +342,33 @@ async def run_planning_turn(
     )
     await drive_planning_turn(run_id)
     return run_id
+
+
+async def reap_orphaned_planner_runs() -> int:
+    """Reconcile planning turns stranded by a backend restart; return how many.
+
+    Same reasoning as the run and turn reapers (D-0021 / D-0051): the lane drives as
+    an in-memory fire-and-forget task with no durable queue, so a crash or restart
+    leaves its `running` rows with no executor. Nothing would ever finish them, and
+    the UI shows a permanent spinner. Mark them failed on boot so the state is honest
+    and the operator can simply re-run the turn (planning is cheap and idempotent —
+    it proposes, it never commits).
+    """
+    reaped = 0
+    async with AsyncSessionLocal() as db:
+        rows = (await db.execute(
+            select(PlannerRun).where(PlannerRun.status == "running")
+        )).scalars().all()
+        for run in rows:
+            run.status = "failed"
+            run.error = "interrupted by backend restart (reaped at startup)"
+            run.finished_at = datetime.now(UTC)
+            reaped += 1
+        if reaped:
+            await db.commit()
+    if reaped:
+        logger.warning("reaped %d orphaned planning turn(s) on startup", reaped)
+    return reaped
 
 
 async def _finish(

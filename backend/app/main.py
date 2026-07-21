@@ -204,6 +204,14 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("startup turn-reaper failed")
 
+    # P-0078: same for planning turns left `running` by a restart — the planner lane
+    # is fire-and-forget with no durable queue, so nothing else would ever finish them.
+    try:
+        from app.planner import reap_orphaned_planner_runs
+        await reap_orphaned_planner_runs()
+    except Exception:
+        logger.exception("startup planner-reaper failed")
+
     # Substrate approval baseline: expire pending approval rows whose in-process
     # Futures died with the previous process (canonical-write proposals are kept —
     # they stay decidable through the API across restarts).

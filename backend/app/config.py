@@ -274,6 +274,12 @@ class Settings(BaseSettings):
     # Max pinned-evidence items per work item (pins are curated inputs, not a
     # second evidence table).
     evidence_pin_max: int = 32
+    # P-0073 coverage scan: how many files under the context root a single
+    # projection may walk when checking for content no declared source covers.
+    # The scan is a *warning* mechanism, so it is bounded rather than exact —
+    # hitting the cap reports the count as a floor (`truncated`), never fails
+    # the projection. Skipped entirely when a source declares the whole root.
+    context_coverage_scan_max_files: int = 5000
     # Base dir for server-managed context roots (S0.4): a project created with
     # create_root gets <projects_dir>/<project_id>/context, git-init'd with a
     # starter manifest. Lives on the data volume so backups already cover it.

@@ -27,7 +27,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import approvals, evidence
 from app.config import get_settings
 from app.models import Approval, ContextSource, Evidence, Project
-from app.project_context import ManifestError, _resolve_under_root, _validate_rel, compute_revision
+from app.project_context import (
+    ManifestError,
+    _resolve_under_root,
+    _validate_rel,
+    compute_revision,
+    covers,
+    detect_kind,
+)
 from app.redact import redact_text
 
 _settings = get_settings()
@@ -187,12 +194,27 @@ async def propose(
     )
 
 
-async def apply(db: AsyncSession, approval: Approval, project: Project) -> dict:
+async def apply(
+    db: AsyncSession,
+    approval: Approval,
+    project: Project,
+    *,
+    declare_source: bool = True,
+) -> dict:
     """Apply an approved canonical write to the project root.
 
     Traversal-guarded write → git commit on git roots → source revision
-    re-hash → decision evidence. Returns {"rel_path", "commit"} (commit None
-    on non-git roots). Flushes; caller commits the DB transaction.
+    re-hash → **declaration** → decision evidence. Returns
+    {"rel_path", "commit", "declared_source"} (commit None on non-git roots;
+    `declared_source` None when nothing needed declaring). Flushes; caller
+    commits the DB transaction.
+
+    `declare_source` (P-0073): approving a promotion also declares the written
+    path as a ContextSource when no existing source already covers it, so one
+    decision both writes canon *and* makes it reach later sessions. Without
+    this the two read as the same promise from the approver's chair and are
+    not: projection is driven solely by declared sources, and promotion
+    declared none.
     """
     payload = approval.payload or {}
     if not project.root_path:
@@ -269,12 +291,49 @@ async def apply(db: AsyncSession, approval: Approval, project: Project) -> dict:
     result = await db.execute(
         select(ContextSource).where(ContextSource.project_id == project.id)
     )
-    for source in result.scalars().all():
-        if rel == source.rel_path or rel.startswith(source.rel_path + os.sep) \
-                or source.rel_path == ".":
+    existing = list(result.scalars().all())
+    covered = False
+    for source in existing:
+        if covers(source.rel_path, rel):
+            covered = True
             revision = compute_revision(project.root_path, source.rel_path, source.kind)
             if revision is not None:
                 source.last_revision = revision
+
+    # Declaration (P-0073): only when nothing already projects this path —
+    # re-declaring a file that sits inside a declared directory would project
+    # the same bytes twice and split its freshness across two rows.
+    declared: dict | None = None
+    declared_note = (
+        "(already covered by a declared source)" if covered
+        else "(declined by the approver)" if not declare_source
+        else "(pending)"
+    )
+    if declare_source and not covered:
+        orders = [s.bootstrap_order for s in existing if s.bootstrap_order is not None]
+        source = ContextSource(
+            owner_id=project.owner_id,
+            project_id=project.id,
+            kind=detect_kind(project.root_path, rel),
+            rel_path=rel,
+            # Appended after everything already declared: promoted canon becomes
+            # an ordered bootstrap read without displacing the manifest's own
+            # reading priority.
+            bootstrap_order=(max(orders) + 1) if orders else 1,
+            # The project's own sensitivity, not a fresh guess — promotion is not
+            # the place to silently reclassify material.
+            sensitivity="inherit",
+        )
+        source.last_revision = compute_revision(project.root_path, rel, source.kind)
+        db.add(source)
+        await db.flush()
+        declared = {
+            "id": source.id,
+            "rel_path": source.rel_path,
+            "kind": source.kind,
+            "bootstrap_order": source.bootstrap_order,
+        }
+        declared_note = f"{source.rel_path} (order {source.bootstrap_order})"
 
     await evidence.capture_safe(
         db,
@@ -286,10 +345,11 @@ async def apply(db: AsyncSession, approval: Approval, project: Project) -> dict:
         text=(
             f"approved canonical write: {rel}\n"
             f"decided_by: {approval.decided_by or 'human'}\n"
-            f"commit: {commit_sha or '(non-git root)'}\n\n"
+            f"commit: {commit_sha or '(non-git root)'}\n"
+            f"declared_source: {declared_note}\n\n"
             f"{payload.get('diff') or ''}"
         ),
         producer=approval.decided_by or "human",
     )
     await db.flush()
-    return {"rel_path": rel, "commit": commit_sha}
+    return {"rel_path": rel, "commit": commit_sha, "declared_source": declared}

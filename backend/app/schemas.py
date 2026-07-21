@@ -432,12 +432,32 @@ class CanonicalProposeIn(BaseModel):
 
 class ApprovalDecideIn(BaseModel):
     approved: bool
+    # P-0073: approving a canonical write also declares the written path as a
+    # ContextSource unless the approver opts out — one decision both writes
+    # canon and makes it reach later sessions. Default on: the failure mode
+    # this closes (approved canon invisible to every later projection) is
+    # silent, while the cost of an unwanted declaration is a visible extra row.
+    # No-op when an existing source already covers the path.
+    declare_source: bool = True
 
 
 class ApprovalDecideOut(BaseModel):
     approval: ApprovalOut
-    # canonical_write + approved: what was applied ({"rel_path", "commit"}).
+    # canonical_write + approved: what was applied — {"rel_path", "commit",
+    # "declared_source"} (the last None when nothing needed declaring).
     applied: dict[str, Any] | None = None
+
+
+class ContextCoverageOut(BaseModel):
+    """P-0073: what the canonical root holds that no declared source covers —
+    i.e. what a session's projection would silently lack. `count` is a floor
+    when `truncated` (the scan is bounded); `sample` is illustrative."""
+
+    root_bound: bool
+    declared_count: int
+    undeclared_count: int
+    sample: list[str] = []
+    truncated: bool = False
 
 
 class TaskCreate(BaseModel):

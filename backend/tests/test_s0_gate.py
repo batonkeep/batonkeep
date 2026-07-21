@@ -417,10 +417,16 @@ async def test_cold_handoff_provider_b_continues_from_projection_and_ledger(hand
 @pytest.mark.asyncio
 async def test_handoff_ledger_is_deterministic_from_db_fields(handoff_env):
     """The ledger B received is byte-identical to a fresh render from the DB
-    fields — same inputs, same bytes (what `ledger_sha` pins across providers)."""
+    fields — same inputs, same bytes (what `ledger_sha` pins across providers).
+
+    The coverage count (P-0073) is a filesystem measurement rather than a DB
+    field, so it is taken from B's own receipt: the point of the contract is
+    that *recorded* state is sufficient to reproduce the exact bytes an actor
+    saw, and the receipt is where that measurement is recorded.
+    """
     from sqlalchemy import select
 
-    from app.models import Evidence, WorkItem
+    from app.models import ContextReceipt, Evidence, WorkItem
     from app.work_ledger import render_ledger
 
     Maker, orch, make_session, work_item_id = handoff_env
@@ -442,6 +448,15 @@ async def test_handoff_ledger_is_deterministic_from_db_fields(handoff_env):
                 Evidence.session_turn_id != b_turn_id,
             )
         )).scalars().all()
+        receipt = (await db.execute(
+            select(ContextReceipt).where(ContextReceipt.session_turn_id == b_turn_id)
+        )).scalars().one()
+    undeclared = next(
+        (x for x in (receipt.exclusions or []) if x.get("reason") == "undeclared"), None
+    )
+    # The fixture root declares only README.md as a source while holding
+    # docs/notes.md — the P-0073 gap, so the warning must be present.
+    assert undeclared is not None and undeclared["count"] == 1
     evidence_rows.sort(key=lambda e: (e.work_item_id is None, e.work_item_id or 0, e.id))
     rendered = render_ledger(
         project_name="Handoff project",
@@ -457,6 +472,7 @@ async def test_handoff_ledger_is_deterministic_from_db_fields(handoff_env):
             }
             for e in evidence_rows
         ],
+        undeclared_count=undeclared["count"],
     )
     assert ledger == rendered
 

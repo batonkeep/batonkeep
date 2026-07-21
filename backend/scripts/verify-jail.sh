@@ -18,11 +18,19 @@ set -uo pipefail
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/sandbox-spawn.c"
 TMP="$(mktemp -d)"
 HELPER="$TMP/sandbox-spawn"
-S1="$TMP/sessions/s1"
-S2="$TMP/sessions/s2"
+# The fake sessions must live somewhere the ruleset does NOT grant, or the test
+# proves nothing. /tmp is granted read-write wholesale (toolchains need it), so
+# `mktemp -d` is exactly the wrong home for them — an early version of this
+# script put them there and every cross-session assertion "failed" because the
+# jail was correctly allowing access to an allowed path. Use /data, which is
+# ungranted, mirroring the real /data/sessions layout. The distinctive name
+# keeps this well clear of a real deployment's data.
+BASE="/data/verify-jail-$$"
+S1="$BASE/sessions/s1"
+S2="$BASE/sessions/s2"
 fail=0
 
-cleanup() { rm -rf "$TMP"; }
+cleanup() { rm -rf "$TMP" "$BASE"; }
 trap cleanup EXIT
 
 note() { printf '\n\033[1m%s\033[0m\n' "$*"; }
@@ -49,9 +57,9 @@ note "Setting up two workspaces in the production shape (root:agents 2770)"
 getent group agents >/dev/null || groupadd agents
 id -u sandbox >/dev/null 2>&1 || useradd -m -d /home/agent -G agents sandbox
 usermod -aG agents sandbox
-mkdir -p "$S1" "$S2" && chmod 755 "$TMP" "$TMP/sessions"
+mkdir -p "$S1" "$S2" && chmod 755 "$BASE" "$BASE/sessions"
 echo "confidential-s2-content" > "$S2/secret.txt"
-chown -R root:agents "$TMP/sessions"
+chown -R root:agents "$BASE/sessions"
 chmod 2770 "$S1" "$S2"
 chmod 660 "$S2/secret.txt"
 
@@ -91,7 +99,7 @@ else
   ok "CANNOT write another session's tree (the pilot #43 failure)"
 fi
 
-if run_jailed "ls '$TMP/sessions'"; then
+if run_jailed "ls '$BASE/sessions'"; then
   bad "CAN STILL ENUMERATE other sessions"
 else
   ok "CANNOT enumerate the sessions directory"

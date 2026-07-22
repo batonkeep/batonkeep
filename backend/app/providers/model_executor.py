@@ -106,7 +106,13 @@ _PLANNING_SYSTEM_PROMPT = (
     "Everything you produce is a proposal the operator reviews and confirms — you cannot "
     "mark sub-tasks done, and child work items do nothing until accepted. Be specific and "
     "concise; do not invent work beyond the objective. When you have proposed the plan, "
-    "stop and give a one-paragraph summary."
+    "stop and give a one-paragraph summary. "
+    # P-0080: prose is not a record. A turn that concludes "nothing is needed" is a
+    # legitimate outcome, but it has to be *recorded* — otherwise it is indistinguishable
+    # from a turn that produced nothing because it failed to use its tools.
+    "If your honest conclusion is that no new sub-tasks are needed, still call "
+    "set_next_action to record the one step that actually matters — saying it only in "
+    "prose records nothing, and the turn will be filed as having proposed nothing."
 )
 
 
@@ -124,7 +130,11 @@ _PROJECT_PLANNING_SYSTEM_PROMPT = (
     "withheld, say so rather than planning around the gap silently. Prefer a short, "
     "honest read-out over a long one, and propose no work item you cannot justify from "
     "the state you were shown. New work items land as proposals the operator accepts or "
-    "rejects. When done, stop and give a one-paragraph summary."
+    "rejects. When done, stop and give a one-paragraph summary. "
+    # Same rule, project scope: a healthy project still needs its digest recorded.
+    "Even if the project looks healthy and needs no new work items, still call "
+    "summarize_project — a read-out you give only in prose is not recorded, and the "
+    "turn will be filed as having proposed nothing."
 )
 
 

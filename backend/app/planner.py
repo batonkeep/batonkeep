@@ -25,6 +25,7 @@ mandatory per-project decision.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import tempfile
@@ -37,6 +38,7 @@ from app.config import get_settings
 from app.db import AsyncSessionLocal
 from app.models import ContextSource, Evidence, PlannerRun, Project, WorkItem
 from app.project_context import ManifestError, _iter_files, _resolve_under_root
+from app.providers import planner_protocol
 from app.providers.base import EventKind, ExecResult
 from app.providers.registry import (
     get_executor,
@@ -460,10 +462,20 @@ async def start_planning_turn(
             facts = await _gather_project_facts(
                 db, owner_id, project, local_planner=is_local_instance(prov),
             )
+        prompt = _build_prompt(project, work_item, message, facts)
+        # Plan/CLI lane: it will never be offered tool schemas, so the contract has
+        # to travel in the prompt (P-0082). Generated from the same schemas the API
+        # lane offers, so the two transports cannot describe different tools.
+        if _uses_protocol(prov):
+            instructions = planner_protocol.protocol_instructions(
+                _protocol_schemas(work_item_id)
+            )
+            if instructions:
+                prompt = f"{prompt}\n\n{instructions}"
         run = PlannerRun(
             owner_id=owner_id, project_id=project_id, work_item_id=work_item_id,
             status="running", provider=prov, model=mdl, local_pinned=local_pinned,
-            request=_build_prompt(project, work_item, message, facts),
+            request=prompt,
         )
         db.add(run)
         await db.commit()
@@ -561,11 +573,108 @@ async def _drive(run_id: int) -> None:
     if final_result is None:
         await _finish(run_id, status="failed", error=error_msg or "no result produced")
         return
+
+    # Plan/CLI lane: the executor never saw the tool schemas, so the structural
+    # output arrives as a protocol block in the reply text (P-0082). Apply it
+    # through the same dispatch the API lane uses — one implementation of what
+    # planning means, two transports to it.
+    response_text = final_result.text
+    protocol_error: str | None = None
+    if _uses_protocol(prov):
+        calls, protocol_error = planner_protocol.extract_calls(response_text or "")
+        if calls:
+            protocol_error = await _apply_protocol_calls(
+                calls,
+                owner_id=owner_id, project_id=project_id,
+                work_item_id=work_item_id, run_id=run_id,
+            )
+        response_text = planner_protocol.strip_block(response_text or "")
+
     await _finish(
-        run_id, status="succeeded", response=final_result.text,
+        run_id, status="succeeded", response=response_text,
+        error=protocol_error,
         model=final_result.model, usage=final_result.usage,
         work_item_id=work_item_id,
     )
+
+
+def _protocol_schemas(work_item_id: int | None) -> list[dict]:
+    """The tool schemas this planning scope may use — the same split the API lane
+    gets from `_active_tool_schemas`, read from the one source of truth so the
+    prompt cannot advertise a tool the dispatcher would refuse."""
+    from app.providers.tools.registry import (
+        PLANNER_ITEM_TOOL_NAMES, PLANNER_PROJECT_TOOL_NAMES, get_tool_registry,
+    )
+
+    names = set(PLANNER_ITEM_TOOL_NAMES if work_item_id else PLANNER_PROJECT_TOOL_NAMES)
+    return [s for s in get_tool_registry().function_schemas() if s["name"] in names]
+
+
+def _uses_protocol(provider_id: str) -> bool:
+    """True when the provider cannot be offered tool schemas natively.
+
+    `CLIExecutor` shells out to a binary and never consults the tool registry, so a
+    planning turn on a `cli` provider gets no tools at all — the defect this closes.
+    Keyed on provider *kind* rather than a name list so a new CLI provider inherits
+    the protocol instead of silently planning into the void.
+    """
+    from app.providers.registry import get_instance, get_provider_def
+
+    inst = get_instance(provider_id)
+    pdef = get_provider_def(inst.template) if inst else None
+    return bool(pdef and pdef.kind == "cli")
+
+
+async def _apply_protocol_calls(
+    calls: list[dict], *, owner_id: str, project_id: str | None,
+    work_item_id: int | None, run_id: int,
+) -> str | None:
+    """Dispatch parsed protocol calls through the planner toolset. Returns an error
+    summary when some call could not be applied, else None.
+
+    Scope is enforced here, not trusted from the block: a work-item turn may only
+    use the item tools and a project turn only the project tools — the same split
+    `_active_tool_schemas` applies to the API lane. A model that invents a call
+    outside its scope is refused, not obeyed.
+    """
+    from app.providers.tools.registry import (
+        PLANNER_ITEM_TOOL_NAMES, PLANNER_PROJECT_TOOL_NAMES, get_tool_registry,
+    )
+
+    allowed = set(PLANNER_ITEM_TOOL_NAMES if work_item_id else PLANNER_PROJECT_TOOL_NAMES)
+    registry = get_tool_registry()
+    context = {
+        "owner_id": owner_id, "project_id": project_id,
+        "work_item_id": work_item_id, "planner_run_id": run_id,
+    }
+    problems: list[str] = []
+    seen: set[str] = set()
+    for call in calls:
+        name, args = call["tool"], call["args"]
+        if name not in allowed:
+            problems.append(f"{name}: not available on this planning scope")
+            continue
+        # Models re-emit an identical call when they restate their plan; applying it
+        # twice would double-propose.
+        fingerprint = f"{name}:{json.dumps(args, sort_keys=True, default=str)}"
+        if fingerprint in seen:
+            continue
+        seen.add(fingerprint)
+        try:
+            # The registry's own dispatch — the same entry point the API lane's
+            # tool calls arrive through, so nothing about validation, scoping or
+            # proposer-only status is reimplemented for this transport.
+            result = await registry.call(name, json.dumps(args), workdir="", context=context)
+            if isinstance(result, str) and result.startswith(f"[{name} error]"):
+                problems.append(result)
+        except TypeError as exc:            # wrong/unknown argument names
+            problems.append(f"{name}: bad arguments ({exc})")
+        except Exception as exc:
+            logger.exception("[planner] protocol call %s failed", name)
+            problems.append(f"{name}: {exc}")
+    if problems:
+        return "some planned calls were not applied — " + "; ".join(problems[:5])
+    return None
 
 
 async def run_planning_turn(

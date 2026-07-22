@@ -42,6 +42,15 @@ The backend logs which state it is in at startup — check it once after install
 assuming. **If you run more than one build session, set `SANDBOX_JAIL=require`** once you
 have confirmed your host supports it.
 
+What it covers, precisely: **workspaces**. `/tmp` and the agent home stay writable by every
+session, so concurrent agents can still share scratch space through them. That is fine for a
+single-operator install — every session is yours — but it means "sessions are fully isolated
+from one another" would be an overstatement.
+
+> **Docker Desktop for Mac cannot enforce this.** Its LinuxKit VM ships without Landlock, so
+> the jail degrades to a warning there regardless of `SANDBOX_JAIL`. Fine for local
+> development; use a Linux host if you need the isolation.
+
 ## Install
 
 ```bash

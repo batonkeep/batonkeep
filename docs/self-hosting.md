@@ -47,9 +47,13 @@ session, so concurrent agents can still share scratch space through them. That i
 single-operator install — every session is yours — but it means "sessions are fully isolated
 from one another" would be an overstatement.
 
-> **Docker Desktop for Mac cannot enforce this.** Its LinuxKit VM ships without Landlock, so
-> the jail degrades to a warning there regardless of `SANDBOX_JAIL`. Fine for local
-> development; use a Linux host if you need the isolation.
+> **On Docker Desktop for Mac, this depends on your version — check, don't assume.** Older
+> LinuxKit VMs (kernel 5.15) shipped without Landlock, so the jail degraded to a warning there
+> regardless of `SANDBOX_JAIL`. Current ones enable it: verified on Docker Desktop engine
+> 29.6.2 (LinuxKit 6.12.76), where the jail is enforced under the default seccomp profile with
+> no extra flags. If you are on an older Docker Desktop and need the isolation, update it or
+> use a Linux host — and either way, read the startup log rather than inferring from the
+> platform.
 
 ## Install
 

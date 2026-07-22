@@ -37,6 +37,30 @@ run_migration() {
   # binaries — e.g. node_modules/.bin shims and @esbuild/*/bin/esbuild that
   # `vite build` must exec. A flat `chmod 0660` here stripped that bit on every
   # restart and broke previously-working builds with EACCES/ENOEXEC.
+  # Provenance gate (P-0079 item 4) — MUST run before the chown below.
+  #
+  # That chown is what keeps the mixed-uid tree working, but it also silently
+  # adopts any repo an agent left behind. Before P-0079 an agent that could not
+  # write `.git` would rename ours aside and `git init` its own; this pass then
+  # handed the replacement back to `batond`, and the control plane read a history
+  # it never mediated as the session's own. It also made the whole failure class
+  # transient — a restart erased the evidence, which is why it went unnoticed.
+  #
+  # The gate classifies by *ownership* (the only signal still present at this
+  # point) and records what it finds. It deliberately does not block startup:
+  # refusing to boot over one odd session trades a provenance error for an
+  # availability failure, which is worse.
+  mkdir -p /data/sessions
+  GATE=/app/scripts/repair-workspace-repo.py
+  if [ -x "$(command -v python3 || true)" ] && [ -f "$GATE" ]; then
+    python3 "$GATE" --boot-scan --sessions-dir /data/sessions \
+      --report /data/repo-provenance.json || \
+      echo "[repo-gate] scan failed — provenance NOT verified this boot"
+  else
+    # Say so. A gate that silently does not run is the failure it exists to fix.
+    echo "[repo-gate] SKIPPED — python3 or $GATE unavailable; provenance NOT verified"
+  fi
+
   for d in /data/sessions /work; do
     mkdir -p "$d"
     chown -R batond:agents "$d" 2>/dev/null || true

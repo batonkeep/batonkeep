@@ -216,6 +216,29 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("sandbox jail probe failed")
 
+    # P-0079 item 4: say out loud what the boot provenance gate found. The
+    # entrypoint's chown makes a displaced repo look like ours, so by the time
+    # the app runs the evidence is gone — this report is the only trace, and a
+    # report nobody surfaces is not a gate.
+    try:
+        from app.sessions import workspace as _ws
+        for entry in _ws.flagged_repos():
+            if entry.get("verdict") == "descended":
+                logger.warning(
+                    "[repo-gate] session %s: workspace repo was replaced by the agent, "
+                    "but its history descends from ours (%s commits ahead) — adopted",
+                    entry.get("session"), entry.get("commits_ahead"),
+                )
+            else:
+                logger.error(
+                    "[repo-gate] session %s: workspace repo is NOT ours and cannot be "
+                    "shown to descend from ours (%s) — its versions are the agent's "
+                    "history, not Batonkeep-mediated work. %s",
+                    entry.get("session"), entry.get("verdict"), entry.get("why", ""),
+                )
+    except Exception:
+        logger.exception("startup repo-provenance report failed")
+
     # D-0021: reconcile runs stranded by a previous restart before the scheduler
     # (and any re-enqueue) starts, so the run state is honest from boot.
     try:

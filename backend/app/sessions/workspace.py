@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 
@@ -154,6 +155,21 @@ async def require_ours(workspace: str) -> None:
     if status == "broken":
         raise WorkspaceRepoError("workspace repository is present but unreadable")
     raise WorkspaceRepoError("workspace has no repository")
+
+
+def flagged_repos() -> list[dict]:
+    """Workspaces the boot provenance gate flagged this start (P-0079 item 4).
+
+    Written by `scripts/repair-workspace-repo.py --boot-scan` from `entrypoint.sh`
+    *before* the tree is re-owned, because the re-own is what erases the evidence.
+    Empty when the file is absent, which is the normal case.
+    """
+    path = os.environ.get("REPO_PROVENANCE_REPORT", "/data/repo-provenance.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f).get("flagged", [])
+    except (OSError, ValueError):
+        return []
 
 
 async def _git(workspace: str, *args: str) -> None:

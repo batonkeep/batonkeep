@@ -205,6 +205,98 @@ def adopt(entry: dict) -> dict:
     }
 
 
+def boot_scan(root: str, report_path: str, *, owner_uid: int | None = None) -> list[dict]:
+    """Classify displaced repos **before** the boot chown erases the evidence.
+
+    `entrypoint.sh` re-owns `/data/sessions` to `batond:agents` on every start.
+    That is what keeps a mixed-uid tree working, but it also adopts any repo an
+    agent left behind — including one with no shared ancestry — and it does so
+    silently. After it runs, a displaced repo is indistinguishable from ours.
+
+    So the gate has to run first, and it cannot use the readability probe: this
+    executes as root, where git rejects every `batond`-owned repo. Ownership is
+    the signal here — a `.git` not owned by the control-plane user was written by
+    an agent, and only a provable ancestor relationship makes it ours to adopt.
+
+    Never blocks boot. A container that refuses to start because one session is
+    odd trades a provenance error for an availability failure, which is worse.
+    """
+    # Explicit rather than resolved-only-internally: the whole classification
+    # turns on "is this `.git` owned by the control plane", and a test in which
+    # one user owns everything cannot exercise that unless the uid is injectable.
+    if owner_uid is None:
+        try:
+            owner_uid = pwd.getpwnam(OWNER).pw_uid
+        except KeyError:
+            return []
+    batond_uid = owner_uid
+
+    flagged: list[dict] = []
+    for sid in sorted(os.listdir(root)):
+        workspace = os.path.join(root, sid)
+        git_dir = os.path.join(workspace, ".git")
+        if not os.path.isdir(workspace) or not os.path.isdir(git_dir):
+            continue
+        try:
+            if os.stat(git_dir).st_uid == batond_uid:
+                continue  # ours; the chown changes nothing about provenance
+        except OSError:
+            continue
+
+        entry = {"session": sid, "workspace": workspace,
+                 "git_owner": owner_of(git_dir),
+                 "detected": datetime.now(timezone.utc).isoformat()}
+        backup = find_backup(workspace)
+        if not backup:
+            entry.update(verdict="unprovable",
+                         why="agent-written repo with no preserved original — nothing "
+                             "ties this history to the session we created")
+            flagged.append(entry)
+            continue
+
+        rc_old, old_head, _ = git(workspace, "rev-parse", "HEAD", git_dir=backup)
+        rc_new, new_head, _ = git(workspace, "rev-parse", "HEAD")
+        if rc_old != 0 or rc_new != 0:
+            entry.update(verdict="unprovable", why="could not read both HEADs to compare")
+            flagged.append(entry)
+            continue
+        entry.update(our_root=old_head, agent_head=new_head,
+                     original=os.path.basename(backup))
+        rc, _, _ = git(workspace, "merge-base", "--is-ancestor", old_head, new_head)
+        if rc == 0:
+            rc, count, _ = git(workspace, "rev-list", "--count", f"{old_head}..{new_head}")
+            entry.update(verdict="descended",
+                         commits_ahead=int(count) if rc == 0 and count.isdigit() else None)
+        else:
+            entry.update(verdict="disjoint",
+                         why=f"our root {old_head[:8]} is not an ancestor of {new_head[:8]} — "
+                             "the boot chown is about to make a foreign history authoritative")
+        flagged.append(entry)
+
+    if flagged:
+        payload = {"scanned": datetime.now(timezone.utc).isoformat(),
+                   "sessions_dir": root, "flagged": flagged}
+        try:
+            os.makedirs(os.path.dirname(report_path), exist_ok=True)
+            with open(report_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2)
+            os.chmod(report_path, 0o640)
+            try:
+                os.chown(report_path, batond_uid, -1)
+            except OSError:
+                pass
+        except OSError as exc:
+            print(f"[repo-gate] could not write {report_path}: {exc}", file=sys.stderr)
+    elif os.path.exists(report_path):
+        # Nothing displaced this boot — clear a stale report rather than let it
+        # keep accusing sessions that have since been resolved.
+        try:
+            os.remove(report_path)
+        except OSError:
+            pass
+    return flagged
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -213,12 +305,28 @@ def main() -> int:
     ap.add_argument("--session", help="one session id (default: every session)")
     ap.add_argument("--sessions-dir", default=SESSIONS_DIR)
     ap.add_argument("--json", action="store_true", help="machine-readable output")
+    ap.add_argument("--boot-scan", action="store_true",
+                    help="classify displaced repos by ownership before the boot chown; "
+                         "writes --report and never blocks startup")
+    ap.add_argument("--report", default=os.environ.get(
+        "REPO_PROVENANCE_REPORT", "/data/repo-provenance.json"))
     args = ap.parse_args()
 
     root = args.sessions_dir
     if not os.path.isdir(root):
         print(f"sessions dir not found: {root}", file=sys.stderr)
         return 2
+
+    if args.boot_scan:
+        flagged = boot_scan(root, args.report)
+        for f in flagged:
+            level = "WARN" if f["verdict"] == "descended" else "ALERT"
+            print(f"[repo-gate] {level} {f['session']} — {f['verdict']}"
+                  + (f": {f['why']}" if f.get("why") else
+                     f" ({f.get('commits_ahead')} commits ahead of our root)"))
+        if flagged:
+            print(f"[repo-gate] {len(flagged)} workspace(s) recorded in {args.report}")
+        return 0  # never block boot
 
     # Refuse to classify from the wrong vantage point. Every verdict here is
     # "can the control plane read this as itself", which is a property of the

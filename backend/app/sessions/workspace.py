@@ -101,9 +101,75 @@ def safe_join(workspace: str, relpath: str) -> str:
     return candidate
 
 
+class WorkspaceRepoError(RuntimeError):
+    """The workspace repository is not one the control plane can act on.
+
+    Distinct from "this workspace has no versions yet": the repo is missing,
+    unreadable, or *not ours* — an agent replaced it (P-0079). Versioning is
+    best-effort for transient git hiccups, but a structural fault must not read
+    out as an empty history, because that is indistinguishable from a session
+    that did no work.
+    """
+
+
+# Git's dubious-ownership refusal. The control plane owns the workspace repo, so
+# seeing this means the `.git` we are reading is not the one we created — the
+# observed shape is an agent renaming ours aside and running its own `git init`
+# (R3-D2: two sessions, one with `.git_old` left behind, one without).
+_DUBIOUS = "detected dubious ownership"
+_NOT_A_REPO = "not a git repository"
+
+
+async def repo_status(workspace: str) -> str:
+    """`ok` · `missing` · `foreign` · `broken` — is this repo one we can act on?
+
+    Cheap (`git rev-parse --git-dir`) and safe to call before any read that would
+    otherwise report an empty history.
+    """
+    if not workspace or not os.path.isdir(workspace):
+        return "missing"
+    if not os.path.isdir(os.path.join(workspace, ".git")):
+        return "missing"
+    code, out, err = await _git_raw(workspace, "rev-parse", "--git-dir")
+    if code == 0:
+        return "ok"
+    lowered = err.lower()
+    if _DUBIOUS in lowered:
+        return "foreign"
+    if _NOT_A_REPO in lowered:
+        return "broken"
+    return "broken"
+
+
+async def require_ours(workspace: str) -> None:
+    """Raise WorkspaceRepoError unless the workspace repo is ours to read."""
+    status = await repo_status(workspace)
+    if status == "ok":
+        return
+    if status == "foreign":
+        raise WorkspaceRepoError(
+            "workspace repository was replaced by the agent and is not readable by "
+            "Batonkeep — its history is not part of this session's versions"
+        )
+    if status == "broken":
+        raise WorkspaceRepoError("workspace repository is present but unreadable")
+    raise WorkspaceRepoError("workspace has no repository")
+
+
 async def _git(workspace: str, *args: str) -> None:
     """Run a git command in the workspace; log (don't raise) on failure."""
     await _git_out(workspace, *args)
+
+
+async def _git_raw(workspace: str, *args: str) -> tuple[int, str, str]:
+    """Run a git command, returning (returncode, stdout, stderr) without logging."""
+    proc = await asyncio.create_subprocess_exec(
+        "git", "-C", workspace, *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    out, err = await proc.communicate()
+    return proc.returncode, out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
 
 
 async def _git_out(workspace: str, *args: str) -> tuple[int, str]:
@@ -111,18 +177,22 @@ async def _git_out(workspace: str, *args: str) -> tuple[int, str]:
     Run a git command and capture stdout. Returns (returncode, stdout). Logs (does
     not raise) on non-zero exit so the session loop is never broken by a git
     hiccup — versioning is best-effort over the turn lifecycle.
+
+    Best-effort applies to *transient* failures. A structural one — the repo is
+    not ours — logs at ERROR, because callers that fall back to an empty result
+    would otherwise present "no versions" for a workspace full of committed work.
     """
-    proc = await asyncio.create_subprocess_exec(
-        "git", "-C", workspace, *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    out, err = await proc.communicate()
-    if proc.returncode != 0:
-        logger.warning(
-            "[workspace] git %s failed: %s", args, err.decode("utf-8", "replace").strip()
-        )
-    return proc.returncode, out.decode("utf-8", "replace")
+    code, out, err = await _git_raw(workspace, *args)
+    if code != 0:
+        stderr = err.strip()
+        if _DUBIOUS in stderr.lower():
+            logger.error(
+                "[workspace] git %s refused %s: the repository is not ours — an agent "
+                "replaced it. Its commits are NOT this session's versions.", args, workspace
+            )
+        else:
+            logger.warning("[workspace] git %s failed: %s", args, stderr)
+    return code, out
 
 
 async def create_workspace(
@@ -158,13 +228,64 @@ async def create_workspace(
             ))
 
     if not os.path.isdir(os.path.join(root, ".git")):
-        await _git(root, "init", "-q")
+        # `--shared=group` is load-bearing, not hygiene (P-0079). Everything else in
+        # the workspace is co-writable by `batond` and the `sandbox` agent, but git
+        # creates `.git` 0755 owner-only regardless of umask — so an agent that runs
+        # `git commit` itself is denied inside the one directory that matters. The
+        # observed response was to rename our repo aside and `git init` its own,
+        # after which the control plane could read neither its commits nor ours.
+        # Share the repo with the `agents` group and the agent has no reason to.
+        await _git(root, "init", "-q", "--shared=group")
         # Local identity so commits work without global git config.
         await _git(root, "config", "user.email", "agent@batonkeep.local")
         await _git(root, "config", "user.name", "batonkeep")
         await _git(root, "add", "-A")
         await _git(root, "commit", "-q", "-m", "session: initialise workspace")
+    else:
+        await ensure_repo_shared(root)
     return root
+
+
+async def ensure_repo_shared(workspace: str) -> bool:
+    """Make an existing workspace repo group-writable. Idempotent; returns True if changed.
+
+    Workspaces created before P-0079 have a `.git` the agent cannot write, which is
+    what provoked the displacement. Repairing them on access closes the window for
+    sessions that already exist. Only touches a repo that is still **ours** — a
+    foreign one is a reporting problem, not something to silently adopt.
+    """
+    if await repo_status(workspace) != "ok":
+        return False
+    _, current = await _git_out(workspace, "config", "--get", "core.sharedRepository")
+    if current.strip() in ("group", "1", "true"):
+        return False
+    await _git(workspace, "config", "core.sharedRepository", "group")
+    git_dir = os.path.join(workspace, ".git")
+    changed = False
+    for dirpath, dirnames, filenames in os.walk(git_dir):
+        for name in (*dirnames, *filenames):
+            path = os.path.join(dirpath, name)
+            try:
+                mode = os.stat(path).st_mode & 0o7777
+                # Mirror the owner's read/write bits to the group; setgid on dirs so
+                # new objects keep the shared group.
+                want = mode | ((mode & 0o600) >> 3)
+                if os.path.isdir(path):
+                    want |= 0o2010 if mode & 0o100 else 0o2000
+                if want != mode:
+                    os.chmod(path, want)
+                    changed = True
+            except OSError as exc:  # best-effort: dev boxes, races, odd mounts
+                logger.debug("[workspace] chmod %s skipped: %s", path, exc)
+    try:
+        mode = os.stat(git_dir).st_mode & 0o7777
+        os.chmod(git_dir, mode | 0o2070)
+        changed = True
+    except OSError as exc:
+        logger.debug("[workspace] chmod %s skipped: %s", git_dir, exc)
+    if changed:
+        logger.info("[workspace] repo %s made group-writable (P-0079)", workspace)
+    return changed
 
 
 def read_brief(workspace: str) -> str:

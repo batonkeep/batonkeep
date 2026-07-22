@@ -1073,6 +1073,120 @@ class TestWorkspaceVersioning:
         assert await ws.version_diff(root, "main") is None             # refspec rejected
 
 
+class TestWorkspaceRepoOwnership:
+    """P-0079: the agent must be able to commit into *our* repo, and a repo that
+    is not ours must be reported rather than read as an empty history.
+
+    R3-D2: two Agy sessions renamed the harness `.git` aside and ran their own
+    `git init`, because `.git` was the one directory in a group-writable
+    workspace they could not write. Batonkeep then reported zero versions, no
+    verified outputs, and refused packaging — for workspaces holding committed
+    work.
+    """
+
+    @pytest.mark.asyncio
+    async def test_repo_is_group_writable_so_an_agent_can_commit(self, tmp_path, monkeypatch):
+        from app.sessions import workspace as ws
+        monkeypatch.setattr(ws._settings, "sessions_dir", str(tmp_path), raising=False)
+        root = await ws.create_workspace("own1", title="T", goal="G")
+
+        _, shared = await ws._git_out(root, "config", "--get", "core.sharedRepository")
+        assert shared.strip() in ("group", "1", "true")
+        # The mode bits are what the agent actually trips over: without group
+        # write on .git and its object store, `git commit` fails for the sandbox
+        # user even though every other path in the workspace is co-writable.
+        for rel in (".git", ".git/objects", ".git/refs"):
+            mode = os.stat(os.path.join(root, rel)).st_mode
+            assert mode & 0o020, f"{rel} is not group-writable"
+
+    @pytest.mark.asyncio
+    async def test_agent_commit_lands_in_our_repo(self, tmp_path, monkeypatch):
+        """The end state that matters: a commit made *outside* commit_turn shows
+        up as a version, so the agent never needs to displace anything."""
+        from app.sessions import workspace as ws
+        monkeypatch.setattr(ws._settings, "sessions_dir", str(tmp_path), raising=False)
+        root = await ws.create_workspace("own2", title="T", goal="G")
+
+        with open(os.path.join(root, "notes.md"), "w") as f:
+            f.write("agent-authored")
+        await ws._git(root, "add", "-A")
+        await ws._git(root, "commit", "-q", "-m", "agent: direct commit")
+
+        assert await ws.repo_status(root) == "ok"
+        versions = await ws.list_versions(root)
+        assert "agent: direct commit" in versions[0]["message"]
+
+    @pytest.mark.asyncio
+    async def test_replaced_repo_is_reported_not_read_as_empty(self, tmp_path, monkeypatch):
+        """Reproduces the R3-D2 shape: harness repo renamed aside, agent's own in
+        its place. Reading it must raise, not return []."""
+        from app.sessions import workspace as ws
+        monkeypatch.setattr(ws._settings, "sessions_dir", str(tmp_path), raising=False)
+        root = await ws.create_workspace("own3", title="T", goal="G")
+
+        os.rename(os.path.join(root, ".git"), os.path.join(root, ".git_old"))
+        # A repo we did not create. Ownership can't be faked in-process, so mark
+        # it foreign the way git itself does when the owner differs.
+        await ws._git(root, "init", "-q")
+        await ws._git_out(root, "config", "safe.directory", "")
+        monkeypatch.setattr(
+            ws, "_git_raw",
+            _fake_git_raw(ws, "fatal: detected dubious ownership in repository at '%s'" % root),
+        )
+
+        assert await ws.repo_status(root) == "foreign"
+        with pytest.raises(ws.WorkspaceRepoError) as exc:
+            await ws.require_ours(root)
+        assert "replaced by the agent" in str(exc.value)
+
+    @pytest.mark.asyncio
+    async def test_missing_and_healthy_repos_are_distinguished(self, tmp_path, monkeypatch):
+        from app.sessions import workspace as ws
+        monkeypatch.setattr(ws._settings, "sessions_dir", str(tmp_path), raising=False)
+        root = await ws.create_workspace("own4", title="T", goal="G")
+        assert await ws.repo_status(root) == "ok"
+        await ws.require_ours(root)  # does not raise
+
+        import shutil
+        shutil.rmtree(os.path.join(root, ".git"))
+        assert await ws.repo_status(root) == "missing"
+        with pytest.raises(ws.WorkspaceRepoError):
+            await ws.require_ours(root)
+
+    @pytest.mark.asyncio
+    async def test_legacy_repo_is_repaired_on_access(self, tmp_path, monkeypatch):
+        """Workspaces created before this fix get shared on next create_workspace,
+        so existing sessions stop being a displacement waiting to happen."""
+        from app.sessions import workspace as ws
+        monkeypatch.setattr(ws._settings, "sessions_dir", str(tmp_path), raising=False)
+        root = await ws.create_workspace("own5", title="T", goal="G")
+
+        # Rewind to the pre-fix state: owner-only .git, no shared config.
+        await ws._git(root, "config", "--unset", "core.sharedRepository")
+        for rel in (".git", ".git/objects", ".git/refs"):
+            path = os.path.join(root, rel)
+            os.chmod(path, os.stat(path).st_mode & ~0o077)
+
+        assert await ws.ensure_repo_shared(root) is True
+        _, shared = await ws._git_out(root, "config", "--get", "core.sharedRepository")
+        assert shared.strip() == "group"
+        assert os.stat(os.path.join(root, ".git")).st_mode & 0o020
+        # Idempotent — a second pass is a no-op.
+        assert await ws.ensure_repo_shared(root) is False
+
+
+def _fake_git_raw(ws, stderr: str):
+    """Force git's dubious-ownership refusal, which cannot be provoked in-process
+    (the test user owns everything it creates)."""
+    real = ws._git_raw
+
+    async def _raw(workspace, *args):
+        if args[:1] == ("rev-parse",):
+            return 128, "", stderr
+        return await real(workspace, *args)
+    return _raw
+
+
 class TestTurnVersioning:
     @pytest.mark.asyncio
     async def test_turn_records_commit_and_broadcasts_diff(self, session_env):

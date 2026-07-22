@@ -176,7 +176,9 @@ async def run(
             f.write(code)
         # Make the script readable by the sandbox user (mkstemp is 0600).
         os.chmod(script_path, 0o644)
-        cmd = sandbox.wrap([python_bin, script_path])
+        # HOME is already the workdir for this lane, so the jail is exactly the
+        # snippet's own workspace (P-0072).
+        cmd = sandbox.wrap([python_bin, script_path], jail=workdir)
         env = {
             "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
             "HOME": workdir,

@@ -18,6 +18,38 @@ put a domain and TLS in front of.
   local inference want more.
 - **Disk:** a few GB for images plus your data volumes (`appdata`, `agent_home`).
 - **Outbound network** to your providers and to GHCR for image pulls.
+- **Kernel:** Linux **5.13+ with Landlock enabled** to get workspace isolation between
+  build sessions (see below). Older kernels start fine and log a warning.
+
+### Workspace isolation between sessions
+
+Agent CLIs already run as the low-privilege `sandbox` user, fenced off from the control
+plane. Separating sessions **from each other** needs one more thing: every agent runs as
+that same user on deliberately co-writable workspaces, so file permissions alone cannot
+stop one session's agent from reading or writing another's working tree. Batonkeep applies
+a **Landlock path jail** at launch to close that, confining each agent to its own
+workspace plus a read-only system view.
+
+`SANDBOX_JAIL` controls the policy:
+
+| value | behaviour |
+|---|---|
+| `warn` *(default)* | jail applied where the kernel supports it; loud warning where it does not |
+| `require` | refuse to launch an agent that cannot be confined |
+| `off` | no jail (not recommended) |
+
+The backend logs which state it is in at startup — check it once after install rather than
+assuming. **If you run more than one build session, set `SANDBOX_JAIL=require`** once you
+have confirmed your host supports it.
+
+What it covers, precisely: **workspaces**. `/tmp` and the agent home stay writable by every
+session, so concurrent agents can still share scratch space through them. That is fine for a
+single-operator install — every session is yours — but it means "sessions are fully isolated
+from one another" would be an overstatement.
+
+> **Docker Desktop for Mac cannot enforce this.** Its LinuxKit VM ships without Landlock, so
+> the jail degrades to a warning there regardless of `SANDBOX_JAIL`. Fine for local
+> development; use a Linux host if you need the isolation.
 
 ## Install
 

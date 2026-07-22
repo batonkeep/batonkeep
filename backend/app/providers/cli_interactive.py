@@ -368,9 +368,10 @@ class CLIInteractiveExecutor(Executor):
         accumulated: list[str] = []
         try:
             # Privilege drop: run the TUI as the low-priv `sandbox` user via the
-            # setuid helper (P-0022/D-0020). No-op outside the container.
+            # setuid helper (P-0022/D-0020). No-op outside the container. Jailed to
+            # the same workdir the TUI is given as cwd (P-0072).
             proc = await asyncio.create_subprocess_exec(
-                *sandbox.wrap(launch),
+                *sandbox.wrap(launch, jail=workdir),
                 stdin=slave_fd,
                 stdout=slave_fd,
                 stderr=slave_fd,

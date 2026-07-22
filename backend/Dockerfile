@@ -45,6 +45,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
  && gcc -O2 -Wall -Wextra -o /usr/local/bin/sandbox-spawn /tmp/sandbox-spawn.c \
  && chown root:batond /usr/local/bin/sandbox-spawn \
  && chmod 4750 /usr/local/bin/sandbox-spawn \
+ # P-0072: assert the workspace jail actually compiled in. Exit 2 means the
+ # Landlock uapi header was missing, i.e. this image would ship a helper that
+ # cannot fence one session's agent off from another's workspace. Exit 1 (kernel
+ # too old *here*) is fine — the build host's kernel is not the runtime's.
+ && { /usr/local/bin/sandbox-spawn --jail-probe; [ $? -ne 2 ]; } \
  && rm -f /tmp/sandbox-spawn.c \
  && apt-get purge -y gcc libc6-dev && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 
@@ -52,6 +57,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
 # missing/unexecutable at runtime, sandboxed launches REFUSE rather than silently
 # running agent / API-path code as the control-plane `batond` user (P-0046 bug).
 ENV REQUIRE_SANDBOX=1
+
+# P-0072 workspace jail. `warn` applies a Landlock path jail wherever the host
+# kernel supports it (Linux >= 5.13) and logs loudly where it does not, so an
+# older host still starts. The kernel floor is outside this image's control,
+# which is the only reason the default is not `require` — set SANDBOX_JAIL=require
+# once your host is known good, and an agent that could reach another session's
+# workspace will refuse to launch instead. The backend logs which it is at boot.
+ENV SANDBOX_JAIL=warn
 
 WORKDIR /app
 

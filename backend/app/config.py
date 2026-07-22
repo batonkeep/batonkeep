@@ -236,6 +236,16 @@ class Settings(BaseSettings):
     # (the P-0046 non-sandbox bug). Left False in local dev / tests, where no
     # spawner exists and a direct spawn is the intended fallback.
     require_sandbox: bool = False
+    # P-0072 workspace jail: `require` · `warn` (default) · `off`. Every session's
+    # agent runs as the SAME uid and workspaces are group-co-writable, so the
+    # privilege drop alone does not separate one session from another — a Landlock
+    # ruleset applied in the spawner does. `warn` applies the jail wherever the
+    # kernel supports it (Linux >= 5.13) and logs loudly where it does not, so an
+    # older host degrades to today's behaviour instead of failing to start;
+    # `require` refuses to launch an agent that could reach another workspace.
+    # Default is `warn` rather than `require` only because the kernel floor is
+    # outside the operator's control — flip it once the host is known good.
+    sandbox_jail: str = "warn"
     # Per-task isolated workspaces: /work/task_<id>/{current,history}. The agent
     # cwd's into current/ (writable); history/ holds prior runs' outputs read-only,
     # promoted by the orchestrator (never the agent) so it can't be poisoned.

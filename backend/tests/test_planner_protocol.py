@@ -125,7 +125,8 @@ class TestGeneratedInstructions:
 
     def test_scopes_match_the_api_lane_split(self):
         from app.providers.tools.registry import (
-            PLANNER_ITEM_TOOL_NAMES, PLANNER_PROJECT_TOOL_NAMES,
+            PLANNER_ITEM_TOOL_NAMES,
+            PLANNER_PROJECT_TOOL_NAMES,
         )
 
         item = {s["name"] for s in self._schemas(scope_item=True)}

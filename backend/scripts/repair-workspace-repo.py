@@ -31,7 +31,8 @@ user rather than report that.
     docker exec -u batond batonkeep-backend-1 python /app/scripts/repair-workspace-repo.py --apply
 
     # a specific session
-    docker exec -u batond batonkeep-backend-1 python /app/scripts/repair-workspace-repo.py --apply --session <id>
+    docker exec -u batond batonkeep-backend-1 \
+      python /app/scripts/repair-workspace-repo.py --apply --session <id>
 
 Exit 0 when every inspected workspace is healthy or repaired, 1 when any needs a
 human decision, 2 when it cannot run safely.
@@ -45,7 +46,7 @@ import os
 import pwd
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 SESSIONS_DIR = os.environ.get("SESSIONS_DIR", "/data/sessions")
 BACKUP_NAMES = (".git_old", ".git.old", ".git.bak", ".git-old")
@@ -245,7 +246,7 @@ def boot_scan(root: str, report_path: str, *, owner_uid: int | None = None) -> l
 
         entry = {"session": sid, "workspace": workspace,
                  "git_owner": owner_of(git_dir),
-                 "detected": datetime.now(timezone.utc).isoformat()}
+                 "detected": datetime.now(UTC).isoformat()}
         backup = find_backup(workspace)
         if not backup:
             entry.update(verdict="unprovable",
@@ -274,7 +275,7 @@ def boot_scan(root: str, report_path: str, *, owner_uid: int | None = None) -> l
         flagged.append(entry)
 
     if flagged:
-        payload = {"scanned": datetime.now(timezone.utc).isoformat(),
+        payload = {"scanned": datetime.now(UTC).isoformat(),
                    "sessions_dir": root, "flagged": flagged}
         try:
             os.makedirs(os.path.dirname(report_path), exist_ok=True)
@@ -356,7 +357,7 @@ def main() -> int:
             entry = adopt(entry)
         results.append(entry)
 
-    stamp = datetime.now(timezone.utc).isoformat()
+    stamp = datetime.now(UTC).isoformat()
     if args.json:
         print(json.dumps({"ts": stamp, "applied": args.apply, "results": results}, indent=2))
     else:

@@ -13,9 +13,10 @@ implementation of planning. Two properties keep the lanes from drifting:
 1. **The protocol text is generated from the same schemas the API lane offers.**
    Adding or changing a planner tool changes both transports at once; there is no
    second copy of the contract to forget.
-2. **Parsed calls dispatch through the same `PlannerToolProvider.call`.** All the
-   validation the tools already do — ids filtered against the project's real work
-   items, owner scoping, proposer-only status — applies identically.
+2. **Parsed calls dispatch through the same `get_tool_registry().call()`** the API
+   lane's tool calls arrive through. All the validation the tools already do — ids
+   filtered against the project's real work items, owner scoping, proposer-only
+   status — applies identically.
 
 What this transport does *not* give the CLI lane is interaction parity: the API
 lane gets tool results back and can refine over several rounds, while a one-shot
@@ -60,7 +61,7 @@ def protocol_instructions(schemas: list[dict]) -> str:
         "",
         "Your prose is read by a person, but it is **not** how your plan is recorded.",
         "To record anything durable you MUST emit one fenced block, exactly once, at",
-        f"the very end of your reply:",
+        "the very end of your reply:",
         "",
         f"```{BLOCK_TAG}",
         '[{"tool": "<name>", "args": { … }}]',

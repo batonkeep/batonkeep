@@ -603,7 +603,9 @@ def _protocol_schemas(work_item_id: int | None) -> list[dict]:
     gets from `_active_tool_schemas`, read from the one source of truth so the
     prompt cannot advertise a tool the dispatcher would refuse."""
     from app.providers.tools.registry import (
-        PLANNER_ITEM_TOOL_NAMES, PLANNER_PROJECT_TOOL_NAMES, get_tool_registry,
+        PLANNER_ITEM_TOOL_NAMES,
+        PLANNER_PROJECT_TOOL_NAMES,
+        get_tool_registry,
     )
 
     names = set(PLANNER_ITEM_TOOL_NAMES if work_item_id else PLANNER_PROJECT_TOOL_NAMES)
@@ -638,7 +640,9 @@ async def _apply_protocol_calls(
     outside its scope is refused, not obeyed.
     """
     from app.providers.tools.registry import (
-        PLANNER_ITEM_TOOL_NAMES, PLANNER_PROJECT_TOOL_NAMES, get_tool_registry,
+        PLANNER_ITEM_TOOL_NAMES,
+        PLANNER_PROJECT_TOOL_NAMES,
+        get_tool_registry,
     )
 
     allowed = set(PLANNER_ITEM_TOOL_NAMES if work_item_id else PLANNER_PROJECT_TOOL_NAMES)

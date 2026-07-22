@@ -2565,6 +2565,12 @@ async def list_session_versions(
     from app.sessions import workspace as ws
 
     session = await _owned_session(session_id, owner_id, db)
+    # An empty History must mean "no versions yet", never "we could not read the
+    # repo" — a replaced workspace repo is reported, not rendered as no work (P-0079).
+    try:
+        await ws.require_ours(session.workspace_path)
+    except ws.WorkspaceRepoError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     versions = await ws.list_versions(session.workspace_path)
     return [VersionOut.model_validate(v) for v in versions]
 

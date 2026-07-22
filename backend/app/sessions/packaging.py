@@ -90,6 +90,13 @@ async def build_package(
     Raises PackagingError when there is nothing committed or the tree is dirty,
     PackageTooLargeError when the summed file bytes exceed `package_max_bytes`.
     """
+    # Check the repo is ours *before* reading HEAD. A replaced repo returns no
+    # commits, which would otherwise surface as "nothing to package" for a
+    # workspace holding committed work — the exact misreport R3-D2 hit (P-0079).
+    try:
+        await ws.require_ours(workspace)
+    except ws.WorkspaceRepoError as exc:
+        raise PackagingError(str(exc)) from exc
     commit = await ws.head_commit(workspace)
     if not commit:
         raise PackagingError("workspace has no committed version to package")

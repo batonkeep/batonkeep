@@ -976,3 +976,152 @@ class TestPlannerApi:
             assert r.status_code == 404
         finally:
             app.dependency_overrides.clear()
+
+
+# ── plan/CLI lane parity (P-0082) ────────────────────────────────────────────
+
+class _TextOnlyPlanningExecutor(Executor):
+    """A CLI-shaped planner: returns text and nothing else.
+
+    This is the whole defect in one class. `CLIExecutor` shells out to a binary
+    and never consults the tool registry, so a planning turn on a `cli` provider
+    was offered no tools — six runs on the live instance produced prose and zero
+    structural output while five recorded `succeeded`. This fake calls no tools
+    for exactly that reason; if the lane works, it works through the reply text.
+    """
+
+    name = "cli-planner-mock"
+    tier = "mock"
+
+    def __init__(self, name: str = "cli-planner-mock", *, text: str = "") -> None:
+        self.name = name
+        self.tier = "mock"
+        self._text = text
+
+    @property
+    def kind(self) -> str:
+        return "cli"
+
+    def is_healthy(self) -> bool:
+        return True
+
+    async def run_stream(self, prompt, *, workdir, tools_enabled=True,
+                         max_rounds=10, budget_usd=1.0, extra=None):
+        usage = Usage(tokens_in=7, tokens_out=3, cost_usd=0.0)
+        result = ExecResult(text=self._text, usage=usage,
+                            provider=self.name, model="cli-planner")
+        yield ExecEvent(kind=EventKind.result, message="[planner] done",
+                        data={"result": result, "usage": usage.__dict__})
+
+
+class TestPlanLaneParity:
+    """The plan/CLI lane reaches the same tools through a text protocol."""
+
+    def _cli_env(self, planner_env, monkeypatch, text: str):
+        Maker, planner = planner_env
+        monkeypatch.setattr(planner, "_uses_protocol", lambda provider_id: True)
+        monkeypatch.setattr(
+            planner, "get_executor",
+            lambda name: _TextOnlyPlanningExecutor(name=name, text=text),
+        )
+        return Maker, planner
+
+    @pytest.mark.asyncio
+    async def test_item_scope_block_lands_real_subtasks(self, planner_env, monkeypatch):
+        block = (
+            "Here is how I would break this down.\n\n"
+            "```batonkeep-plan\n"
+            '[{"tool": "propose_subtasks", "args": {"items": ['
+            '{"label": "draft the spec", "expected": "spec.md"},'
+            '{"label": "review it"}]}},'
+            '{"tool": "set_next_action", "args": {"next_action": "start the spec"}}]\n'
+            "```\n"
+        )
+        Maker, planner = self._cli_env(planner_env, monkeypatch, block)
+        run_id = await planner.run_planning_turn(
+            "pr", work_item_id=1, message="plan it", owner_id="local", provider="grok"
+        )
+        async with Maker() as db:
+            run = await db.get(PlannerRun, run_id)
+            assert run.status == "succeeded"
+            # The parity claim: the same structural record the API lane produces.
+            assert run.proposals["subtasks_proposed"] == 2
+            assert run.proposals["next_action"] == "start the spec"
+            wi = await db.get(WorkItem, 1)
+            proposed = [i for i in wi.subtasks["items"] if i["status"] == "proposed"]
+            assert {p["label"] for p in proposed} == {"draft the spec", "review it"}
+            # Still proposer-only — the transport changes nothing about authority.
+            assert all(p["proposed_by"] == "planner" for p in proposed)
+            assert all(not p["verified"] and not p["done"] for p in proposed)
+            # Prose kept for the operator; the block is not left in it.
+            assert "how I would break this down" in run.response
+            assert "batonkeep-plan" not in run.response
+
+    @pytest.mark.asyncio
+    async def test_prose_without_a_block_proposes_nothing(self, planner_env, monkeypatch):
+        """R3 run #5 exactly: a credible plan in prose, nothing recorded. It must
+        stay visible and must not invent structure that was never committed to."""
+        Maker, planner = self._cli_env(
+            planner_env, monkeypatch,
+            "1. Fix the planner. 2. Rerun the regression. 3. Audit after.",
+        )
+        run_id = await planner.run_planning_turn(
+            "pr", work_item_id=1, message="plan it", owner_id="local", provider="grok"
+        )
+        async with Maker() as db:
+            run = await db.get(PlannerRun, run_id)
+            assert run.proposals.get("subtasks_proposed") in (0, None)
+            assert "Fix the planner" in run.response
+            wi = await db.get(WorkItem, 1)
+            assert not (wi.subtasks or {}).get("items")
+
+    @pytest.mark.asyncio
+    async def test_out_of_scope_call_is_refused_not_obeyed(self, planner_env, monkeypatch):
+        """Scope is enforced at dispatch, not trusted from the block: an item turn
+        may not reach the project tools even if the model asks."""
+        block = ('```batonkeep-plan\n'
+                 '[{"tool": "summarize_project", "args": {"headline": "sneaky"}}]\n```')
+        Maker, planner = self._cli_env(planner_env, monkeypatch, block)
+        run_id = await planner.run_planning_turn(
+            "pr", work_item_id=1, message="plan it", owner_id="local", provider="grok"
+        )
+        async with Maker() as db:
+            run = await db.get(PlannerRun, run_id)
+            assert "not available on this planning scope" in (run.error or "")
+            assert "summary" not in (run.proposals or {})
+
+    @pytest.mark.asyncio
+    async def test_repeated_identical_call_is_applied_once(self, planner_env, monkeypatch):
+        """Models restate their plan; applying it twice would double-propose."""
+        one = '{"tool": "propose_subtasks", "args": {"items": [{"label": "a"}]}}'
+        block = f'```batonkeep-plan\n[{one},{one}]\n```'
+        Maker, planner = self._cli_env(planner_env, monkeypatch, block)
+        run_id = await planner.run_planning_turn(
+            "pr", work_item_id=1, message="plan it", owner_id="local", provider="grok"
+        )
+        async with Maker() as db:
+            wi = await db.get(WorkItem, 1)
+            assert len(wi.subtasks["items"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_malformed_block_is_recorded_not_swallowed(self, planner_env, monkeypatch):
+        Maker, planner = self._cli_env(
+            planner_env, monkeypatch, "```batonkeep-plan\n[{oops,,}]\n```")
+        run_id = await planner.run_planning_turn(
+            "pr", work_item_id=1, message="plan it", owner_id="local", provider="grok"
+        )
+        async with Maker() as db:
+            run = await db.get(PlannerRun, run_id)
+            assert "not valid JSON" in (run.error or "")
+
+    @pytest.mark.asyncio
+    async def test_api_lane_is_untouched_by_the_protocol(self, planner_env):
+        """The API lane keeps native tool-calling; a stray block in its prose is
+        not a second way to invoke tools."""
+        Maker, planner = planner_env
+        run_id = await planner.run_planning_turn(
+            "pr", work_item_id=1, message="plan it", owner_id="local", provider="planner-mock"
+        )
+        async with Maker() as db:
+            run = await db.get(PlannerRun, run_id)
+            assert run.proposals["subtasks_proposed"] == 2   # from the tools, not text

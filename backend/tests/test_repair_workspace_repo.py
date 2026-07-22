@@ -114,3 +114,97 @@ class TestAdoptionGate:
         result = rw.inspect(str(ws))
         assert result["state"] == "no-repo"
         assert result["action"] == "none"
+
+
+class TestBootGate:
+    """The gate runs from entrypoint.sh *before* `chown -R batond:agents`, which
+    is the step that silently makes a displaced repo look like ours. It classifies
+    by ownership because that is the only signal still present at that moment, and
+    it never blocks startup.
+    """
+
+    def _displaced(self, tmp_path, name, *, descended: bool, keep_original=True):
+        ws = _new_workspace(tmp_path / name)
+        os.rename(ws / ".git", ws / ".git_old")
+        if descended:
+            subprocess.run(["git", "clone", "-q", str(ws / ".git_old"), str(tmp_path / f"c{name}")],
+                           check=True, capture_output=True)
+            os.rename(tmp_path / f"c{name}" / ".git", ws / ".git")
+        else:
+            _git(ws, "init", "-q")
+        _git(ws, "config", "user.email", "agent@batonkeep.local")
+        _git(ws, "config", "user.name", "batonkeep")
+        (ws / "work.md").write_text("agent output")
+        _git(ws, "add", "-A")
+        _git(ws, "commit", "-q", "-m", "agent: work")
+        if not keep_original:
+            subprocess.run(["rm", "-rf", str(ws / ".git_old")], check=True)
+        return ws
+
+    def test_flags_a_disjoint_history_before_the_chown_adopts_it(self, tmp_path, monkeypatch):
+        """The finding that motivated this: the boot pass would otherwise hand a
+        foreign history to the control plane as the session's own."""
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        self._displaced(sessions, "disjoint", descended=False)
+        report = tmp_path / "repo-provenance.json"
+        flagged = rw.boot_scan(str(sessions), str(report), owner_uid=_foreign_uid())
+
+        assert len(flagged) == 1
+        assert flagged[0]["verdict"] == "disjoint"
+        assert "not an ancestor" in flagged[0]["why"]
+        assert report.exists()
+
+    def test_descended_history_is_recorded_but_not_alarming(self, tmp_path, monkeypatch):
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        self._displaced(sessions, "descended", descended=True)
+        flagged = rw.boot_scan(str(sessions), str(tmp_path / "r.json"), owner_uid=_foreign_uid())
+        assert len(flagged) == 1
+        assert flagged[0]["verdict"] == "descended"
+        assert flagged[0]["commits_ahead"] == 1
+
+    def test_missing_original_is_unprovable_not_assumed_fine(self, tmp_path, monkeypatch):
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        self._displaced(sessions, "noorig", descended=False, keep_original=False)
+        flagged = rw.boot_scan(str(sessions), str(tmp_path / "r.json"), owner_uid=_foreign_uid())
+        assert flagged[0]["verdict"] == "unprovable"
+
+    def test_healthy_tree_writes_no_report_and_clears_a_stale_one(self, tmp_path, monkeypatch):
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        _new_workspace(sessions / "healthy")
+
+        report = tmp_path / "repo-provenance.json"
+        report.write_text('{"flagged": [{"session": "resolved-since"}]}')
+        # owner_uid = us, so every repo here is "ours" and nothing is flagged.
+        assert rw.boot_scan(str(sessions), str(report), owner_uid=os.geteuid()) == []
+        # A stale report must not keep accusing a session that has been resolved.
+        assert not report.exists()
+
+    def test_the_app_reads_the_report_the_gate_writes(self, tmp_path, monkeypatch):
+        """Contract between entrypoint and app: a report nobody surfaces is not a gate."""
+        from app.sessions import workspace as ws
+
+        report = tmp_path / "repo-provenance.json"
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        self._displaced(sessions, "disjoint2", descended=False)
+        rw.boot_scan(str(sessions), str(report), owner_uid=_foreign_uid())
+
+        monkeypatch.setenv("REPO_PROVENANCE_REPORT", str(report))
+        surfaced = ws.flagged_repos()
+        assert [e["verdict"] for e in surfaced] == ["disjoint"]
+
+    def test_absent_report_is_the_normal_case(self, monkeypatch, tmp_path):
+        from app.sessions import workspace as ws
+        monkeypatch.setenv("REPO_PROVENANCE_REPORT", str(tmp_path / "nope.json"))
+        assert ws.flagged_repos() == []
+
+
+def _foreign_uid() -> int:
+    """A uid that owns nothing in the fixture, so every `.git` reads as
+    agent-written — the condition the boot gate exists to classify. Tests own
+    every file they create, so the ownership signal has to be supplied."""
+    return os.geteuid() + 1

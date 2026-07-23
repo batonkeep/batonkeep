@@ -252,6 +252,13 @@ class SubtaskSetIn(BaseModel):
     actor: str = "operator"
 
 
+class PreservedDispositionIn(BaseModel):
+    """Operator's call on a preserved-partial sub-task (P-0081, R3-D3):
+    accept (done, claimed) | discard (reopen the obligation) | reopen (redo, keep record)."""
+
+    disposition: str
+
+
 class WorkItemOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

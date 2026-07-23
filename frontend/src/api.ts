@@ -129,6 +129,13 @@ export const api = {
     req<WorkItem>(`/work-items/${itemId}/subtasks`, {
       method: "PUT", body: JSON.stringify({ items }),
     }),
+  // P-0081 (R3-D3): resolve a preserved-partial sub-task left by a cancelled turn.
+  disposePreservedPartial: (
+    itemId: number, subId: string, disposition: "accept" | "discard" | "reopen",
+  ) =>
+    req<WorkItem>(`/work-items/${itemId}/subtasks/${subId}/preserved`, {
+      method: "POST", body: JSON.stringify({ disposition }),
+    }),
   // P-0078: kick off a planning turn against a work item. Returns immediately with
   // a `running` run — the lane drives in the background; poll getPlannerRun.
   planWorkItem: (itemId: number, body: PlanRequestInput = {}) =>

@@ -177,6 +177,88 @@ class TestChecklistPure:
         assert [m["label"] for m in missing] == ["missing"]
         assert missing[0]["expected"] == "b.md"
 
+    # ── P-0081 (R3-D3) preserved partials ───────────────────────────────────────
+    def _one_confirmed(self, expected="audit/inflight.jsonl"):
+        s = st.append_proposed(None, [{"label": "capture", "expected": expected}],
+                               proposed_by="op")
+        return st.set_items(s, [{**s["items"][0], "status": "confirmed"}])
+
+    def test_mark_preserved_sets_marker_without_verifying(self):
+        s = self._one_confirmed()
+        s2, changed = st.mark_preserved(
+            s, {"audit/inflight.jsonl"}, ref="sess-1", evidence_id=42
+        )
+        item = s2["items"][0]
+        assert changed
+        # artifact exists but the item is NOT verified — cancellation is not completion
+        assert item["verified"] is False and item["done"] is False
+        assert item["preserved"]["disposition"] is None
+        assert item["preserved"]["evidence_id"] == 42 and item["preserved"]["ref"] == "sess-1"
+
+    def test_preserved_partial_is_not_outputs_missing(self):
+        s = self._one_confirmed()
+        # before preserving, it's an open obligation
+        assert [m["label"] for m in st.unverified_verifiable(s)] == ["capture"]
+        s, _ = st.mark_preserved(s, {"audit/inflight.jsonl"}, ref="sess-1")
+        # the artifact exists (preserved), so it must NOT read as missing
+        assert st.unverified_verifiable(s) == []
+
+    def test_mark_preserved_skips_already_verified(self):
+        s = self._one_confirmed()
+        s, _ = st.verify(s, {"audit/inflight.jsonl"})
+        assert s["items"][0]["verified"] is True
+        s2, changed = st.mark_preserved(s, {"audit/inflight.jsonl"}, ref="sess-1")
+        assert changed is False  # a real completion is never demoted to a partial
+
+    def test_accept_makes_it_done_but_not_verified(self):
+        s = self._one_confirmed()
+        s, _ = st.mark_preserved(s, {"audit/inflight.jsonl"}, ref="sess-1")
+        sub_id = s["items"][0]["id"]
+        s, changed = st.set_preserved_disposition(s, sub_id, "accept")
+        item = s["items"][0]
+        assert changed and item["done"] is True and item["verified"] is False
+        assert item["preserved"]["disposition"] == "accept"
+
+    def test_discard_reopens_the_obligation(self):
+        s = self._one_confirmed()
+        s, _ = st.mark_preserved(s, {"audit/inflight.jsonl"}, ref="sess-1")
+        sub_id = s["items"][0]["id"]
+        s, changed = st.set_preserved_disposition(s, sub_id, "discard")
+        assert changed and s["items"][0]["preserved"] is None
+        # the obligation is open again
+        assert [m["label"] for m in st.unverified_verifiable(s)] == ["capture"]
+
+    def test_reopen_keeps_record_but_not_done(self):
+        s = self._one_confirmed()
+        s, _ = st.mark_preserved(s, {"audit/inflight.jsonl"}, ref="sess-1")
+        sub_id = s["items"][0]["id"]
+        s, changed = st.set_preserved_disposition(s, sub_id, "reopen")
+        item = s["items"][0]
+        assert changed and item["done"] is False
+        assert item["preserved"]["disposition"] == "reopen"
+
+    def test_disposition_rejects_unknown_verb(self):
+        s = self._one_confirmed()
+        s, _ = st.mark_preserved(s, {"audit/inflight.jsonl"}, ref="sess-1")
+        with pytest.raises(ValueError):
+            st.set_preserved_disposition(s, s["items"][0]["id"], "bogus")
+
+    def test_later_real_verify_clears_preserved_marker(self):
+        s = self._one_confirmed()
+        s, _ = st.mark_preserved(s, {"audit/inflight.jsonl"}, ref="sess-1")
+        # a subsequent succeeded turn genuinely produces the artifact
+        s, changed = st.verify(s, {"audit/inflight.jsonl"})
+        item = s["items"][0]
+        assert changed and item["verified"] is True and item["preserved"] is None
+
+    def test_set_items_carries_pending_preserved_forward(self):
+        s = self._one_confirmed()
+        iid = s["items"][0]["id"]
+        s, _ = st.mark_preserved(s, {"audit/inflight.jsonl"}, ref="sess-1")
+        s2 = st.set_items(s, [{"id": iid, "label": "capture (edited)",
+                               "expected": "audit/inflight.jsonl", "status": "confirmed"}])
+        assert s2["items"][0]["preserved"]["disposition"] is None
+
 
 class TestSubtaskApi:
     def _client(self, tmp_path):
@@ -232,6 +314,53 @@ class TestSubtaskApi:
             assert body["subtask_progress"] == {
                 "total": 1, "verified": 0, "claimed": 0, "done": 0, "proposed": 0
             }
+        finally:
+            app.dependency_overrides.clear()
+            asyncio.get_event_loop().run_until_complete(engine.dispose())
+
+    def test_preserved_disposition_endpoint(self, tmp_path):
+        c, engine = self._client(tmp_path)
+        try:
+            # confirm one verifiable item
+            r = c.post("/api/work-items/1/subtasks", json={
+                "items": [{"label": "capture", "expected": "audit/inflight.jsonl"}],
+                "proposed_by": "op",
+            })
+            sub_id = r.json()["subtasks"]["items"][0]["id"]
+            c.put("/api/work-items/1/subtasks", json={
+                "items": [{"id": sub_id, "label": "capture",
+                           "expected": "audit/inflight.jsonl", "status": "confirmed"}],
+            })
+
+            # inject a preserved marker as the cancel path would, via the DB
+            async def _preserve():
+                Maker = async_sessionmaker(engine, expire_on_commit=False)
+                async with Maker() as db:
+                    wi = await db.get(WorkItem, 1)
+                    updated, _ = st.mark_preserved(
+                        wi.subtasks, {"audit/inflight.jsonl"}, ref="sess-x", evidence_id=7
+                    )
+                    wi.subtasks = updated
+                    await db.commit()
+            asyncio.get_event_loop().run_until_complete(_preserve())
+
+            # accept it → done, still not verified
+            r = c.post(f"/api/work-items/1/subtasks/{sub_id}/preserved",
+                       json={"disposition": "accept"})
+            assert r.status_code == 200
+            item = r.json()["subtasks"]["items"][0]
+            assert item["done"] is True and item["verified"] is False
+            assert item["preserved"]["disposition"] == "accept"
+
+            # a second disposition is a no-op (no pending marker) → 404
+            r = c.post(f"/api/work-items/1/subtasks/{sub_id}/preserved",
+                       json={"disposition": "discard"})
+            assert r.status_code == 404
+
+            # an unknown verb is a 400
+            r = c.post(f"/api/work-items/1/subtasks/{sub_id}/preserved",
+                       json={"disposition": "bogus"})
+            assert r.status_code == 400
         finally:
             app.dependency_overrides.clear()
             asyncio.get_event_loop().run_until_complete(engine.dispose())

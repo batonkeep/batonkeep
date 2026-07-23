@@ -66,6 +66,11 @@ def make_item(
         "verified_at": None,
         "verified_by": None,
         "proposed_by": (proposed_by or "operator")[:96],
+        # P-0081 (R3-D3): set when a cancelled turn preserved this item's expected
+        # artifact. A preserved partial is neither verified (cancellation is not
+        # completion) nor missing (the artifact exists) — it awaits an operator
+        # disposition. Shape: {"ref","at","evidence_id"?,"disposition": None|accept|discard|reopen}.
+        "preserved": None,
     }
 
 
@@ -123,6 +128,9 @@ def set_items(
             item["verified_at"] = old.get("verified_at")
             item["verified_by"] = old.get("verified_by")
             item["done"] = bool(old.get("done"))
+            # carry a pending preserved-partial marker (P-0081) across a re-confirm
+            # so a checklist edit doesn't silently drop an awaiting disposition
+            item["preserved"] = old.get("preserved")
         # an asserted item may be explicitly marked done by the operator
         if item["expected"] is None and bool(r.get("done")):
             item["done"] = True
@@ -161,6 +169,9 @@ def verify(
                 item["done"] = True
                 item["verified_at"] = _now()
                 item["verified_by"] = stamp
+                # A later turn produced the artifact for real — it is now a clean
+                # completion, no longer a preserved partial awaiting disposition.
+                item["preserved"] = None
                 changed = True
             elif not hit and item.get("verified"):
                 # the artifact disappeared (e.g. reverted) — reflect truth
@@ -191,12 +202,115 @@ def _verified_by(source: dict) -> dict[str, Any]:
 def unverified_verifiable(subtasks: dict | None) -> list[dict[str, Any]]:
     """Confirmed **verifiable** items whose artifact is not (yet) present — the
     contract's still-open obligations. Used to derive the `outputs_missing` advisory:
-    a succeeded turn/run that committed work yet left these unmet (P-0069 tail)."""
+    a succeeded turn/run that committed work yet left these unmet (P-0069 tail).
+
+    A preserved-partial item awaiting disposition (P-0081) is excluded: its artifact
+    *does* exist (a cancelled turn captured it), so calling it "missing" is the exact
+    wrong the preserved state was added to end. Once the operator discards the
+    partial, its marker clears and it returns here as an open obligation."""
     return [
         {"id": i.get("id"), "label": i.get("label"), "expected": i.get("expected")}
         for i in _items(subtasks)
-        if i.get("status") == "confirmed" and i.get("expected") and not i.get("verified")
+        if i.get("status") == "confirmed"
+        and i.get("expected")
+        and not i.get("verified")
+        and not _pending_preserved(i)
     ]
+
+
+_VALID_DISPOSITION = ("accept", "discard", "reopen")
+
+
+def _pending_preserved(item: dict) -> bool:
+    """True while a preserved partial still awaits an operator disposition."""
+    p = item.get("preserved")
+    return isinstance(p, dict) and p.get("disposition") is None
+
+
+def mark_preserved(
+    subtasks: dict | None,
+    tracked: set[str],
+    *,
+    ref: str,
+    evidence_id: int | None = None,
+) -> tuple[dict[str, Any] | None, bool]:
+    """Mark confirmed verifiable items whose expected artifact a *cancelled* turn
+    preserved (P-0081, R3-D3). Returns (updated_or_original, changed).
+
+    The artifact is present in `tracked` (the snapshot's committed tree) but the item
+    must NOT be verified — cancellation is not completion. Instead it gets a
+    `preserved` marker with `disposition=None`, which the UI renders as "preserved
+    partial — needs disposition" and which keeps the item out of `outputs_missing`.
+    Skips items already verified (a real completion) or already carrying a pending
+    marker (idempotent across repeated snapshots)."""
+    items = _items(subtasks)
+    if not items:
+        return subtasks, False
+    changed = False
+    out: list[dict] = []
+    for i in items:
+        item = dict(i)
+        exp = item.get("expected")
+        if (
+            item.get("status") == "confirmed"
+            and exp
+            and not item.get("verified")
+            and not _pending_preserved(item)
+            and any(fnmatch.fnmatch(p, exp) or p == exp for p in tracked)
+        ):
+            item["preserved"] = {
+                "ref": str(ref)[:96],
+                "at": _now(),
+                "evidence_id": evidence_id,
+                "disposition": None,
+            }
+            changed = True
+        out.append(item)
+    if not changed:
+        return subtasks, False
+    return {"v": SUBTASKS_VERSION, "items": out}, True
+
+
+def set_preserved_disposition(
+    subtasks: dict | None, item_id: str, disposition: str
+) -> tuple[dict[str, Any] | None, bool]:
+    """Apply an operator disposition to a preserved partial (P-0081, R3-D3).
+
+    - **accept** — the partial artifact is good enough: the item becomes `done`
+      (claimed, artifact-backed) but stays `verified=False`, because it was produced
+      by a cancelled turn, not a clean completion. The marker is kept as provenance.
+    - **discard** — the partial is not acceptable: the marker is cleared and the item
+      returns to an open, unmet obligation (it reappears in `outputs_missing`).
+    - **reopen** — the partial is acknowledged but the work is to be redone: the item
+      stays not-done, the marker is kept (disposition recorded) so the history shows
+      a partial existed and was deliberately carried forward.
+
+    Returns (updated_or_original, changed). No-op if the item has no pending marker."""
+    if disposition not in _VALID_DISPOSITION:
+        raise ValueError(f"disposition must be one of {_VALID_DISPOSITION}")
+    items = _items(subtasks)
+    out: list[dict] = []
+    changed = False
+    for i in items:
+        item = dict(i)
+        if item.get("id") == item_id and _pending_preserved(item):
+            marker = dict(item["preserved"])
+            marker["disposition"] = disposition
+            marker["disposed_at"] = _now()
+            if disposition == "accept":
+                item["done"] = True
+                item["preserved"] = marker
+            elif disposition == "reopen":
+                item["done"] = False
+                item["preserved"] = marker
+            else:  # discard — disown the partial entirely
+                item["done"] = False
+                item["preserved"] = None
+            changed = True
+        out.append(item)
+    if not changed:
+        return subtasks, False
+    return {"v": SUBTASKS_VERSION, "items": out}, True
 
 
 def progress(subtasks: dict | None) -> dict[str, int]:

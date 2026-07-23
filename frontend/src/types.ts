@@ -727,6 +727,15 @@ export interface SubtaskItem {
   // unique (session id / run:<id>); `seq` alone collides across same-WI sessions.
   verified_by: { lane: string; ref: string; seq?: number; at: string } | null;
   proposed_by: string;
+  // P-0081 (R3-D3): set when a cancelled turn preserved this item's expected
+  // artifact. Neither verified nor missing — awaits an operator disposition.
+  preserved?: {
+    ref: string;
+    at: string;
+    evidence_id?: number | null;
+    disposition: null | "accept" | "discard" | "reopen";
+    disposed_at?: string;
+  } | null;
 }
 
 // P-0069: workspace-truth output advisories on a turn/run (all optional).

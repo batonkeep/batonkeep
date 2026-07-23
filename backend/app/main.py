@@ -106,6 +106,7 @@ from app.schemas import (
     PlannerSettingsIn,
     PlannerSettingsOut,
     PlanRequestIn,
+    PreservedDispositionIn,
     ProjectCreate,
     ProjectOut,
     ProviderCatalogOut,
@@ -766,6 +767,43 @@ async def set_subtasks(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await db.commit()
+    await db.refresh(work_item)
+    return WorkItemOut.model_validate(work_item)
+
+
+@app.post(
+    "/api/work-items/{item_id}/subtasks/{sub_id}/preserved",
+    response_model=WorkItemOut,
+    tags=["projects"],
+)
+async def dispose_preserved_partial(
+    item_id: int,
+    sub_id: str,
+    body: PreservedDispositionIn,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """Resolve a preserved-partial sub-task (P-0081, R3-D3): a cancelled turn kept
+    its expected artifact, so it is neither verified nor missing until the operator
+    decides. `accept` marks it done (claimed, not verified — it came from a cancelled
+    turn); `discard` disowns the partial and reopens the obligation; `reopen` keeps
+    the partial on record but leaves the work to be redone."""
+    from app import subtasks as st
+
+    work_item = await _get_owned_work_item(db, owner_id, item_id)
+    try:
+        updated, changed = st.set_preserved_disposition(
+            work_item.subtasks, sub_id, body.disposition
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not changed:
+        raise HTTPException(
+            status_code=404,
+            detail="no preserved partial awaiting disposition for that sub-task",
+        )
+    work_item.subtasks = updated
     await db.commit()
     await db.refresh(work_item)
     return WorkItemOut.model_validate(work_item)

@@ -2063,6 +2063,16 @@ export default function SessionView({
                   {t.changed_files && t.changed_files.length > 0 && (
                     <ArtifactList files={t.changed_files} onOpen={viewFile} />
                   )}
+                  {t.output_flags?.environments &&
+                    t.output_flags.environments.length > 0 && (
+                    <div className="mx-1 text-[11px] text-muted">
+                      also built{" "}
+                      <span className="font-mono">
+                        {t.output_flags.environments.join(", ")}
+                      </span>{" "}
+                      (dependencies — kept out of the file changes)
+                    </div>
+                  )}
                   {t.output_flags?.unbacked && t.output_flags.unbacked.length > 0 && (
                     <div className="mx-1 rounded border border-edge bg-edge/10 px-2 py-1.5 text-xs text-defer">
                       <span className="font-medium">

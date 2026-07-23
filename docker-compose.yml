@@ -69,7 +69,11 @@ services:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost/"]
+      # Probe the bound address, not `localhost` (P-0081, R3-D5): nginx listens on
+      # 127.0.0.1:80 (IPv4), but the container's /etc/hosts also maps `localhost` to
+      # ::1, so `wget http://localhost/` hit IPv6 and reported the container
+      # `unhealthy` through 260+ probes while it served 200s the whole time.
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/"]
       interval: 30s
       timeout: 5s
       retries: 3

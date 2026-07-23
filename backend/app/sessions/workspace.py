@@ -255,11 +255,64 @@ async def create_workspace(
         # Local identity so commits work without global git config.
         await _git(root, "config", "user.email", "agent@batonkeep.local")
         await _git(root, "config", "user.name", "batonkeep")
+        _seed_git_exclude(root)  # keep toolchain trees out of every commit (P-0081)
         await _git(root, "add", "-A")
         await _git(root, "commit", "-q", "-m", "session: initialise workspace")
     else:
+        _seed_git_exclude(root)
         await ensure_repo_shared(root)
     return root
+
+
+def _seed_git_exclude(workspace: str) -> None:
+    """Write `_PRUNE_DIRS` into `.git/info/exclude` so `git add -A` never stages a
+    dependency install or tool cache (P-0081, R3-D4).
+
+    A cold-continuity turn produced 867 changed-file rows for three real outputs —
+    a `.venv` the agent built, staged whole because nothing excluded it. This is
+    the repo-local, agent-invisible exclusion: unlike a workspace `.gitignore` it is
+    not a file the agent can clobber or that pollutes the deliverable, and unlike
+    the listing's in-memory prune (`_PRUNE_DIRS` at read time) it stops the rows at
+    the commit boundary, where the diff/version surface is actually built. The fact
+    that an environment was created is not lost — `present_toolchain_dirs()` records
+    it as one line per tree instead of one row per file. Best-effort: a repo whose
+    `.git` we cannot write is a P-0079 provenance problem surfaced elsewhere.
+    """
+    info_dir = os.path.join(workspace, ".git", "info")
+    patterns = sorted(d for d in _PRUNE_DIRS if d != ".git")
+    body = (
+        "# Seeded by Batonkeep (P-0081): dependency installs and tool caches are\n"
+        "# kept out of turn diffs. Their creation is recorded separately, per-tree.\n"
+        + "".join(f"{name}/\n" for name in patterns)
+    )
+    try:
+        with group_writable():
+            os.makedirs(info_dir, exist_ok=True)
+            with open(os.path.join(info_dir, "exclude"), "w", encoding="utf-8") as f:
+                f.write(body)
+    except OSError as exc:  # dev boxes, foreign .git, odd mounts — non-fatal
+        logger.debug("[workspace] seed .git/info/exclude %s skipped: %s", workspace, exc)
+
+
+def present_toolchain_dirs(workspace: str) -> list[str]:
+    """Names from `_PRUNE_DIRS` (excluding `.git`) that exist in the workspace — the
+    signal `_seed_git_exclude` deliberately drops from the diff (P-0081, R3-D4).
+
+    Recorded on a version so "this turn also built a `.venv`" survives even though
+    its 800 files do not appear as changes. Cheap: prunes into found trees, so a
+    populated `node_modules` is one stat, not a walk of its contents.
+    """
+    root = os.path.abspath(workspace)
+    found: set[str] = set()
+    excludable = _PRUNE_DIRS - {".git"}
+    for dirpath, dirnames, _ in os.walk(root):
+        if ".git" in dirnames:
+            dirnames.remove(".git")
+        hit = [d for d in dirnames if d in excludable]
+        found.update(hit)
+        # don't descend into a matched tree — its name is already recorded
+        dirnames[:] = [d for d in dirnames if d not in excludable]
+    return sorted(found)
 
 
 async def ensure_repo_shared(workspace: str) -> bool:
@@ -648,6 +701,7 @@ async def commit_turn(
         "diffstat": diffstat,
         "diff": diff,
         "files": files,
+        "environments": present_toolchain_dirs(workspace),
     }
 
 
@@ -677,6 +731,7 @@ async def commit_snapshot(workspace: str, *, message: str) -> dict | None:
         "diffstat": await _commit_diffstat(workspace, sha),
         "diff": await _commit_diff(workspace, sha),
         "files": await commit_changed_files(workspace, sha),
+        "environments": present_toolchain_dirs(workspace),
     }
 
 

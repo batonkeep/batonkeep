@@ -315,6 +315,7 @@ async def _snapshot_interrupted_turn(
             "short": version["short"] if version else None,
             "diffstat": version["diffstat"] if version else None,
             "files": version.get("files", []) if version else [],
+            "environments": version.get("environments", []) if version else [],
             "last_file_mtime": last_mtime,
         },
     )
@@ -681,7 +682,8 @@ async def run_turn_background(
             phase="version",
             data={"commit": version["commit"], "short": version["short"],
                   "diffstat": version["diffstat"], "diff": version["diff"],
-                  "files": version.get("files", [])},
+                  "files": version.get("files", []),
+                  "environments": version.get("environments", [])},
         )
 
     async with AsyncSessionLocal() as db:
@@ -765,8 +767,18 @@ async def run_turn_background(
                             )
                 except Exception:
                     logger.exception("[session] turn %d subtask verify failed", turn_id)
+            # P-0081 (R3-D4): record the neutral fact that a toolchain tree was
+            # built. `.git/info/exclude` keeps its files out of the diff (867 rows →
+            # 0), so this one line per tree is the only durable trace that an
+            # environment was created — a note, not an advisory (no ⚠).
+            if version is not None and version.get("environments"):
+                flags = dict(output_flags or {})
+                flags.setdefault("v", 1)
+                flags["environments"] = version["environments"]
+                output_flags = flags
             # P-0069 item 6: durable free-default output flag + outputs_missing
-            # (NULL when clean). Written after the contract check so both land together.
+            # (NULL when clean of advisories). Written after the contract check so
+            # both land together; `environments` above is neutral, not an advisory.
             if _turn_for_flags is not None:
                 _turn_for_flags.output_flags = output_flags
             # Substrate evidence: a turn that changed files gets its diff indexed
@@ -877,7 +889,8 @@ async def capture_terminal_snapshot(
         phase="version",
         data={"commit": version["commit"], "short": version["short"],
               "diffstat": version["diffstat"], "diff": version["diff"],
-              "files": version["files"]},
+              "files": version["files"],
+              "environments": version.get("environments", [])},
     )
     return turn_id
 

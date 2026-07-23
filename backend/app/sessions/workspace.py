@@ -24,6 +24,7 @@ import contextlib
 import json
 import logging
 import os
+from collections.abc import Iterable
 
 from app.config import get_settings
 
@@ -264,34 +265,59 @@ async def create_workspace(
     return root
 
 
+#: Header line that marks Batonkeep-managed patterns in `.git/info/exclude`.
+_EXCLUDE_HEADER = "# Batonkeep-managed exclusions (control-plane, agent-invisible)."
+
+
+def add_git_excludes(workspace: str, patterns: Iterable[str]) -> None:
+    """Idempotently add `patterns` to `.git/info/exclude` — the repo-local,
+    agent-invisible exclusion that stops `git add -A` from staging them.
+
+    Two callers share this file (`_seed_git_exclude` for toolchain trees, P-0081;
+    the projection-ignore seam for `context/`+ledger, P-0083), so it **merges**
+    rather than truncates — a second writer must never wipe the first's lines. Why
+    `.git/info/exclude` and not a workspace `.gitignore`: it is not a tracked file,
+    so it can't be committed as a phantom deliverable (the P-0083 masquerade), the
+    agent can't clobber it, and it never pollutes the published tree. Best-effort:
+    a repo whose `.git` we cannot write is a P-0079 provenance problem surfaced
+    elsewhere.
+    """
+    wanted = [p for p in patterns if p]
+    if not wanted:
+        return
+    exclude_path = os.path.join(workspace, ".git", "info", "exclude")
+    try:
+        with group_writable():
+            os.makedirs(os.path.dirname(exclude_path), exist_ok=True)
+            existing = ""
+            if os.path.isfile(exclude_path):
+                with open(exclude_path, encoding="utf-8") as f:
+                    existing = f.read()
+            have = {ln.strip() for ln in existing.splitlines()}
+            missing = [p for p in wanted if p not in have]
+            if not missing:
+                return
+            with open(exclude_path, "a", encoding="utf-8") as f:
+                if not existing:
+                    f.write(_EXCLUDE_HEADER + "\n")
+                elif not existing.endswith("\n"):
+                    f.write("\n")
+                f.write("\n".join(missing) + "\n")
+    except OSError as exc:  # dev boxes, foreign .git, odd mounts — non-fatal
+        logger.debug("[workspace] add .git/info/exclude %s skipped: %s", workspace, exc)
+
+
 def _seed_git_exclude(workspace: str) -> None:
-    """Write `_PRUNE_DIRS` into `.git/info/exclude` so `git add -A` never stages a
+    """Seed `_PRUNE_DIRS` into `.git/info/exclude` so `git add -A` never stages a
     dependency install or tool cache (P-0081, R3-D4).
 
     A cold-continuity turn produced 867 changed-file rows for three real outputs —
-    a `.venv` the agent built, staged whole because nothing excluded it. This is
-    the repo-local, agent-invisible exclusion: unlike a workspace `.gitignore` it is
-    not a file the agent can clobber or that pollutes the deliverable, and unlike
-    the listing's in-memory prune (`_PRUNE_DIRS` at read time) it stops the rows at
-    the commit boundary, where the diff/version surface is actually built. The fact
-    that an environment was created is not lost — `present_toolchain_dirs()` records
-    it as one line per tree instead of one row per file. Best-effort: a repo whose
-    `.git` we cannot write is a P-0079 provenance problem surfaced elsewhere.
+    a `.venv` the agent built, staged whole because nothing excluded it. Stops the
+    rows at the commit boundary, where the diff/version surface is actually built;
+    the fact an environment was created is not lost — `present_toolchain_dirs()`
+    records it as one line per tree instead of one row per file.
     """
-    info_dir = os.path.join(workspace, ".git", "info")
-    patterns = sorted(d for d in _PRUNE_DIRS if d != ".git")
-    body = (
-        "# Seeded by Batonkeep (P-0081): dependency installs and tool caches are\n"
-        "# kept out of turn diffs. Their creation is recorded separately, per-tree.\n"
-        + "".join(f"{name}/\n" for name in patterns)
-    )
-    try:
-        with group_writable():
-            os.makedirs(info_dir, exist_ok=True)
-            with open(os.path.join(info_dir, "exclude"), "w", encoding="utf-8") as f:
-                f.write(body)
-    except OSError as exc:  # dev boxes, foreign .git, odd mounts — non-fatal
-        logger.debug("[workspace] seed .git/info/exclude %s skipped: %s", workspace, exc)
+    add_git_excludes(workspace, (f"{d}/" for d in sorted(_PRUNE_DIRS) if d != ".git"))
 
 
 def present_toolchain_dirs(workspace: str) -> list[str]:

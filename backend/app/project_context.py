@@ -57,7 +57,8 @@ MANIFEST_API_VERSION = "batonkeep.dev/v1alpha1"
 MANIFEST_KIND = "Project"
 
 # Workspace paths the projection owns. In git-versioned session workspaces they
-# are appended to .gitignore so per-turn commits never track projected context.
+# go into `.git/info/exclude` (control-plane, never a tracked file — P-0083) so
+# per-turn commits never track projected context nor commit the exclude itself.
 _IGNORE_ENTRIES = (f"{CONTEXT_DIRNAME}/", LEDGER_FILENAME)
 
 
@@ -458,26 +459,22 @@ def _materialize(src_path: str, dest_path: str) -> None:
         shutil.copy2(src_path, dest_path)
 
 
-def _ensure_gitignored(workdir: str) -> None:
-    """In a git-versioned workspace (build sessions), keep projected context and
-    the ledger out of per-turn commits. Idempotent append; non-git dirs skip."""
+def _ensure_projection_excluded(workdir: str) -> None:
+    """Keep projected context (`context/`) and the ledger out of per-turn commits.
+
+    Writes to `.git/info/exclude`, **not** a workspace `.gitignore` (P-0083). The
+    old tracked-`.gitignore` approach caused the R4 masquerade: `create_workspace`
+    made the initial commit before this ran, so the first execution wrote a fresh
+    `.gitignore` that `git add -A` then committed as the turn's *only* change — a
+    provider turn whose work escaped to CLI scratch still produced a non-empty
+    version and a packageable diff containing zero deliverables. A control-plane
+    exclude is never a tracked file, so it can never masquerade as provider output.
+    Idempotent; non-git dirs skip."""
     if not os.path.isdir(os.path.join(workdir, ".git")):
         return
-    gi_path = os.path.join(workdir, ".gitignore")
-    try:
-        existing = ""
-        if os.path.isfile(gi_path):
-            with open(gi_path, encoding="utf-8") as f:
-                existing = f.read()
-        lines = {ln.strip() for ln in existing.splitlines()}
-        missing = [e for e in _IGNORE_ENTRIES if e not in lines]
-        if missing:
-            with open(gi_path, "a", encoding="utf-8") as f:
-                if existing and not existing.endswith("\n"):
-                    f.write("\n")
-                f.write("\n".join(missing) + "\n")
-    except OSError as exc:  # best-effort: never block a turn on gitignore upkeep
-        logger.warning("could not update workspace .gitignore: %s", exc)
+    from app.sessions import workspace as ws
+
+    ws.add_git_excludes(workdir, _IGNORE_ENTRIES)
 
 
 async def project_for_execution(
@@ -685,7 +682,7 @@ async def project_for_execution(
     except OSError as exc:
         logger.warning("could not write %s: %s", LEDGER_FILENAME, exc)
 
-    _ensure_gitignored(workdir)
+    _ensure_projection_excluded(workdir)
 
     receipt = ContextReceipt(
         owner_id=owner_id,

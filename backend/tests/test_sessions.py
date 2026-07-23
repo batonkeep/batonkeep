@@ -52,6 +52,39 @@ class _ForeignArtifactExecutor(Executor):
                         data={"result": result, "usage": usage.__dict__})
 
 
+class _EscapedWorkspaceExecutor(Executor):
+    """Claims file deliverables but writes NOTHING to the assigned workspace — the
+    R4 (P-0083) shape: agy 1.1.5 wrote its three-file contract into its own CLI
+    scratch project, so the session workspace stayed empty while the turn reported
+    success. Distinct from the foreign-artifact case, which writes a real file."""
+
+    name = "escaped"
+    tier = "mock"
+
+    def __init__(self, name: str = "escaped") -> None:
+        self.name = name
+        self.tier = "mock"
+
+    @property
+    def kind(self) -> str:
+        return "mock"
+
+    def is_healthy(self) -> bool:
+        return True
+
+    async def run_stream(self, prompt, *, workdir, tools_enabled=True,
+                         max_rounds=10, budget_usd=1.0, extra=None):
+        yield ExecEvent(kind=EventKind.phase, phase="running", message="[escaped] running")
+        # deliberately writes nothing to workdir
+        usage = Usage(tokens_in=1, tokens_out=1, cost_usd=0.0)
+        result = ExecResult(
+            text="Done. Wrote file:///data/sessions/OTHER/canary/agy-provenance.txt",
+            usage=usage, provider=self.name, model="escaped-v1",
+        )
+        yield ExecEvent(kind=EventKind.result, message="[escaped] done",
+                        data={"result": result, "usage": usage.__dict__})
+
+
 class _WriteThenHangExecutor(Executor):
     """Writes a workspace file, emits a file_write tool event, then hangs — so a
     user interrupt or the session-turn timeout fires while a real, uncommitted diff
@@ -595,6 +628,31 @@ class TestOutputFlags:
             turn = await db.get(SessionTurn, turn_id)
             assert turn.status == "succeeded"
             assert turn.output_flags is None
+
+    @pytest.mark.asyncio
+    async def test_escaped_workspace_is_flagged(self, session_env):
+        """P-0083 (R4): the provider claimed a file output but the assigned
+        workspace received nothing (no committed version) — the work escaped to
+        shared CLI state. `escaped_workspace` is set and a loud event fires."""
+        Maker, ws, orch, broadcasts = session_env
+        await _make_session(Maker, ws)
+        orch.get_executor = lambda name: _EscapedWorkspaceExecutor(name=name)
+
+        from app.models import SessionTurn
+        turn_id = await orch.run_turn("s1", "produce the canary", owner_id="local")
+        async with Maker() as db:
+            turn = await db.get(SessionTurn, turn_id)
+            assert turn.status == "succeeded"        # the run itself ran fine
+            assert turn.commit_sha is None           # but nothing was committed
+            assert turn.output_flags is not None
+            assert turn.output_flags.get("escaped_workspace") is True
+            # the claim is still recorded as unbacked
+            assert turn.output_flags["unbacked"] == [
+                "file:///data/sessions/OTHER/canary/agy-provenance.txt"
+            ]
+        assert any(
+            (b.get("event") or {}).get("phase") == "workspace_escape" for b in broadcasts
+        )
 
 
 class TestSubtaskVerification:

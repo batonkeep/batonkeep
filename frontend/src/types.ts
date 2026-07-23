@@ -746,6 +746,9 @@ export interface OutputFlags {
   // P-0081 (R3-D4): toolchain trees (.venv, node_modules) this turn built — kept
   // out of the diff, recorded here as a neutral fact (not an advisory).
   environments?: string[];
+  // P-0083 (R4): the provider claimed file outputs but the assigned workspace
+  // received none — the work escaped to shared CLI state. A strong advisory.
+  escaped_workspace?: boolean;
 }
 
 export interface SubtaskProgress {

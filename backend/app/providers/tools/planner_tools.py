@@ -209,6 +209,11 @@ def _ctx(context: dict | None) -> tuple[str, int | None]:
     return owner_id, work_item_id
 
 
+def _run_id(context: dict | None) -> int | None:
+    """The planning turn this tool call belongs to, for per-turn attribution."""
+    return (context or {}).get("planner_run_id")
+
+
 def _project_ctx(context: dict | None) -> tuple[str, str | None, int | None]:
     """Owner + project + planner-run scope for a project-level planning tool call."""
     ctx = context or {}
@@ -222,6 +227,30 @@ def _project_ctx(context: dict | None) -> tuple[str, str | None, int | None]:
 def _clean_risk(value) -> str:
     risk = (value or "").strip().lower() if isinstance(value, str) else ""
     return risk if risk in _VALID_RISKS else "low"
+
+
+async def _record_produced(db, run_id: int | None, owner_id: str, tool: str) -> None:
+    """Note that `tool` actually produced something on this turn (P-0080).
+
+    The turn's completion contract is read off this list, so it must record what
+    *this turn* did — not what the work item happens to hold. The roll-up in
+    `_finish` reads WorkItem state (`subtasks_proposed`, `next_action`), which a
+    *previous* planning turn or the operator may have filled in; a turn that did
+    nothing would inherit it and look like it had met its contract.
+
+    Best-effort, like the sibling attribution helper: a planning turn is still
+    valid if the note cannot be attributed, it just cannot claim the contract.
+    """
+    if not run_id:
+        return
+    run = await db.get(PlannerRun, run_id)
+    if run is None or run.owner_id != owner_id:
+        return
+    produced = list((run.proposals or {}).get("produced") or [])
+    if tool not in produced:
+        produced.append(tool)
+    # Reassign (never mutate in place) so the JSON column change is tracked.
+    run.proposals = {**(run.proposals or {}), "produced": produced}
 
 
 async def _record_proposed_items(db, run_id: int | None, owner_id: str, ids: list[int]) -> None:
@@ -259,6 +288,7 @@ async def propose_subtasks(items: list[dict], *, context: dict | None = None) ->
             wi.subtasks = st.append_proposed(wi.subtasks, raw, proposed_by="planner")
         except ValueError as exc:
             return f"[propose_subtasks error] {exc}"
+        await _record_produced(db, _run_id(context), owner_id, "propose_subtasks")
         await db.commit()
         proposed = [i["label"] for i in st._items(wi.subtasks) if i.get("status") == "proposed"]
     return (
@@ -281,6 +311,7 @@ async def set_next_action(next_action: str, *, context: dict | None = None) -> s
         if wi is None or wi.owner_id != owner_id:
             return "[set_next_action error] work item not found"
         wi.next_action = text
+        await _record_produced(db, _run_id(context), owner_id, "set_next_action")
         await db.commit()
     return f"[set_next_action] next action set: {text}"
 
@@ -325,6 +356,7 @@ async def decompose(items: list[dict], *, context: dict | None = None) -> str:
             titles.append(title)
         await db.flush()
         await _record_proposed_items(db, run_id, owner_id, [c.id for c in children])
+        await _record_produced(db, run_id, owner_id, "decompose")
         await db.commit()
     return (
         f"[decompose] proposed {len(titles)} child work item(s) under #{work_item_id}, "
@@ -374,6 +406,7 @@ async def triage_signal(
         await db.flush()
         item_id = item.id
         await _record_proposed_items(db, run_id, owner_id, [item_id])
+        await _record_produced(db, run_id, owner_id, "triage_signal")
         await db.commit()
     return (
         f"[triage_signal] proposed work item #{item_id} {clean_title!r} "
@@ -434,6 +467,7 @@ async def summarize_project(
                 "notes": (notes or "").strip()[:2000] or None,
             },
         }
+        await _record_produced(db, run_id, owner_id, "summarize_project")
         await db.commit()
     dropped = len(focus or []) + len(stalled or []) - len(focus_ids) - len(stalled_ids)
     tail = f" ({dropped} unknown work item id(s) ignored)" if dropped > 0 else ""

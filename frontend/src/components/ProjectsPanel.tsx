@@ -62,6 +62,10 @@ const RISK_TONE: Record<string, Tone> = { low: "neutral", medium: "warn", high: 
 const PLANNER_RUN_TONE: Record<string, Tone> = {
   running: "live",
   succeeded: "ok",
+  // P-0080: the turn ran cleanly and produced no structural output. Not a success
+  // (planning exists to produce structure) and not a failure (nothing went wrong),
+  // so it gets its own tone rather than being collapsed into either.
+  no_proposals: "warn",
   failed: "bad",
 };
 
@@ -973,6 +977,12 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
               )}
               {projectRun.status === "failed" && (
                 <p className="mt-2 text-xs text-bad">{projectRun.error ?? "Planning turn failed."}</p>
+              )}
+              {projectRun.status === "no_proposals" && (
+                <p className="mt-2 text-xs text-muted">
+                  Ran, but recorded nothing — no digest and no proposed work. The prose
+                  below is the planner's reply; it is not a record of any decision.
+                </p>
               )}
               {projectRun.status === "succeeded" && (
                 <div className="mt-2 space-y-1 text-xs">

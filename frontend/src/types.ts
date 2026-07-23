@@ -779,7 +779,10 @@ export interface PlannerRun {
   id: number;
   project_id: string;
   work_item_id: number | null;
-  status: "running" | "succeeded" | "failed";
+  // `no_proposals` (P-0080): the turn ran cleanly and recorded nothing structural.
+  // Distinct from `succeeded` — a planning turn exists to produce structure, so
+  // returning only prose is not success — and from `failed`, where something broke.
+  status: "running" | "succeeded" | "no_proposals" | "failed";
   provider: string | null;
   model: string | null;
   // Sovereignty fence pinned this turn to a local model (confidential project).

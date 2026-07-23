@@ -1060,7 +1060,8 @@ class TestPlanLaneParity:
     @pytest.mark.asyncio
     async def test_prose_without_a_block_proposes_nothing(self, planner_env, monkeypatch):
         """R3 run #5 exactly: a credible plan in prose, nothing recorded. It must
-        stay visible and must not invent structure that was never committed to."""
+        stay visible, must not invent structure that was never committed to — and
+        since P-0080, must not be filed as `succeeded` either."""
         Maker, planner = self._cli_env(
             planner_env, monkeypatch,
             "1. Fix the planner. 2. Rerun the regression. 3. Audit after.",
@@ -1070,8 +1071,9 @@ class TestPlanLaneParity:
         )
         async with Maker() as db:
             run = await db.get(PlannerRun, run_id)
-            assert run.proposals.get("subtasks_proposed") in (0, None)
-            assert "Fix the planner" in run.response
+            assert run.status == "no_proposals"
+            assert not (run.proposals or {}).get("produced")
+            assert "Fix the planner" in run.response      # prose kept
             wi = await db.get(WorkItem, 1)
             assert not (wi.subtasks or {}).get("items")
 
@@ -1096,7 +1098,7 @@ class TestPlanLaneParity:
         one = '{"tool": "propose_subtasks", "args": {"items": [{"label": "a"}]}}'
         block = f'```batonkeep-plan\n[{one},{one}]\n```'
         Maker, planner = self._cli_env(planner_env, monkeypatch, block)
-        run_id = await planner.run_planning_turn(
+        await planner.run_planning_turn(
             "pr", work_item_id=1, message="plan it", owner_id="local", provider="grok"
         )
         async with Maker() as db:
@@ -1125,3 +1127,157 @@ class TestPlanLaneParity:
         async with Maker() as db:
             run = await db.get(PlannerRun, run_id)
             assert run.proposals["subtasks_proposed"] == 2   # from the tools, not text
+
+
+# ── completion contract (P-0080) ─────────────────────────────────────────────
+
+class _SilentPlanningExecutor(Executor):
+    """A planner that talks and calls nothing — R3 run #5's shape on the API lane."""
+
+    name = "silent-planner-mock"
+    tier = "mock"
+
+    def __init__(self, name: str = "silent-planner-mock") -> None:
+        self.name = name
+        self.tier = "mock"
+
+    @property
+    def kind(self) -> str:
+        return "mock"
+
+    def is_healthy(self) -> bool:
+        return True
+
+    async def run_stream(self, prompt, *, workdir, tools_enabled=True,
+                         max_rounds=10, budget_usd=1.0, extra=None):
+        usage = Usage(tokens_in=4, tokens_out=2, cost_usd=0.002)
+        result = ExecResult(text="Here is a three-step plan, in prose.", usage=usage,
+                            provider=self.name, model="planner-v1")
+        yield ExecEvent(kind=EventKind.result, message="[planner] done",
+                        data={"result": result, "usage": usage.__dict__})
+
+
+class TestCompletionContract:
+    """`succeeded` must mean the turn met its contract, not that text came back.
+
+    Before this, `_finish` set `succeeded` whenever the provider returned a result.
+    Every planner run on the founder's instance was recorded that way while
+    producing no structural output at all.
+    """
+
+    @pytest.mark.asyncio
+    async def test_prose_only_turn_is_no_proposals_not_succeeded(self, planner_env, monkeypatch):
+        Maker, planner = planner_env
+        monkeypatch.setattr(planner, "get_executor",
+                            lambda name: _SilentPlanningExecutor(name=name))
+        run_id = await planner.run_planning_turn(
+            "pr", work_item_id=1, message="plan it", owner_id="local", provider="silent-mock"
+        )
+        async with Maker() as db:
+            run = await db.get(PlannerRun, run_id)
+            assert run.status == "no_proposals"
+            # Not an error state: nothing went wrong, it just recorded nothing.
+            assert not run.error
+            assert "three-step plan" in run.response
+
+    @pytest.mark.asyncio
+    async def test_a_turn_that_used_its_tools_still_succeeds(self, planner_env):
+        Maker, planner = planner_env
+        run_id = await planner.run_planning_turn(
+            "pr", work_item_id=1, message="plan it", owner_id="local", provider="planner-mock"
+        )
+        async with Maker() as db:
+            run = await db.get(PlannerRun, run_id)
+            assert run.status == "succeeded"
+            assert set(run.proposals["produced"]) == {"propose_subtasks", "set_next_action"}
+
+    @pytest.mark.asyncio
+    async def test_project_scope_digest_alone_satisfies_the_contract(
+        self, planner_env, monkeypatch
+    ):
+        """'Nothing to propose' is sometimes the correct answer. A project turn that
+        records an honest digest and proposes no new work has done its job — the
+        contract is "produce something structural", not "produce work"."""
+        Maker, planner = planner_env
+        monkeypatch.setattr(
+            planner, "get_executor",
+            lambda name: _ProjectPlanningExecutor(name=name, triage=None, summary={
+                "headline": "all healthy, nothing needs doing", "focus": [], "stalled": [],
+            }),
+        )
+        run_id = await planner.run_planning_turn(
+            "pr", message="read the ledger", owner_id="local", provider="project-mock"
+        )
+        async with Maker() as db:
+            run = await db.get(PlannerRun, run_id)
+            assert run.status == "succeeded"
+            assert "summarize_project" in run.proposals["produced"]
+
+    @pytest.mark.asyncio
+    async def test_contract_is_not_satisfied_by_an_earlier_turns_work(
+        self, planner_env, monkeypatch
+    ):
+        """The trap per-turn attribution exists to avoid.
+
+        The `_finish` roll-up reads WorkItem state — `subtasks_proposed` counts every
+        item awaiting confirmation, and `next_action` persists. A contract read off
+        those would let a turn that did nothing inherit the previous turn's work and
+        be filed `succeeded`.
+        """
+        Maker, planner = planner_env
+        # Turn 1 does real work.
+        first = await planner.run_planning_turn(
+            "pr", work_item_id=1, message="plan it", owner_id="local", provider="planner-mock"
+        )
+        # Turn 2 says nothing, against a work item now full of proposed sub-tasks.
+        monkeypatch.setattr(planner, "get_executor",
+                            lambda name: _SilentPlanningExecutor(name=name))
+        second = await planner.run_planning_turn(
+            "pr", work_item_id=1, message="again", owner_id="local", provider="silent-mock"
+        )
+        async with Maker() as db:
+            assert (await db.get(PlannerRun, first)).status == "succeeded"
+            wi = await db.get(WorkItem, 1)
+            assert len(wi.subtasks["items"]) == 2      # state the second turn inherits
+            assert wi.next_action                       # …and a next_action it did not set
+            run2 = await db.get(PlannerRun, second)
+            assert run2.status == "no_proposals"
+
+    @pytest.mark.asyncio
+    async def test_failure_still_outranks_the_contract(self, planner_env, monkeypatch):
+        """A provider error is a failure, not an empty plan — the two must not merge."""
+        Maker, planner = planner_env
+
+        class _Boom(_SilentPlanningExecutor):
+            async def run_stream(self, prompt, *, workdir, tools_enabled=True,
+                                 max_rounds=10, budget_usd=1.0, extra=None):
+                yield ExecEvent(kind=EventKind.error, message="provider exploded")
+
+        monkeypatch.setattr(planner, "get_executor", lambda name: _Boom(name=name))
+        run_id = await planner.run_planning_turn(
+            "pr", work_item_id=1, message="plan it", owner_id="local", provider="boom"
+        )
+        async with Maker() as db:
+            run = await db.get(PlannerRun, run_id)
+            assert run.status == "failed"
+            assert "exploded" in (run.error or "")
+
+    @pytest.mark.asyncio
+    async def test_cli_lane_block_satisfies_the_same_contract(self, planner_env, monkeypatch):
+        """Parity: the plan lane meets the contract through the P-0082 transport."""
+        Maker, planner = planner_env
+        monkeypatch.setattr(planner, "_uses_protocol", lambda provider_id: True)
+        monkeypatch.setattr(
+            planner, "get_executor",
+            lambda name: _TextOnlyPlanningExecutor(name=name, text=(
+                '```batonkeep-plan\n'
+                '[{"tool": "set_next_action", "args": {"next_action": "start"}}]\n```'
+            )),
+        )
+        run_id = await planner.run_planning_turn(
+            "pr", work_item_id=1, message="plan it", owner_id="local", provider="grok"
+        )
+        async with Maker() as db:
+            run = await db.get(PlannerRun, run_id)
+            assert run.status == "succeeded"
+            assert run.proposals["produced"] == ["set_next_action"]

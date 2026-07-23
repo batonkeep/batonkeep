@@ -747,6 +747,17 @@ async def _finish(
         run = await db.get(PlannerRun, run_id)
         if run is None:
             return
+        # P-0080: `succeeded` must mean the turn met its completion contract, not
+        # that the provider returned text. A planning turn's whole purpose is
+        # structural output; one that produced none is a real, distinct outcome —
+        # not a success, and not a failure either, since nothing went wrong.
+        #
+        # Read off `produced`, which the tools append to as they land something on
+        # *this* turn. Deliberately not read off the roll-up below: that reflects
+        # WorkItem state, which an earlier turn or the operator may have filled in,
+        # so a turn that did nothing would inherit their work and look complete.
+        if status == "succeeded" and not (run.proposals or {}).get("produced"):
+            status = "no_proposals"
         run.status = status
         run.finished_at = datetime.now(UTC)
         if response is not None:

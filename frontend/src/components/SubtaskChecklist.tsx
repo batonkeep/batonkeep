@@ -15,6 +15,72 @@ function Glyph({ item }: { item: SubtaskItem }) {
   return <Circle size={14} className="shrink-0 text-muted" />;
 }
 
+// A preserved partial (P-0081, R3-D3) awaits an operator disposition.
+const isPendingPreserved = (s: SubtaskItem) =>
+  !!s.preserved && s.preserved.disposition == null;
+
+// The disposition row for a preserved partial: a cancelled turn captured this
+// item's expected artifact, so it is neither verified (cancellation is not
+// completion) nor missing (the artifact exists). The operator decides.
+function PreservedRow({
+  itemId,
+  sub,
+  onChanged,
+}: {
+  itemId: number;
+  sub: SubtaskItem;
+  onChanged: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const dispose = async (d: "accept" | "discard" | "reopen") => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.disposePreservedPartial(itemId, sub.id, d);
+      onChanged();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Could not update.");
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="mt-1 ml-5 rounded border border-defer/40 bg-defer/10 px-2 py-1.5">
+      <div className="text-[11px] text-defer">
+        preserved partial — a cancelled turn saved this output; it is not a
+        verified completion. What should happen to it?
+      </div>
+      <div className="mt-1 flex items-center gap-2">
+        <button
+          className="font-mono text-[11px] text-ok hover:underline disabled:opacity-50"
+          disabled={busy}
+          title="Accept the partial as delivered (marked done, not verified)"
+          onClick={() => dispose("accept")}
+        >
+          accept
+        </button>
+        <button
+          className="font-mono text-[11px] text-bad hover:underline disabled:opacity-50"
+          disabled={busy}
+          title="Discard the partial and reopen this obligation"
+          onClick={() => dispose("discard")}
+        >
+          discard
+        </button>
+        <button
+          className="font-mono text-[11px] text-brand hover:underline disabled:opacity-50"
+          disabled={busy}
+          title="Keep the partial on record but redo the work"
+          onClick={() => dispose("reopen")}
+        >
+          reopen
+        </button>
+        {err && <span className="text-[11px] text-bad">{err}</span>}
+      </div>
+    </div>
+  );
+}
+
 export default function SubtaskChecklist({
   item,
   onChanged,
@@ -110,26 +176,31 @@ export default function SubtaskChecklist({
         )}
         <ul className="space-y-1">
           {[...proposed, ...confirmed].map((s) => (
-            <li key={s.id} className="flex items-center gap-2 text-xs">
-              {s.status === "proposed" ? (
-                <Circle size={14} className="shrink-0 text-warn" />
-              ) : (
-                <Glyph item={s} />
+            <li key={s.id} className="text-xs">
+              <div className="flex items-center gap-2">
+                {s.status === "proposed" ? (
+                  <Circle size={14} className="shrink-0 text-warn" />
+                ) : (
+                  <Glyph item={s} />
+                )}
+                <span
+                  className={s.verified ? "text-ink" : "text-muted"}
+                  title={
+                    s.verified && s.verified_by
+                      ? `verified by ${s.verified_by.lane} ${s.verified_by.ref}`
+                      : undefined
+                  }
+                >
+                  {s.label}
+                </span>
+                {s.expected && (
+                  <span className="font-mono text-[10px] text-muted/70">{s.expected}</span>
+                )}
+                {s.status === "proposed" && <span className="font-mono text-[10px] text-warn">proposed</span>}
+              </div>
+              {isPendingPreserved(s) && (
+                <PreservedRow itemId={item.id} sub={s} onChanged={onChanged} />
               )}
-              <span
-                className={s.verified ? "text-ink" : "text-muted"}
-                title={
-                  s.verified && s.verified_by
-                    ? `verified by ${s.verified_by.lane} ${s.verified_by.ref}`
-                    : undefined
-                }
-              >
-                {s.label}
-              </span>
-              {s.expected && (
-                <span className="font-mono text-[10px] text-muted/70">{s.expected}</span>
-              )}
-              {s.status === "proposed" && <span className="font-mono text-[10px] text-warn">proposed</span>}
             </li>
           ))}
         </ul>

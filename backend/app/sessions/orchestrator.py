@@ -283,12 +283,13 @@ async def _snapshot_interrupted_turn(
             turn.diffstat = version["diffstat"]
             turn.changed_files = json.dumps(version.get("files", []))
         session = await db.get(Session, session_id)
+        partial_evidence = None
         if (
             session is not None and version is not None
             and session.project_id and version.get("diff")
         ):
             from app import evidence as evidence_store
-            await evidence_store.capture_safe(
+            partial_evidence = await evidence_store.capture_safe(
                 db,
                 owner_id=owner_id,
                 project_id=session.project_id,
@@ -299,6 +300,27 @@ async def _snapshot_interrupted_turn(
                 text=version["diff"],
                 producer=provider,
             )
+        # P-0081 (R3-D3): a cancelled turn that preserved a confirmed sub-task's
+        # expected artifact leaves it neither verified (cancellation is not
+        # completion) nor missing (the artifact is here). Mark it `preserved` so it
+        # awaits an operator disposition instead of reading as an unmet obligation.
+        if session is not None and version is not None and session.work_item_id:
+            try:
+                from app import subtasks as st
+                wi = await db.get(WorkItem, session.work_item_id)
+                if wi is not None and wi.subtasks:
+                    tracked = await ws.tracked_files(workspace)
+                    updated, changed = st.mark_preserved(
+                        wi.subtasks, tracked,
+                        ref=session_id,
+                        evidence_id=partial_evidence.id if partial_evidence else None,
+                    )
+                    if changed:
+                        wi.subtasks = updated
+            except Exception:
+                logger.exception(
+                    "[session] turn %d preserved-partial mark failed", turn_id
+                )
         await db.commit()
 
     await _broadcast_event(

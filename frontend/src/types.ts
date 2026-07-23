@@ -734,6 +734,9 @@ export interface OutputFlags {
   v: number;
   unbacked?: string[];
   outputs_missing?: { id?: string; label: string; expected: string | null }[];
+  // P-0081 (R3-D4): toolchain trees (.venv, node_modules) this turn built — kept
+  // out of the diff, recorded here as a neutral fact (not an advisory).
+  environments?: string[];
 }
 
 export interface SubtaskProgress {

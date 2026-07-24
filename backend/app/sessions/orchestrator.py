@@ -798,6 +798,39 @@ async def run_turn_background(
                 flags.setdefault("v", 1)
                 flags["environments"] = version["environments"]
                 output_flags = flags
+            # P-0083 (R4): the provider claimed file outputs but the assigned
+            # workspace received nothing — the work escaped to shared CLI state
+            # (R4: Agy 1.1.5 wrote to its own scratch project, not the session).
+            # This is the load-bearing honesty flag: with the `.gitignore`
+            # masquerade removed, an escaped turn now commits no version at all, so
+            # "claimed files + empty workspace commit" is the escape tell. It is a
+            # strong advisory (⚠), not a neutral note — `succeeded` must not be the
+            # unqualified headline for a fully escaped output contract.
+            claimed_unbacked = (output_flags or {}).get("unbacked")
+            if (
+                final_result is not None
+                and version is None
+                and claimed_unbacked
+                and _turn_for_flags is not None
+            ):
+                flags = dict(output_flags or {})
+                flags.setdefault("v", 1)
+                flags["escaped_workspace"] = True
+                output_flags = flags
+                logger.warning(
+                    "[session] turn %d: provider claimed %d output(s) but the "
+                    "workspace received none — work escaped the session (P-0083): %s",
+                    turn_id, len(claimed_unbacked), claimed_unbacked,
+                )
+                await _broadcast_event(
+                    session_id, turn_id, seq, EventKind.log,
+                    message=(
+                        "the provider reported writing files but the assigned "
+                        "workspace received none — the work landed outside the session"
+                    ),
+                    phase="workspace_escape",
+                    data={"claimed": claimed_unbacked},
+                )
             # P-0069 item 6: durable free-default output flag + outputs_missing
             # (NULL when clean of advisories). Written after the contract check so
             # both land together; `environments` above is neutral, not an advisory.

@@ -365,6 +365,34 @@ def strip_agent_narration(text: str) -> str:
 _CLI_VERSION_CACHE: dict[str, str | None] = {}
 
 
+# ── Agy workspace-binding contract (P-0083) ───────────────────────────────────
+# Agy's headless launch was last verified to keep its relative-write root at the
+# process cwd (the Batonkeep session workspace) at this version. Newer field
+# versions resolve their project independently of cwd — R4 saw agy 1.1.5 write a
+# three-file contract into its own persisted `~/.gemini/…/scratch` project instead
+# of the assigned session — so a drift past this is logged loudly. The launcher
+# does not yet pass an explicit `--project` binding (its exact 1.1.5 semantics need
+# a live run to verify safely); until it does, the workspace-escape output check
+# (orchestrator, P-0083) is the authoritative guard and this advisory is the tell.
+_AGY_BINDING_VERIFIED_THROUGH = (1, 1, 2)
+
+
+def _parse_semver(version_line: str | None) -> tuple[int, int, int] | None:
+    """First `MAJOR.MINOR.PATCH` in a `--version` line, or None."""
+    if not version_line:
+        return None
+    m = re.search(r"(\d+)\.(\d+)\.(\d+)", version_line)
+    return (int(m[1]), int(m[2]), int(m[3])) if m else None
+
+
+def agy_binding_drifted(version_line: str | None) -> bool:
+    """True when the running agy is newer than the workspace-binding-verified
+    contract, so its outputs may escape to shared CLI scratch (P-0083). Unknown or
+    unparseable versions return False — never block a lane on a probe miss."""
+    v = _parse_semver(version_line)
+    return v is not None and v > _AGY_BINDING_VERIFIED_THROUGH
+
+
 def probe_cli_version(binary: str) -> str | None:
     """Cached `<binary> --version` (first line, ≤64 chars). None if unprobeable."""
     if binary in _CLI_VERSION_CACHE:
@@ -443,6 +471,18 @@ def _build_cmd(
             cmd += ["--model", model]
         if auto_approve:
             cmd += ["--dangerously-skip-permissions"]
+        # P-0083: warn when agy has drifted past the version whose relative-write
+        # root we verified stays at cwd. The orchestrator's workspace-escape check
+        # is authoritative; this makes the likely cause loud in the run log.
+        _agy_version = probe_cli_version("agy")
+        if agy_binding_drifted(_agy_version):
+            logger.warning(
+                "[cli] agy %s is newer than the workspace-binding-verified contract "
+                "%s — its outputs may resolve to a persisted CLI project rather than "
+                "the session workspace (P-0083); the workspace-escape output check "
+                "will catch an escape.",
+                _agy_version, ".".join(map(str, _AGY_BINDING_VERIFIED_THROUGH)),
+            )
 
     elif binary == "codex":
         # Verified: codex-cli 0.136.0

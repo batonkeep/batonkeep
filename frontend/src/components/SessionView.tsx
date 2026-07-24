@@ -2063,6 +2063,19 @@ export default function SessionView({
                   {t.changed_files && t.changed_files.length > 0 && (
                     <ArtifactList files={t.changed_files} onOpen={viewFile} />
                   )}
+                  {t.output_flags?.escaped_workspace && (
+                    <div className="mx-1 rounded border border-bad bg-bad/10 px-2 py-1.5 text-xs text-bad">
+                      <span className="font-medium">
+                        ⚠ the provider reported writing files, but this session's
+                        workspace received none
+                      </span>
+                      <span className="text-muted">
+                        {" "}— the work landed outside the assigned workspace (e.g. a
+                        CLI tool's own project). It was <strong>not</strong> captured;
+                        the turn is not a real delivery despite finishing.
+                      </span>
+                    </div>
+                  )}
                   {t.output_flags?.environments &&
                     t.output_flags.environments.length > 0 && (
                     <div className="mx-1 text-[11px] text-muted">

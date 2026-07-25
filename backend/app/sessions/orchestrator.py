@@ -44,6 +44,7 @@ from app.providers.registry import (
 from app.redact import redact_text
 from app.sessions import workspace as ws
 from app.sessions.preview import (
+    count_file_claims,
     flag_unbacked_file_claims,
     rewrite_workspace_file_links,
 )
@@ -665,6 +666,7 @@ async def run_turn_background(
     # default output check (item 6) and the sub-task contract verification (B2).
     tracked: set[str] = set()
     output_flags: dict | None = None
+    _claims_total = 0
     if final_result is not None:
         try:
             tracked = await ws.tracked_files(workspace)
@@ -680,6 +682,9 @@ async def run_turn_background(
             )
             if unbacked:
                 output_flags = {"v": 1, "unbacked": unbacked}
+                # Denominator for the escape check below: "all claims unbacked" is
+                # the escape tell; "some claims unbacked" is a mixed delivery.
+                _claims_total = count_file_claims(response_text, session_id)
                 logger.warning(
                     "[session] turn %d: %d referenced file(s) not in committed tree: %s",
                     turn_id, len(unbacked), unbacked,
@@ -798,29 +803,44 @@ async def run_turn_background(
                 flags.setdefault("v", 1)
                 flags["environments"] = version["environments"]
                 output_flags = flags
-            # P-0083 (R4): the provider claimed file outputs but the assigned
-            # workspace received nothing — the work escaped to shared CLI state
-            # (R4: Agy 1.1.5 wrote to its own scratch project, not the session).
-            # This is the load-bearing honesty flag: with the `.gitignore`
-            # masquerade removed, an escaped turn now commits no version at all, so
-            # "claimed files + empty workspace commit" is the escape tell. It is a
-            # strong advisory (⚠), not a neutral note — `succeeded` must not be the
-            # unqualified headline for a fully escaped output contract.
+            # P-0083 (R4/R5): the provider claimed file outputs but the assigned
+            # workspace received none of them — the work escaped to shared CLI state
+            # (R4/R5: Agy 1.1.5 then 1.1.7 wrote to its own scratch project, not the
+            # session). This is the load-bearing honesty flag: a strong advisory (⚠),
+            # not a neutral note — `succeeded` must not be the unqualified headline
+            # for a fully escaped output contract.
+            #
+            # The tell is "*every* claim unbacked", not "claims + an empty commit".
+            # R4/R5 both escaped totally, so the shipped check keyed off `version is
+            # None` — but `commit_turn` returns None only when the turn committed
+            # literally nothing, so a **partial** escape (all three deliverables land
+            # in shared scratch while one stray file lands in the workspace) produced
+            # a real commit and slipped through unflagged. `outputs_missing` catches
+            # some of those, but only when a WorkItem sub-task contract exists.
+            # Comparing unbacked against the claim total closes that gap and keeps the
+            # signal off mixed deliveries, where some artifacts genuinely landed.
             claimed_unbacked = (output_flags or {}).get("unbacked")
             if (
                 final_result is not None
-                and version is None
                 and claimed_unbacked
+                and _claims_total > 0
+                and len(claimed_unbacked) >= _claims_total
                 and _turn_for_flags is not None
             ):
                 flags = dict(output_flags or {})
                 flags.setdefault("v", 1)
                 flags["escaped_workspace"] = True
+                # Full: the turn committed nothing at all (R4/R5). Partial: it
+                # committed something, but none of it was a claimed deliverable —
+                # the incidental-commit case that used to evade the check.
+                flags["escape_scope"] = "full" if version is None else "partial"
                 output_flags = flags
                 logger.warning(
                     "[session] turn %d: provider claimed %d output(s) but the "
-                    "workspace received none — work escaped the session (P-0083): %s",
-                    turn_id, len(claimed_unbacked), claimed_unbacked,
+                    "workspace received none — work escaped the session (P-0083, "
+                    "scope=%s): %s",
+                    turn_id, len(claimed_unbacked), flags["escape_scope"],
+                    claimed_unbacked,
                 )
                 await _broadcast_event(
                     session_id, turn_id, seq, EventKind.log,
@@ -829,7 +849,10 @@ async def run_turn_background(
                         "workspace received none — the work landed outside the session"
                     ),
                     phase="workspace_escape",
-                    data={"claimed": claimed_unbacked},
+                    data={
+                        "claimed": claimed_unbacked,
+                        "scope": flags["escape_scope"],
+                    },
                 )
             # P-0069 item 6: durable free-default output flag + outputs_missing
             # (NULL when clean of advisories). Written after the contract check so

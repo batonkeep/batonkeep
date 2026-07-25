@@ -235,3 +235,23 @@ def flag_unbacked_file_claims(
             seen.add(f)
             out.append(f)
     return out[:_MAX_FLAGS]
+
+
+def count_file_claims(response_text: str, session_id: str) -> int:
+    """How many distinct explicit artifact links the response makes, backed or not.
+
+    The denominator for `flag_unbacked_file_claims`: when every claim is unbacked,
+    the turn's *entire* claimed output contract missed the workspace, which is the
+    escape tell regardless of whether the turn also committed something incidental
+    (P-0083 item 4 gap — the original check required a completely empty commit, so a
+    partial escape carrying one stray workspace file went unflagged). Counts the same
+    two shapes and de-duplicates identically, so the two functions are comparable."""
+    if not response_text:
+        return 0
+    seen: set[str] = set()
+    for m in _RAW_ROUTE_RE.finditer(response_text):
+        sid, rel = m.group(1), m.group(2)
+        seen.add(rel if sid == session_id else m.group(0))
+    for m in _FILE_URL_RE.finditer(response_text):
+        seen.add(m.group(0))
+    return len(seen)

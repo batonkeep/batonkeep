@@ -2791,7 +2791,15 @@ async def package_session_workspace(
     a zip with MANIFEST.json (per-file sha256s, commit sha) at zip root, stored
     as two append-only evidence rows (`package` + `manifest`). Idempotent per
     (session × commit) — repackaging an unchanged workspace returns the existing
-    rows. Refuses a dirty or commitless workspace (409) and oversize trees (413)."""
+    rows. Refuses a dirty or commitless workspace (409) and oversize trees (413).
+
+    P-0083 item 5 — the package must not be able to claim a delivery that did not
+    happen. Attribution is resolved by **commit identity** (which turn produced the
+    commit being packaged), never by recency: R5 captured a session's *initial*
+    commit after a fully escaped turn and stamped it with that turn + its WorkItem,
+    minting a zero-file package that read as delivered work. A commit no turn
+    produced, or one whose turn escaped the workspace, is refused (409) unless the
+    caller explicitly asks for a non-delivery baseline via `allow_unattributed`."""
     import json
 
     from sqlalchemy import select as sa_select
@@ -2807,14 +2815,71 @@ async def package_session_workspace(
     if not os.path.isdir(workspace):
         raise HTTPException(status_code=404, detail="session workspace not found")
 
+    # P-0083 item 5: decide what this package is *allowed to claim* before building
+    # it, so the manifest the operator receives already says so. Attribution is by
+    # commit identity — which turn produced the commit at HEAD — never by recency.
+    head = await ws.head_commit(workspace)
+    if not head:
+        raise HTTPException(
+            status_code=409, detail="workspace has no committed version to package"
+        )
+    producing_turn = (
+        await db.execute(
+            sa_select(SessionTurn)
+            .where(
+                SessionTurn.session_id == session_id,
+                SessionTurn.commit_sha == head,
+            )
+            .order_by(SessionTurn.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    escaped = (
+        bool((producing_turn.output_flags or {}).get("escaped_workspace"))
+        if producing_turn is not None
+        else False
+    )
+    allow_unattributed = bool(body.allow_unattributed) if body else False
+    attributed = producing_turn is not None and not escaped
+
+    if not attributed and not allow_unattributed:
+        reason = (
+            f"the turn that produced commit {head[:8]} reported writing files the "
+            "workspace never received (escaped_workspace), so this package cannot "
+            "stand as its delivery"
+            if escaped else
+            f"no session turn produced commit {head[:8]} — it is the session's "
+            "baseline, not delivered work"
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"refusing to capture an unattributable package: {reason}. Run a turn "
+                "that lands work in this workspace, or re-request with "
+                "allow_unattributed=true to record an explicit non-delivery baseline "
+                "(no turn or work-item attribution)."
+            ),
+        )
+
     try:
         manifest, zip_bytes, commit = await packaging.build_package(
-            workspace, session_id=session_id, produced_by="human"
+            workspace, session_id=session_id, produced_by="human",
+            attribution="turn" if attributed else "baseline",
         )
     except packaging.PackageTooLargeError as exc:
         raise HTTPException(status_code=413, detail=str(exc)) from exc
     except packaging.PackagingError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    # A turn landing mid-capture would package a commit we did not judge.
+    if commit != head:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "the workspace moved while the package was being built "
+                f"({head[:8]} → {commit[:8]}) — retry the capture"
+            ),
+        )
 
     stem = packaging.package_name(session_id, commit)
     existing = (
@@ -2833,6 +2898,16 @@ async def package_session_workspace(
         target_id = body.pin_to_work_item_id if body else None
         if target_id is None:
             return
+        if not attributed:
+            # P-0083 item 5: a non-delivery baseline must not become a work item's
+            # pinned input either — that is the same false claim one hop removed.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "cannot pin an unattributed baseline package to a work item — "
+                    "it carries no delivered work"
+                ),
+            )
         target = await db.get(WorkItem, target_id)
         if (
             target is None
@@ -2872,15 +2947,14 @@ async def package_session_workspace(
         await db.commit()
         return PackageOut(package=existing, manifest=manifest_row, existing=True)
 
-    work_item_id = (body.work_item_id if body else None) or session.work_item_id
-    latest_turn = (
-        await db.execute(
-            sa_select(SessionTurn.id)
-            .where(SessionTurn.session_id == session_id)
-            .order_by(SessionTurn.id.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
+    # An unattributed baseline carries no delivery claim: no turn, no work item.
+    # Anything else would let an empty snapshot advance a WorkItem's evidence.
+    if attributed:
+        work_item_id = (body.work_item_id if body else None) or session.work_item_id
+        attributed_turn = producing_turn.id
+    else:
+        work_item_id = None
+        attributed_turn = None
 
     package_row = await evidence_store.capture(
         db,
@@ -2891,7 +2965,7 @@ async def package_session_workspace(
         data=zip_bytes,
         producer="human",
         work_item_id=work_item_id,
-        session_turn_id=latest_turn,
+        session_turn_id=attributed_turn,
     )
     manifest_row = await evidence_store.capture(
         db,
@@ -2902,7 +2976,7 @@ async def package_session_workspace(
         text=json.dumps(manifest, indent=2),
         producer="human",
         work_item_id=work_item_id,
-        session_turn_id=latest_turn,
+        session_turn_id=attributed_turn,
     )
     await _pin(package_row.id)
     await db.commit()

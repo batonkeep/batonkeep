@@ -52,6 +52,42 @@ class _ForeignArtifactExecutor(Executor):
                         data={"result": result, "usage": usage.__dict__})
 
 
+class _MixedDeliveryExecutor(Executor):
+    """Writes a real workspace file AND links to it, alongside one foreign claim —
+    a *mixed* delivery. `unbacked` must flag the foreign link, but this is not a
+    workspace escape: some of the claimed contract genuinely landed here, so the
+    escape advisory must stay off (P-0083 item 4 — the flag means "none of it
+    arrived", not "something is off")."""
+
+    name = "mixed"
+    tier = "mock"
+
+    def __init__(self, name: str = "mixed") -> None:
+        self.name = name
+        self.tier = "mock"
+
+    @property
+    def kind(self) -> str:
+        return "mock"
+
+    def is_healthy(self) -> bool:
+        return True
+
+    async def run_stream(self, prompt, *, workdir, tools_enabled=True,
+                         max_rounds=10, budget_usd=1.0, extra=None):
+        yield ExecEvent(kind=EventKind.phase, phase="running", message="[mixed] running")
+        with open(os.path.join(workdir, "notes.md"), "a", encoding="utf-8") as f:
+            f.write("progress\n")
+        usage = Usage(tokens_in=1, tokens_out=1, cost_usd=0.0)
+        result = ExecResult(
+            text="Wrote /api/sessions/s1/files/raw/notes.md and "
+                 "file:///data/sessions/OTHER/deliverable.py",
+            usage=usage, provider=self.name, model="mixed-v1",
+        )
+        yield ExecEvent(kind=EventKind.result, message="[mixed] done",
+                        data={"result": result, "usage": usage.__dict__})
+
+
 class _EscapedWorkspaceExecutor(Executor):
     """Claims file deliverables but writes NOTHING to the assigned workspace — the
     R4 (P-0083) shape: agy 1.1.5 wrote its three-file contract into its own CLI
@@ -646,11 +682,54 @@ class TestOutputFlags:
             assert turn.commit_sha is None           # but nothing was committed
             assert turn.output_flags is not None
             assert turn.output_flags.get("escaped_workspace") is True
+            assert turn.output_flags.get("escape_scope") == "full"
             # the claim is still recorded as unbacked
             assert turn.output_flags["unbacked"] == [
                 "file:///data/sessions/OTHER/canary/agy-provenance.txt"
             ]
         assert any(
+            (b.get("event") or {}).get("phase") == "workspace_escape" for b in broadcasts
+        )
+
+    @pytest.mark.asyncio
+    async def test_partial_escape_is_flagged(self, session_env):
+        """P-0083 item 4 gap (found reviewing R5): the shipped check keyed off an
+        *empty* turn commit, so an escape carrying one incidental workspace file
+        slipped through. Every claimed output missed the workspace, so this is an
+        escape even though the turn committed something."""
+        Maker, ws, orch, broadcasts = session_env
+        await _make_session(Maker, ws)
+        orch.get_executor = lambda name: _ForeignArtifactExecutor(name=name)
+
+        from app.models import SessionTurn
+        turn_id = await orch.run_turn("s1", "produce it", owner_id="local")
+        async with Maker() as db:
+            turn = await db.get(SessionTurn, turn_id)
+            assert turn.commit_sha is not None       # a real commit happened…
+            assert turn.output_flags.get("escaped_workspace") is True   # …of nothing claimed
+            assert turn.output_flags.get("escape_scope") == "partial"
+        assert any(
+            (b.get("event") or {}).get("phase") == "workspace_escape" for b in broadcasts
+        )
+
+    @pytest.mark.asyncio
+    async def test_mixed_delivery_is_not_an_escape(self, session_env):
+        """The other side of the same boundary: when part of the claimed contract
+        did land in the workspace, `unbacked` stands alone — over-firing the escape
+        advisory would make it meaningless."""
+        Maker, ws, orch, broadcasts = session_env
+        await _make_session(Maker, ws)
+        orch.get_executor = lambda name: _MixedDeliveryExecutor(name=name)
+
+        from app.models import SessionTurn
+        turn_id = await orch.run_turn("s1", "produce it", owner_id="local")
+        async with Maker() as db:
+            turn = await db.get(SessionTurn, turn_id)
+            assert turn.output_flags["unbacked"] == [
+                "file:///data/sessions/OTHER/deliverable.py"
+            ]
+            assert "escaped_workspace" not in turn.output_flags
+        assert not any(
             (b.get("event") or {}).get("phase") == "workspace_escape" for b in broadcasts
         )
 

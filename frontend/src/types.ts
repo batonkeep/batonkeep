@@ -749,6 +749,10 @@ export interface OutputFlags {
   // P-0083 (R4): the provider claimed file outputs but the assigned workspace
   // received none — the work escaped to shared CLI state. A strong advisory.
   escaped_workspace?: boolean;
+  // "full": the turn committed nothing at all. "partial": it committed something,
+  // but none of it was a claimed deliverable — an escape carrying an incidental
+  // workspace file, which the original empty-commit check missed.
+  escape_scope?: "full" | "partial";
 }
 
 export interface SubtaskProgress {

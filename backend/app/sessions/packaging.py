@@ -83,12 +83,17 @@ def package_name(session_id: str, commit_sha: str) -> str:
 
 
 async def build_package(
-    workspace: str, *, session_id: str, produced_by: str
+    workspace: str, *, session_id: str, produced_by: str, attribution: str = "turn"
 ) -> tuple[dict, bytes, str]:
     """Build (manifest, zip_bytes, commit_sha) for the workspace at git HEAD.
 
     Raises PackagingError when there is nothing committed or the tree is dirty,
     PackageTooLargeError when the summed file bytes exceed `package_max_bytes`.
+
+    `attribution` is recorded in the manifest so a package body is self-describing
+    about what it claims to be (P-0083 item 5): `"turn"` = the packaged commit was
+    produced by a session turn; `"baseline"` = it was not (a session-initial or
+    otherwise unattributable commit), captured as an explicit non-delivery snapshot.
     """
     # Check the repo is ours *before* reading HEAD. A replaced repo returns no
     # commits, which would otherwise surface as "nothing to package" for a
@@ -131,6 +136,7 @@ async def build_package(
         "v": 1,
         "commit_sha": commit,
         "produced_by": produced_by,
+        "attribution": attribution,
         "files": files,
         "file_count": len(files),
         "total_bytes": total,

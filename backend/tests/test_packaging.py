@@ -125,7 +125,7 @@ def client(tmp_path, monkeypatch):
     import app.main as main
     import app.sessions.workspace as ws_mod
     from app.db import Base, get_db
-    from app.models import Owner, Project, Session
+    from app.models import Owner, Project, Session, SessionTurn
 
     monkeypatch.setattr(
         evidence_store._settings, "evidence_dir", str(tmp_path / "evidence")
@@ -133,7 +133,11 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(ws_mod._settings, "sessions_dir", str(tmp_path / "sessions"))
 
     sid = "a" * 32
-    _make_workspace(tmp_path / "sessions", sid)
+    ws_path = _make_workspace(tmp_path / "sessions", sid)
+    head = subprocess.run(
+        ["git", "-C", ws_path, "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
 
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/api.db")
 
@@ -151,6 +155,15 @@ def client(tmp_path, monkeypatch):
                     project_id="p1",
                 )
             )
+            # P-0083 item 5: packages are attributed by commit identity, so the
+            # default fixture is the *attributed* case — a turn that produced the
+            # commit at HEAD. Tests for the unattributed shapes drop or rewrite it.
+            db.add(
+                SessionTurn(
+                    id=1, session_id=sid, owner_id="local", seq=1, provider="mock",
+                    prompt="build it", status="succeeded", commit_sha=head,
+                )
+            )
             await db.commit()
         return Maker
 
@@ -162,14 +175,14 @@ def client(tmp_path, monkeypatch):
 
     main.app.dependency_overrides[get_db] = _get_db
     try:
-        yield TestClient(main.app), sid
+        yield TestClient(main.app), sid, Maker
     finally:
         main.app.dependency_overrides.pop(get_db, None)
         asyncio.get_event_loop().run_until_complete(engine.dispose())
 
 
 def test_package_route_captures_and_is_idempotent(client, tmp_path):
-    c, sid = client
+    c, sid, Maker = client
 
     r = c.post(f"/api/sessions/{sid}/package")
     assert r.status_code == 200, r.text
@@ -199,8 +212,124 @@ def test_package_route_captures_and_is_idempotent(client, tmp_path):
 
 
 def test_package_route_refuses_dirty(client, tmp_path):
-    c, sid = client
+    c, sid, Maker = client
     (tmp_path / "sessions" / sid / "index.html").write_text("<h1>dirty</h1>\n")
     r = c.post(f"/api/sessions/{sid}/package")
     assert r.status_code == 409
     assert "uncommitted" in r.json()["detail"]
+
+
+# ── P-0083 item 5: the package cannot claim a delivery that did not happen ─────
+#
+# R5 (`DRILL-I049-R5-on-I043`): a fully escaped Agy turn committed nothing, yet
+# `Capture package` snapshotted the session's *initial* commit and stamped it with
+# that turn + its WorkItem — evidence #140/#141, `file_count=0`, project evidence
+# count 116 → 118, for work that never entered the workspace.
+
+def _clear_turns(Maker):
+    """Drop the fixture's producing turn: HEAD becomes an unattributable baseline
+    commit, exactly like a session whose only turn escaped."""
+    from sqlalchemy import delete
+
+    from app.models import SessionTurn
+
+    async def _go():
+        async with Maker() as db:
+            await db.execute(delete(SessionTurn))
+            await db.commit()
+    asyncio.get_event_loop().run_until_complete(_go())
+
+
+def test_package_route_refuses_unattributed_baseline(client):
+    c, sid, Maker = client
+    _clear_turns(Maker)
+
+    r = c.post(f"/api/sessions/{sid}/package")
+    assert r.status_code == 409, r.text
+    detail = r.json()["detail"]
+    assert "no session turn produced commit" in detail
+    assert "allow_unattributed" in detail          # the operator is told the way out
+
+    # Nothing was captured — the evidence ledger must not advance for a refusal.
+    ev = c.get("/api/projects/p1/evidence")
+    assert [e["kind"] for e in ev.json()] == []
+
+
+def test_package_route_refuses_when_producing_turn_escaped(client):
+    """The partial-escape shape: the turn *did* commit (so it is attributable by
+    commit identity) but reported outputs the workspace never received. Its commit
+    must not be packageable as that turn's delivery."""
+    c, sid, Maker = client
+
+    async def _mark_escaped():
+        from app.models import SessionTurn
+        async with Maker() as db:
+            turn = await db.get(SessionTurn, 1)
+            turn.output_flags = {
+                "v": 1,
+                "unbacked": ["file:///home/agent/.gemini/scratch/canary.txt"],
+                "escaped_workspace": True,
+                "escape_scope": "partial",
+            }
+            await db.commit()
+    asyncio.get_event_loop().run_until_complete(_mark_escaped())
+
+    r = c.post(f"/api/sessions/{sid}/package")
+    assert r.status_code == 409, r.text
+    assert "escaped_workspace" in r.json()["detail"]
+
+
+def test_package_route_baseline_capture_carries_no_attribution(client, tmp_path):
+    """The explicit non-delivery path: allowed, but it may not claim a turn, a work
+    item, or a pin — the manifest says `baseline` so a later reader cannot mistake
+    it for delivered work."""
+    c, sid, Maker = client
+    _clear_turns(Maker)
+
+    r = c.post(f"/api/sessions/{sid}/package", json={"allow_unattributed": True})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["package"]["session_turn_id"] is None
+    assert body["package"]["work_item_id"] is None
+    assert body["manifest"]["session_turn_id"] is None
+
+    abs_path = os.path.join(str(tmp_path / "evidence"), body["package"]["rel_path"])
+    with zipfile.ZipFile(abs_path) as zf:
+        embedded = json.loads(zf.read(packaging.MANIFEST_NAME))
+    assert embedded["attribution"] == "baseline"
+
+
+def test_package_route_baseline_cannot_be_pinned_to_a_work_item(client):
+    c, sid, Maker = client
+    _clear_turns(Maker)
+
+    r = c.post(
+        f"/api/sessions/{sid}/package",
+        json={"allow_unattributed": True, "pin_to_work_item_id": 1},
+    )
+    assert r.status_code == 409, r.text
+    assert "unattributed baseline" in r.json()["detail"]
+
+
+def test_attributed_package_records_the_producing_turn(client):
+    """The healthy path stays intact and is attributed to the turn that produced
+    the packaged commit — by commit identity, not recency."""
+    c, sid, Maker = client
+
+    async def _add_later_escaped_turn():
+        from app.models import SessionTurn
+        async with Maker() as db:
+            db.add(
+                SessionTurn(
+                    id=2, session_id=sid, owner_id="local", seq=2, provider="mock",
+                    prompt="escape", status="succeeded", commit_sha=None,
+                    output_flags={"v": 1, "unbacked": ["x"], "escaped_workspace": True},
+                )
+            )
+            await db.commit()
+    asyncio.get_event_loop().run_until_complete(_add_later_escaped_turn())
+
+    r = c.post(f"/api/sessions/{sid}/package")
+    assert r.status_code == 200, r.text
+    # Turn 2 is the latest turn, but turn 1 produced the commit being packaged.
+    assert r.json()["package"]["session_turn_id"] == 1

@@ -389,6 +389,11 @@ class PackageIn(BaseModel):
     # next operator's workspace materializes it. Also applies when the package
     # already existed (idempotent capture, pin still lands).
     pin_to_work_item_id: int | None = None
+    # P-0083 item 5: capture a commit no turn produced (a session baseline) as an
+    # explicitly **non-delivery** snapshot — no turn/WorkItem attribution, manifest
+    # marked `attribution: "baseline"`. Without this the capture is refused (409),
+    # because the default read of a package row is "this work item was delivered".
+    allow_unattributed: bool = False
 
 
 class PackageOut(BaseModel):

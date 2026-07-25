@@ -314,7 +314,11 @@ export const api = {
   // Workspace packaging (S0.5): capture the tree at git HEAD as an immutable
   // evidence package (zip + MANIFEST.json). Idempotent per commit; the backend
   // 409s while the workspace has uncommitted changes.
-  packageWorkspace: (id: string, pinToWorkItemId?: number | null) =>
+  packageWorkspace: (
+    id: string,
+    pinToWorkItemId?: number | null,
+    allowUnattributed = false,
+  ) =>
     req<{
       package: { id: number; rel_path: string };
       manifest: { id: number } | null;
@@ -323,7 +327,13 @@ export const api = {
       method: "POST",
       // pin_to: "hand this artifact to that work item" — the backend appends
       // the package to the target's pinned-evidence inputs atomically.
-      body: JSON.stringify({ pin_to_work_item_id: pinToWorkItemId ?? null }),
+      // allow_unattributed (P-0083 item 5): capture a commit no turn produced as
+      // an explicit non-delivery baseline. Refused by default — a package row
+      // reads as "this was delivered", and R5 minted one for escaped work.
+      body: JSON.stringify({
+        pin_to_work_item_id: pinToWorkItemId ?? null,
+        allow_unattributed: allowUnattributed,
+      }),
     }),
   // Import an existing site: a .zip / .tar(.gz/.bz2/.xz) extracted into the
   // workspace root, preserving structure (D-0009 follow-on).

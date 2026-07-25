@@ -496,6 +496,9 @@ export default function SessionView({
   const [filesLoading, setFilesLoading] = useState(false);
   // S0.5: workspace → evidence package capture (Files-tab header action).
   const [pkgBusy, setPkgBusy] = useState(false);
+  // P-0083 item 5: the last capture was refused as unattributable (no turn
+  // produced this commit, or its turn escaped) — offer the baseline alternative.
+  const [pkgRefused, setPkgRefused] = useState(false);
   const [pkgMsg, setPkgMsg] = useState<string | null>(null);
   const [pkgModal, setPkgModal] = useState(false);
   const [pkgItems, setPkgItems] = useState<WorkItem[]>([]);
@@ -700,6 +703,8 @@ export default function SessionView({
     if (!selectedId) return;
     setPkgPin("");
     setPkgItems([]);
+    setPkgMsg(null);
+    setPkgRefused(false);
     setPkgModal(true);
     const pid = detail?.project_id;
     if (pid) {
@@ -712,24 +717,32 @@ export default function SessionView({
     }
   }, [selectedId, detail?.project_id]);
 
-  const capturePackage = useCallback(() => {
+  const capturePackage = useCallback((allowUnattributed = false) => {
     if (!selectedId || pkgBusy) return;
     setPkgBusy(true);
     setPkgMsg(null);
-    api.packageWorkspace(selectedId, pkgPin ? Number(pkgPin) : null)
-      .then((res) =>
+    setPkgRefused(false);
+    api.packageWorkspace(selectedId, pkgPin ? Number(pkgPin) : null, allowUnattributed)
+      .then((res) => {
         setPkgMsg(
           (res.existing
             ? "Already captured for this version"
-            : `Captured as evidence #${res.package.id}`) +
-            (pkgPin ? " · pinned" : ""),
-        ),
-      )
-      .catch((err: Error) => setPkgMsg(err.message))
-      .finally(() => {
-        setPkgBusy(false);
+            : allowUnattributed
+              ? `Captured as baseline evidence #${res.package.id} (no delivery claim)`
+              : `Captured as evidence #${res.package.id}`) +
+            (pkgPin && !allowUnattributed ? " · pinned" : ""),
+        );
         setPkgModal(false);
-      });
+      })
+      .catch((err: Error) => {
+        setPkgMsg(err.message);
+        // P-0083 item 5: the refusal is not a dead end — offer the honest
+        // alternative (a baseline with no turn/work-item attribution) rather
+        // than leaving the operator with an API-only escape hatch. The modal
+        // stays open so that choice is made in place, deliberately.
+        setPkgRefused(err.message.includes("unattributable package"));
+      })
+      .finally(() => setPkgBusy(false));
   }, [selectedId, pkgBusy, pkgPin]);
 
   // Load the selected session detail (for the preview token) + its turn history.
@@ -2073,6 +2086,13 @@ export default function SessionView({
                         {" "}— the work landed outside the assigned workspace (e.g. a
                         CLI tool's own project). It was <strong>not</strong> captured;
                         the turn is not a real delivery despite finishing.
+                        {t.output_flags.escape_scope === "partial" && (
+                          <>
+                            {" "}This turn did change the workspace, but none of the
+                            changes are the outputs it claimed — the version above is
+                            incidental, not the deliverable.
+                          </>
+                        )}
                       </span>
                     </div>
                   )}
@@ -2598,15 +2618,35 @@ export default function SessionView({
               ))}
             </Select>
           </Field>
+          {pkgRefused && (
+            <div className="rounded border border-bad bg-bad/10 px-2 py-1.5 text-xs text-bad">
+              <span className="font-medium">⚠ nothing here was delivered by a turn</span>
+              <span className="text-muted">
+                {" "}— {pkgMsg}. You can still record this commit as a{" "}
+                <strong>baseline</strong>: it is captured with no turn or work-item
+                attribution, so it cannot read as completed work.
+              </span>
+            </div>
+          )}
           <div className="flex justify-end gap-2">
             <Button variant="outline" size="sm" onClick={() => setPkgModal(false)}>
               Cancel
             </Button>
+            {pkgRefused && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => capturePackage(true)}
+                disabled={pkgBusy}
+              >
+                Capture as baseline
+              </Button>
+            )}
             <Button
               variant="primary"
               size="sm"
-              onClick={capturePackage}
-              disabled={pkgBusy}
+              onClick={() => capturePackage()}
+              disabled={pkgBusy || pkgRefused}
               icon={pkgBusy ? <Loader2 size={14} className="animate-spin" /> : <Archive size={14} />}
             >
               {pkgBusy ? "Capturing…" : "Capture"}

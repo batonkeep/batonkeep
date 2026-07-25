@@ -30,7 +30,7 @@ def env(tmp_path, monkeypatch):
     import app.main as main
     import app.sessions.workspace as ws_mod
     from app.db import Base, get_db
-    from app.models import Owner, Project, Session, WorkItem
+    from app.models import Owner, Project, Session, SessionTurn, WorkItem
 
     # raising=False: earlier suite members "restore" shared Settings fields by
     # popping them from the instance __dict__, which on pydantic v2 deletes the
@@ -60,6 +60,10 @@ def env(tmp_path, monkeypatch):
         ["git", "-C", str(ws), "-c", "user.name=t", "-c", "user.email=t@t",
          "commit", "-qm", "build"], check=True,
     )
+    head = subprocess.run(
+        ["git", "-C", str(ws), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
 
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/api.db")
 
@@ -79,6 +83,16 @@ def env(tmp_path, monkeypatch):
             db.add(Session(id=sid, owner_id="local", title="t", provider="mock",
                            workspace_path=str(ws), project_id="p1",
                            work_item_id=wi_a.id))
+            # The turn that produced the commit above. Every real workspace commit
+            # is turn-attributed — `commit_turn`, the cancel/timeout snapshot, and
+            # the terminal capture all record `commit_sha` — and packaging now
+            # resolves attribution by commit identity (P-0083 item 5), so a fixture
+            # that hand-commits with no turn is packaging an unattributable
+            # baseline, which is exactly the shape R5 caught and the route refuses.
+            db.add(SessionTurn(
+                id=1, session_id=sid, owner_id="local", seq=1, provider="mock",
+                prompt="build the dashboard", status="succeeded", commit_sha=head,
+            ))
             await db.commit()
             return Maker, wi_a.id, wi_b.id
 

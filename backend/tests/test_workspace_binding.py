@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import os
 
-from app.providers.cli_executor import agy_binding_drifted
+from app.providers.cli_executor import _AGY_BINDING_VERIFIED_THROUGH, agy_binding_drifted
 from app.sessions import workspace as ws
 
 
@@ -92,10 +92,15 @@ def test_add_git_excludes_is_idempotent(tmp_path, monkeypatch):
 
 
 def test_agy_binding_drift_predicate():
-    # newer than the verified contract → drifted (the R4 case)
-    assert agy_binding_drifted("agy 1.1.5") is True
+    """The contract is now verified through 1.1.7 — the version `--new-project` was
+    live-probed against (P-0083 item 1). 1.1.5 and 1.1.2 were the *unbound* versions
+    that escaped; they no longer drift because the launcher now binds explicitly."""
+    assert _AGY_BINDING_VERIFIED_THROUGH == (1, 1, 7)
+    # newer than the verified contract → drifted (project resolution may have moved again)
+    assert agy_binding_drifted("agy 1.1.8") is True
     assert agy_binding_drifted("1.2.0") is True
     # the verified contract itself and older → not flagged
+    assert agy_binding_drifted("agy 1.1.7") is False
     assert agy_binding_drifted("agy 1.1.2") is False
     assert agy_binding_drifted("agy 1.0.12") is False
     # unknown / unparseable never blocks a lane

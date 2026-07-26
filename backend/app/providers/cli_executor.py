@@ -366,15 +366,18 @@ _CLI_VERSION_CACHE: dict[str, str | None] = {}
 
 
 # ── Agy workspace-binding contract (P-0083) ───────────────────────────────────
-# Agy's headless launch was last verified to keep its relative-write root at the
-# process cwd (the Batonkeep session workspace) at this version. Newer field
-# versions resolve their project independently of cwd — R4 saw agy 1.1.5 write a
-# three-file contract into its own persisted `~/.gemini/…/scratch` project instead
-# of the assigned session — so a drift past this is logged loudly. The launcher
-# does not yet pass an explicit `--project` binding (its exact 1.1.5 semantics need
-# a live run to verify safely); until it does, the workspace-escape output check
-# (orchestrator, P-0083) is the authoritative guard and this advisory is the tell.
-_AGY_BINDING_VERIFIED_THROUGH = (1, 1, 2)
+# Agy resolves its relative-write root from its *project*, not from process cwd.
+# With no project flag it selects its persisted default project, whose root is the
+# shared `~/.gemini/antigravity-cli/scratch` — which is how R4 (1.1.5) and R5 (1.1.7)
+# both wrote a three-file output contract outside the assigned session. `--new-project`
+# creates a project rooted at cwd, which is the session workspace, so the launcher
+# passes it on every headless turn (see `_build_cmd`).
+#
+# This constant is the version that binding was last live-verified against. A newer
+# agy may change project resolution again, so a drift past it is logged loudly; the
+# workspace-escape output check (orchestrator, P-0083) stays the authoritative guard
+# and this advisory is the tell.
+_AGY_BINDING_VERIFIED_THROUGH = (1, 1, 7)
 
 
 def _parse_semver(version_line: str | None) -> tuple[int, int, int] | None:
@@ -471,16 +474,28 @@ def _build_cmd(
             cmd += ["--model", model]
         if auto_approve:
             cmd += ["--dangerously-skip-permissions"]
-        # P-0083: warn when agy has drifted past the version whose relative-write
-        # root we verified stays at cwd. The orchestrator's workspace-escape check
-        # is authoritative; this makes the likely cause loud in the run log.
+        # P-0083 item 1 — bind the write root to this session's workspace.
+        # `--new-project` creates a project rooted at cwd, and cwd is the workspace
+        # (`run_stream` passes `cwd=workdir`), so relative writes land in the session.
+        # Without it agy falls back to its persisted default project and writes into
+        # shared CLI scratch — verified live on 1.1.7 as a same-cwd A/B: with the flag
+        # the file landed in cwd, without it in `~/.gemini/antigravity-cli/scratch`.
+        # This must stay unconditional; it is the containment boundary, not a hint.
+        # NOT `--project <id>`: that takes an ID agy itself registered, and an ID
+        # pre-seeded into `cache/projects.json` by the control plane was silently
+        # ignored in favour of the default project (probed 2026-07-26).
+        cmd += ["--new-project"]
+        # Warn when agy has drifted past the version this binding was verified
+        # against. The orchestrator's workspace-escape check is authoritative; this
+        # makes the likely cause loud in the run log.
         _agy_version = probe_cli_version("agy")
         if agy_binding_drifted(_agy_version):
             logger.warning(
                 "[cli] agy %s is newer than the workspace-binding-verified contract "
-                "%s — its outputs may resolve to a persisted CLI project rather than "
-                "the session workspace (P-0083); the workspace-escape output check "
-                "will catch an escape.",
+                "%s — --new-project may no longer root the project at cwd, so outputs "
+                "could resolve to a persisted CLI project rather than the session "
+                "workspace (P-0083); the workspace-escape output check will catch an "
+                "escape.",
                 _agy_version, ".".join(map(str, _AGY_BINDING_VERIFIED_THROUGH)),
             )
 

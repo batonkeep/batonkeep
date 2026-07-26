@@ -122,6 +122,32 @@ def test_health_reports_version():
     assert body["version"] == appversion.APP_VERSION
 
 
+# ── isolation posture on /health (P-0086) ───────────────────────────────────
+
+def test_health_reports_the_jail_posture():
+    """An isolation control must be verifiable from outside the container. All
+    three fields are load-bearing: a `require` that never launches an agent is
+    indistinguishable from a healthy jail unless you can see which is true."""
+    jail = TestClient(main.app).get("/health").json()["jail"]
+    assert jail["mode"] in {"require", "warn", "off"}
+    assert isinstance(jail["kernel_support"], bool)
+    assert isinstance(jail["spawner"], bool)
+
+
+def test_health_jail_mode_follows_the_setting(monkeypatch):
+    monkeypatch.setattr(main.sandbox._settings, "sandbox_jail", "require", raising=False)
+    assert TestClient(main.app).get("/health").json()["jail"]["mode"] == "require"
+    monkeypatch.setattr(main.sandbox._settings, "sandbox_jail", "off", raising=False)
+    assert TestClient(main.app).get("/health").json()["jail"]["mode"] == "off"
+
+
+def test_health_stays_unauthenticated():
+    """The docker healthcheck and any external upgrade check read this without
+    credentials — /health is already exempt from app-auth and must stay so, or
+    the jail field is unreadable by exactly the consumers it exists for."""
+    assert TestClient(main.app).get("/health").status_code == 200
+
+
 def test_version_endpoint_disabled_check(monkeypatch):
     # Patch the settings object main actually reads (it binds `settings` at import;
     # an earlier cache_clear can make get_settings() a different instance). Also

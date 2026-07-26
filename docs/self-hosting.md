@@ -38,9 +38,26 @@ workspace plus a read-only system view.
 | `require` | refuse to launch an agent that cannot be confined |
 | `off` | no jail (not recommended) |
 
-The backend logs which state it is in at startup — check it once after install rather than
-assuming. **If you run more than one build session, set `SANDBOX_JAIL=require`** once you
-have confirmed your host supports it.
+**Check the state rather than assuming it** — the backend both logs it at startup and reports
+it on `/health`:
+
+```bash
+docker compose exec backend curl -s localhost:8000/health | jq .jail
+# { "mode": "warn", "kernel_support": true, "spawner": true }
+```
+
+(The backend has no host port of its own — it's reachable on the compose network only, and
+`/health` is deliberately not proxied to the public web port.)
+
+`mode` is what you asked for, `kernel_support` is whether this host can actually deliver it,
+and `spawner` is whether the privilege-drop helper is present. All three matter: a `require`
+that never manages to launch an agent looks like a healthy jail until you ask which is true.
+
+**If the response has no `jail` field at all, your image predates this feature** — setting
+`SANDBOX_JAIL` on it does nothing, silently. Pull a current image before relying on it.
+
+**If you run more than one build session, set `SANDBOX_JAIL=require`** once you have confirmed
+your host supports it.
 
 What it covers, precisely: **workspaces**. `/tmp` and the agent home stay writable by every
 session, so concurrent agents can still share scratch space through them. That is fine for a

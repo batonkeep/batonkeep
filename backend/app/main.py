@@ -4252,10 +4252,32 @@ async def websocket_endpoint(websocket: WebSocket):
 
 @app.get("/health", tags=["meta"])
 async def health():
+    """Liveness + the deployment's isolation posture (P-0086).
+
+    `jail` is here because an isolation control has to be verifiable from OUTSIDE
+    the container. The boot log already states it, but a log is not an assertion:
+    `SANDBOX_JAIL=require` was once set against an image built before the jail
+    existed, and nothing objected for ~12 hours — the variable was read by code
+    that wasn't in that image. An in-image assertion cannot catch that, because a
+    stale image carries stale assertions too; only an external reader can.
+
+    So the *absence* of this field is itself the signal an upgrade check wants:
+    an image that predates the jail reports no `jail` key at all.
+    """
     return {
         "status": "ok",
         "deployment_mode": settings.deployment_mode,
         "version": appversion.APP_VERSION,
+        "jail": {
+            # What the operator asked for…
+            "mode": sandbox.jail_mode(),
+            # …whether this kernel can actually deliver it…
+            "kernel_support": sandbox.jail_supported(),
+            # …and whether the privilege-drop helper is present at all. All three
+            # are needed: a `require` that never launches an agent looks identical
+            # to a healthy jail until you ask which of them is true.
+            "spawner": sandbox.available(),
+        },
     }
 
 

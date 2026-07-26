@@ -4,6 +4,92 @@ All notable changes to batonkeep are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (pre-1.0: minor versions may
 add features freely; patch versions are fixes).
 
+## [0.7.0] — 2026-07-26
+
+The largest release so far. batonkeep gains **Projects** — durable containers for
+long-running work, with their own context, work items, approvals and evidence — so
+a build session is no longer a thing that happens once and scrolls away. Alongside
+it: each agent is now confined to its own workspace, and a turn that reports
+success has to prove it.
+
+Upgrading from 0.6.0 is a normal `make pull && make up`. The database migrates
+automatically; every existing task, session and run is attached to a "Personal
+workspace" project, so nothing moves and nothing is lost.
+
+### Added
+
+- **Projects.** A project holds the context, work items, approvals and evidence for
+  a body of work that outlives a single session. Declare the files that make up its
+  canonical context; batonkeep projects that context into each new session, records
+  a receipt of exactly what the agent was given, and keeps the results. There's a
+  new **Projects** section in the navigation, and build sessions are grouped under
+  the project they belong to. See `docs/projects.md`.
+- **Work items and output contracts.** Break a project into work items, each with a
+  sub-task checklist naming the files it should produce. Progress is measured
+  against what actually landed in the workspace — not against what the agent said
+  it did.
+- **A project planner.** Point a project at a planner model and ask it to read the
+  project's own context and propose structure — work items, next actions, gaps. It
+  only ever *proposes*: nothing it suggests takes effect until you accept it.
+- **Approvals and an evidence store.** Canonical writes go through an approval you
+  can review, and approving one now also declares it as project context, so the
+  next session actually sees it. Related pending writes can be approved as one
+  batch. Approved artifacts, packages and manifests are kept as durable evidence and
+  can be pinned to the work item they belong to.
+- **Workspace packages as evidence.** Capture a session's workspace as a zip with a
+  manifest of every file and its checksum, attributed to the turn that produced it —
+  a checkpoint you can hand to a later session or a different provider.
+- **Evidence viewer.** Text evidence renders in place instead of downloading.
+- **Per-agent workspace isolation.** On Linux hosts with Landlock (kernel 5.13+),
+  each agent process is now confined to its own session workspace plus a read-only
+  system view, so one build session can no longer read or write another's files.
+  `SANDBOX_JAIL` controls the policy: `warn` (default) applies the jail where the
+  kernel supports it and warns loudly where it does not; `require` refuses to launch
+  an agent that cannot be confined; `off` disables it. **What it covers is
+  workspaces** — `/tmp` and the agent home stay shared between sessions, which is
+  fine for a single-operator install but means "fully isolated" would overstate it.
+  The backend reports the jail's real state at startup *and* on `/health`, so you can
+  confirm it rather than assume it — and an image that predates the feature reports no
+  jail state at all, which is how you spot that setting the variable did nothing. See
+  `docs/self-hosting.md`.
+
+### Changed
+
+- **"Succeeded" now means the work arrived.** A turn that claims to have written
+  files is checked against the workspace. If the files aren't there, the turn says
+  so — with the specific paths — instead of reporting a clean success. A run that
+  produced no output at all, or that hit its timeout, is classified as such rather
+  than lumped in with real failures.
+- **Cancelling a turn no longer discards what it finished.** Stopping mid-flight
+  snapshots the workspace as it stands, so completed work survives the cancellation
+  instead of being lost with the turn.
+- **Build sessions are grouped by project** in the sidebar, collapsed by default with
+  counts, and the `@` context picker offers the project's declared sources live.
+
+### Fixed
+
+- **Agents can no longer write their output outside your session.** One CLI agent
+  resolved file writes against its own persisted project directory rather than the
+  workspace it was given, so a build could report three files written and leave the
+  session empty. Each headless run is now bound to its session's workspace, and a
+  turn whose claimed outputs are missing is flagged rather than versioned and
+  packaged as if it had delivered.
+- **An agent could take ownership of its workspace's git repository**, after which
+  batonkeep could no longer read that session's history and said nothing about it —
+  it simply looked like a session with no commits. Ownership is now enforced, the
+  condition is reported instead of swallowed, and a repair path re-adopts workspaces
+  already affected.
+- **Build environments no longer flood the file diff.** A `.venv` or `node_modules`
+  the agent created could turn three real outputs into hundreds of changed-file rows.
+  Those trees are excluded at the commit boundary; the fact an environment was built
+  is still noted on the turn.
+- **The frontend container no longer reports itself unhealthy while serving fine.**
+  The health probe resolved to IPv6 while nginx listened on IPv4, producing a
+  permanent `unhealthy` state alongside perfectly good responses.
+- **A newer database than the code understands now fails closed** at startup with a
+  clear message, instead of running against a schema it cannot interpret — which
+  matters if you ever roll an install back to an older image.
+
 ## [0.6.0] — 2026-07-14
 
 A security-and-polish release: add a second factor to your login, and a cleaner

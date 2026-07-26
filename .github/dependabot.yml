@@ -1,0 +1,71 @@
+# Dependabot — turn silent alerts into reviewable pull requests.
+#
+# The repo had Dependabot *alerts* on but no config, so nothing was ever proposed:
+# five advisories accrued unnoticed across two ecosystems and were only found by
+# auditing lockfiles by hand before the v0.7.0 release. Alerts tell you there is a
+# problem; only a config does something about it.
+#
+# Shape of the noise/safety trade below:
+#   • patch + minor are GROUPED into one PR per ecosystem per week — a stream of
+#     single-package PRs is what makes a solo maintainer stop reading them.
+#   • major updates are excluded from the groups so each lands on its own and gets
+#     read properly.
+#   • security updates ignore the schedule and the PR limit entirely (GitHub always
+#     raises those), so a quiet week never delays a real fix.
+version: 2
+
+updates:
+  # ── Frontend (npm) ──────────────────────────────────────────────────────────
+  # dompurify sits on the agent-authored-markdown render path, so its advisories
+  # matter more than their usual "low" label suggests. postcss is build-time only
+  # (multi-stage build ships nginx + dist), which is why a "high" there is not the
+  # emergency it looks like — read severity together with reachability.
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      frontend-minor-patch:
+        update-types: [minor, patch]
+
+  # ── Backend (uv / pyproject + uv.lock) ──────────────────────────────────────
+  # Runtime pins live in pyproject.toml; uv.lock is the resolved truth the image
+  # builds from (`uv sync --frozen`). Both must move together or the build resolves
+  # differently from what was reviewed.
+  - package-ecosystem: uv
+    directory: /backend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      backend-minor-patch:
+        update-types: [minor, patch]
+
+  # ── Container base images ───────────────────────────────────────────────────
+  # python:3.12-slim, node:20-slim, nginx:alpine. These carry OS-level CVEs that no
+  # application-dependency scan will ever surface, and they are rebuilt only when a
+  # release is cut — so without this they age silently between tags.
+  - package-ecosystem: docker
+    directories:
+      - /backend
+      - /frontend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      base-images:
+        update-types: [minor, patch]
+
+  # ── GitHub Actions ──────────────────────────────────────────────────────────
+  # The release workflow has repo write and pushes images to GHCR, so a compromised
+  # action is a supply-chain path into published artifacts. Majors stay ungrouped:
+  # an action major usually changes inputs and will break the workflow.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      actions-minor-patch:
+        update-types: [minor, patch]

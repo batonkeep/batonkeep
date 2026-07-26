@@ -36,6 +36,14 @@ dependencies = [
     # resolves with starlette 1.3.1 / uvicorn 0.32.1.
     # Runs SSRF-fenced behind sandbox.wrap() (see mcp_provider.py).
     "mcp-server-fetch==2026.6.4",
+    # Transitive only (google-genai → google-auth → pyasn1-modules → pyasn1), pinned
+    # to clear three PYSEC advisories against 0.6.3 that are all availability-only
+    # (CVSS C:N/I:N/A:H — a malformed ASN.1 input hangs or crashes the parser).
+    # Low exposure here: the ASN.1 it decodes is OAuth/JWT/certificate material from
+    # Google's endpoints, not anything a user or agent supplies. Pinned rather than
+    # left to resolution for the same reason as starlette/mcp above — a floor we can
+    # point an advisory at.
+    "pyasn1>=0.6.4",
 ]
 
 [project.optional-dependencies]

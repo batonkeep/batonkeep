@@ -518,6 +518,56 @@ _PRUNE_DIRS = frozenset({
     ".ruff_cache", ".cache", ".parcel-cache", ".gradle", "vendor",
 })
 
+# Version-control metadata names. Used by `is_vcs_internal` below, which is the
+# actual fence — this set alone is deliberately NOT relied on (P-0084).
+VCS_NAMES = frozenset({".git", ".hg", ".svn", ".bzr"})
+
+# Separators an alias puts between the VCS name and its suffix. Matching only on
+# these keeps `.github/` (a real artifact directory) out of the fence, while
+# catching `.git.old` / `.git_old` / `.git-old` / `.git.bak`.
+_ALIAS_SEPS = (".", "_", "-")
+
+
+def is_vcs_internal(path: str) -> bool:
+    """True when `path` is a version-control database — by name, alias, or shape.
+
+    Three tests, because no single one holds. When an agent displaces our repo it
+    chooses the alias itself (`repair-workspace-repo.py::BACKUP_NAMES` lists four
+    observed spellings), so a fixed list can never be complete — the next alias is
+    whatever the next agent invents:
+
+    1. **exact name** — `.git`, `.hg`, `.svn`, `.bzr`;
+    2. **alias** — a VCS name followed by `.`, `_` or `-` and a suffix. Deliberately
+       *not* a bare prefix match: `.github/` is a legitimate artifact directory and
+       must keep publishing;
+    3. **shape** — an object database corroborated by `HEAD`, `refs/` or `config`,
+       which catches a repository renamed to something with no VCS name at all.
+
+    Shape requires a corroborating marker rather than `objects/` alone: a bare
+    `objects/` directory is plausible project content, and over-pruning a user's
+    artifacts is its own failure.
+
+    Why this matters beyond bundle hygiene: git objects retain deleted and
+    superseded content absent from the working tree, so a repository reaching a
+    download, share bundle or file browser discloses history the operator never
+    selected — and makes the manifest attest to it (P-0084).
+    """
+    base = os.path.basename(path.rstrip(os.sep))
+    for name in VCS_NAMES:
+        if base == name:
+            return True
+        if (
+            base.startswith(name)
+            and len(base) > len(name)
+            and base[len(name)] in _ALIAS_SEPS
+        ):
+            return True
+    return os.path.isdir(os.path.join(path, "objects")) and (
+        os.path.isfile(os.path.join(path, "HEAD"))
+        or os.path.isdir(os.path.join(path, "refs"))
+        or os.path.isfile(os.path.join(path, "config"))
+    )
+
 
 def _listed_paths(workspace: str) -> list[str]:
     """
@@ -529,8 +579,16 @@ def _listed_paths(workspace: str) -> list[str]:
     root = os.path.abspath(workspace)
     out: list[str] = []
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in _PRUNE_DIRS]
+        # `_PRUNE_DIRS` already drops `.git` at any depth; `is_vcs_internal` adds
+        # the displaced-repo aliases and any repository under an unknown name.
+        dirnames[:] = [
+            d for d in dirnames
+            if d not in _PRUNE_DIRS and not is_vcs_internal(os.path.join(dirpath, d))
+        ]
         for name in filenames:
+            # A nested `.git` can be a *file* (worktree/submodule gitdir pointer).
+            if name in VCS_NAMES:
+                continue
             out.append(os.path.relpath(os.path.join(dirpath, name), root))
     return out
 

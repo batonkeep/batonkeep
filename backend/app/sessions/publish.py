@@ -60,13 +60,24 @@ def _publishable_files(
         if top in excluded_top:
             dirnames[:] = []
             continue
-        # Prune excluded top-level entries and package/build dirs at every level.
+        # Prune excluded top-level entries and package/build dirs at every level,
+        # plus version-control internals at ANY depth under ANY name (P-0084).
+        # `_EXCLUDED_TOP` catches `.git` only at the root, which left two holes: a
+        # displaced repo (`.git.old`, `.git_old`, …) beside the artifacts, and a
+        # nested repository (`subproject/.git`) that needs no agent misbehaviour —
+        # cloning a dependency into the workspace is enough. Both put commit
+        # objects, refs and logs into a download or share bundle.
         dirnames[:] = [
             d for d in dirnames
-            if d not in _EXCLUDED_DIRS and not (rel_dir == "." and d in excluded_top)
+            if d not in _EXCLUDED_DIRS
+            and not (rel_dir == "." and d in excluded_top)
+            and not ws.is_vcs_internal(os.path.join(dirpath, d))
         ]
         for name in filenames:
             if rel_dir == "." and name in excluded_top:
+                continue
+            # A nested `.git` can be a *file* (worktree/submodule gitdir pointer).
+            if name in ws.VCS_NAMES:
                 continue
             full = os.path.join(dirpath, name)
             # Never follow symlinks out of the workspace. build_bundle/zip_workspace

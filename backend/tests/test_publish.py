@@ -238,3 +238,100 @@ class TestPublishHTTP:
         finally:
             app.dependency_overrides.clear()
             asyncio.get_event_loop().run_until_complete(engine.dispose())
+
+
+class TestVcsInternalsExcluded:
+    """P-0084 — a repository must never reach a package, share bundle or browser.
+
+    Git objects retain deleted and superseded content absent from the working
+    tree, so this is a disclosure fence, not bundle hygiene. Two holes existed:
+    `_EXCLUDED_TOP` matched the exact name `.git` at the workspace root only, so
+    (a) a displaced repo (`.git.old`/`.git_old`, whose alias the *agent* chooses)
+    and (b) a nested repository at any depth — which needs no misbehaviour, a
+    cloned dependency is enough — both packaged in full.
+    """
+
+    SENTINEL = "CONTENT-ONLY-IN-GIT-OBJECTS"
+
+    def _tree(self, tmp_path):
+        root = tmp_path / "ws"
+
+        def w(rel: str, body: str = "x") -> None:
+            p = root / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(body)
+
+        # Repositories under every shape we must catch.
+        w(".git/HEAD", self.SENTINEL)
+        w(".git/objects/ab/cd")
+        w(".git/refs/heads/main")
+        # Displaced-repo aliases — the agent picks the spelling, so name lists lose.
+        w(".git.old/objects/ab/cd", self.SENTINEL)
+        w(".git.old/config")
+        w(".git_old/objects/cd/ef", self.SENTINEL)  # alias only: no HEAD/refs/config
+        w(".git-old/HEAD", self.SENTINEL)
+        w(".git-old/refs/heads/x")
+        w(".git.bak/objects/z/z", self.SENTINEL)
+        w(".git.bak/HEAD")
+        # A nested repository needs no misbehaviour — a cloned dependency does it.
+        w("subproject/.git/objects/12/34", self.SENTINEL)
+        # Renamed with no VCS name at all: only shape detection catches this.
+        w("vendored/oldrepo/objects/aa/bb", self.SENTINEL)
+        w("vendored/oldrepo/HEAD")
+        w("vendored/oldrepo/refs/heads/x")
+        # A gitfile pointer is a FILE named `.git`, not a directory.
+        w("wt/.git", "gitdir: /elsewhere")
+
+        # Real artifacts that must keep publishing.
+        w("index.html")
+        w("subproject/main.py")
+        w(".github/workflows/ci.yml")  # shares the `.git` prefix; must not match
+        w(".gitignore")
+        w(".gitattributes")
+        w("assets/objects/model.obj")  # a bare `objects/` dir is plausible content
+        return str(root)
+
+    def _assert_clean(self, root, files):
+        leaked = []
+        for f in files:
+            with open(os.path.join(root, f), encoding="utf-8") as fh:
+                if self.SENTINEL in fh.read():
+                    leaked.append(f)
+        assert leaked == [], f"git internals in output: {leaked}"
+        assert not any(
+            part in {".git", ".git.old", ".git_old", ".git-old", ".git.bak"}
+            for f in files for part in f.split(os.sep)
+        ), f"VCS directory survived: {files}"
+        for keep in (
+            "index.html",
+            os.path.join(".github", "workflows", "ci.yml"),
+            ".gitignore",
+            ".gitattributes",
+            os.path.join("subproject", "main.py"),
+            os.path.join("assets", "objects", "model.obj"),
+        ):
+            assert keep in files, f"over-pruned a real artifact: {keep}"
+
+    def test_publish_and_package_walk_excludes_all_vcs_shapes(self, tmp_path):
+        from app.sessions import publish as pub
+        root = self._tree(tmp_path)
+        self._assert_clean(root, pub._publishable_files(root))
+
+    def test_file_browser_excludes_all_vcs_shapes(self, tmp_path):
+        from app.sessions import workspace as ws
+        root = self._tree(tmp_path)
+        self._assert_clean(root, ws._listed_paths(root))
+
+    def test_github_directory_is_not_treated_as_a_vcs_alias(self, tmp_path):
+        """`.github/` shares the `.git` prefix and is a real artifact directory."""
+        from app.sessions import workspace as ws
+        d = tmp_path / ".github"
+        d.mkdir()
+        assert ws.is_vcs_internal(str(d)) is False
+
+    def test_bare_objects_dir_without_markers_is_not_a_repository(self, tmp_path):
+        """Shape needs a corroborating marker — over-pruning content is its own bug."""
+        from app.sessions import workspace as ws
+        d = tmp_path / "assets"
+        (d / "objects").mkdir(parents=True)
+        assert ws.is_vcs_internal(str(d)) is False

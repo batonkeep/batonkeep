@@ -1282,6 +1282,16 @@ class CockpitActivityOut(BaseModel):
     sessions_confidential: int
     turns_total: int
     turns_by_status: dict[str, int]
+    # P-0070 item 1 — the Build half of the dual headline. `turns_by_status` is the
+    # transport view (a turn that returned text is `succeeded` even if the declared
+    # work never reached the workspace); these are the *work* view, derived from the
+    # advisories the product already records. Defaulted so an older client, and the
+    # cockpit's own tests, keep working.
+    turns_by_outcome: dict[str, int] = {}
+    turns_scored: int = 0
+    turns_delivered: int = 0
+    build_success_rate: float = 0.0
+    turn_failures: dict[str, int] = {}
 
 
 class CockpitOut(BaseModel):

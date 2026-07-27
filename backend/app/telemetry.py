@@ -81,6 +81,43 @@ def classify_error(run: Run) -> str:
     return "error" if run.status == "failed" else "other"
 
 
+def classify_turn_outcome(status: str | None, flags: dict | None) -> str:
+    """A build turn's **work outcome**, not its transport status (P-0070 item 1).
+
+    `succeeded` on a turn means the provider returned and the turn finalized — not
+    that the declared work arrived. R6 packaged two deliberately-escaped turns and
+    the cockpit counted both among `succeeded` while displaying "No failures", so
+    the only surface an operator checks disagreed with the session view beside it.
+
+    Nothing new is measured here: the advisories that already record the
+    discrepancy (`escaped_workspace`/`escape_scope` from P-0083, `outputs_missing`
+    and `unbacked` from P-0069) are simply read. Precedence runs widest-first — an
+    escape is also an unbacked claim, and reporting it twice would double-count.
+
+    This is the interim half of P-0070 item 1. It reclassifies turns the product
+    *already flagged*; it does not yet derive "the contract was met" from the
+    artifact/contract/package chain, which is the durable fix.
+    """
+    st = status or "unknown"
+    if st != "succeeded":
+        return st
+    f = flags or {}
+    if f.get("escaped_workspace"):
+        scope = f.get("escape_scope")
+        return f"escaped_{scope}" if scope in ("full", "partial") else "escaped_workspace"
+    if f.get("outputs_missing"):
+        return "outputs_missing"
+    if f.get("unbacked"):
+        return "unbacked"
+    return "succeeded"
+
+
+# Turn outcomes that are neither a success nor a failure of the work: still in
+# flight, or stopped by the operator. Excluded from the build success denominator
+# (cancelled stays visible in `turns_by_status`).
+_TURN_NOT_SCORED = frozenset({"running", "cancelled"})
+
+
 async def operational_cockpit(
     db: AsyncSession, owner_id: str, window_days: int = 7
 ) -> dict:
@@ -159,13 +196,31 @@ async def operational_cockpit(
     sessions_archived = sum(1 for s in sessions if s.status == "archived")
     sessions_confidential = sum(1 for s in sessions if s.confidential)
 
+    # Fetched per-row rather than grouped in SQL: the work outcome depends on the
+    # turn's advisory flags, not on its status column alone (P-0070 item 1).
     turn_rows = (await db.execute(
-        select(SessionTurn.status, func.count(SessionTurn.id))
+        select(SessionTurn.status, SessionTurn.output_flags)
         .where(SessionTurn.owner_id == owner_id, SessionTurn.created_at >= since)
-        .group_by(SessionTurn.status)
     )).all()
-    turns_by_status = {(st or "unknown"): int(c) for st, c in turn_rows}
-    turns_total = sum(turns_by_status.values())
+    turns_by_status: Counter[str] = Counter((st or "unknown") for st, _ in turn_rows)
+    turns_by_outcome: Counter[str] = Counter(
+        classify_turn_outcome(st, fl) for st, fl in turn_rows
+    )
+    turns_total = len(turn_rows)
+    # Build success rate over turns that actually attempted work: `running` and
+    # `cancelled` leave the denominator, a flagged turn stays in it and out of the
+    # numerator. This is the Build half of the dual headline — deliberately NOT
+    # blended with the task-run rate above, which measures a different lane.
+    turns_scored = sum(
+        c for k, c in turns_by_outcome.items() if k not in _TURN_NOT_SCORED
+    )
+    turns_delivered = turns_by_outcome.get("succeeded", 0)
+    build_success_rate = (turns_delivered / turns_scored) if turns_scored else 0.0
+    # Everything scored that did not deliver, by reason — the "No failures" fix.
+    turn_failures = {
+        k: c for k, c in turns_by_outcome.items()
+        if k not in _TURN_NOT_SCORED and k != "succeeded"
+    }
 
     return {
         "window_days": window_days,
@@ -196,6 +251,12 @@ async def operational_cockpit(
             "sessions_archived": sessions_archived,
             "sessions_confidential": sessions_confidential,
             "turns_total": turns_total,
-            "turns_by_status": turns_by_status,
+            "turns_by_status": dict(turns_by_status),
+            # P-0070 item 1: work outcome, not transport status.
+            "turns_by_outcome": dict(turns_by_outcome),
+            "turns_scored": turns_scored,
+            "turns_delivered": turns_delivered,
+            "build_success_rate": round(build_success_rate, 4),
+            "turn_failures": turn_failures,
         },
     }

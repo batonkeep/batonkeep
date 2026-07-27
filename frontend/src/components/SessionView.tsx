@@ -8,7 +8,7 @@ import { marked } from "marked";
 import DOMPurify from "dompurify";
 import hljs from "highlight.js/lib/common";
 import "highlight.js/styles/github-dark.css";
-import { Activity, Archive, Check, ChevronDown, ChevronLeft, ChevronRight, Cloud, Copy, Download, FileCode, Folder, FolderKanban, Globe, History, Link2, Loader2, Lock, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, Shield, Square, SquareTerminal, Trash2, X } from "lucide-react";
+import { Activity, Archive, Check, ChevronDown, ChevronLeft, ChevronRight, Cloud, Copy, Download, FileCode, Folder, FolderKanban, Globe, History, Link2, ListChecks, Loader2, Lock, Paperclip, Pencil, Plus, RefreshCw, RotateCcw, Search, Send, Shield, Square, SquareTerminal, Trash2, X } from "lucide-react";
 import type { CloudflareStatus, ContextSource, ExecPolicy, FileChange, FileEntry, ImageModel, Project, ProviderCatalog, ProviderHealth, Publish, Session, SessionTemplate, SessionTurn, Version, WorkItem } from "../types";
 import { api } from "../api";
 import { useSessionEvents, type SessionEvent } from "../useLiveFeed";
@@ -834,13 +834,21 @@ export default function SessionView({
   // owner default when nothing is picked), and its open work items for the
   // optional work-item link. Reloaded when the picked project changes.
   const draftProjectId = projectDraft || (projects.find((p) => p.is_default)?.id ?? "");
+  // P-0085: the WorkItem draft is three-state, not two. Creating during the fetch
+  // used to send an explicit `work_item_id: null`, which the backend cannot tell
+  // apart from a deliberate project-level session — no error, no warning, and the
+  // binding is creation-time only. Tracking "in flight" separately from "none
+  // available" removes the window rather than narrowing it.
+  const [draftItemsLoading, setDraftItemsLoading] = useState(false);
   useEffect(() => {
     setWorkItemDraft("");
     if (selectedId || !draftProjectId) {
       setDraftItems([]);
+      setDraftItemsLoading(false);
       return;
     }
     let cancelled = false;
+    setDraftItemsLoading(true);
     api
       .listWorkItems(draftProjectId)
       .then((items) => {
@@ -848,6 +856,9 @@ export default function SessionView({
       })
       .catch(() => {
         if (!cancelled) setDraftItems([]);
+      })
+      .finally(() => {
+        if (!cancelled) setDraftItemsLoading(false);
       });
     return () => {
       cancelled = true;
@@ -855,6 +866,11 @@ export default function SessionView({
   }, [selectedId, draftProjectId]);
 
   const handleCreate = async (template?: string) => {
+    // P-0085 guard: never create while the WorkItem list for the chosen project is
+    // still resolving. The buttons are disabled for this too — this is the second
+    // fence, because a create triggered any other way (Enter key, a future call
+    // site) would otherwise silently serialize `work_item_id: null`.
+    if (draftItemsLoading) return;
     setCreating(true);
     // Write the template intent before onSelect triggers the selectedId useEffect.
     pendingTemplateRef.current = template ?? null;
@@ -1450,7 +1466,7 @@ export default function SessionView({
             className="px-2"
             icon={<Plus size={13} />}
             onClick={() => handleCreate()}
-            disabled={creating}
+            disabled={creating || draftItemsLoading}
             title="New build session"
           />
         </div>
@@ -1590,7 +1606,7 @@ export default function SessionView({
               {/* Default session — hero card */}
               <button
                 onClick={() => handleCreate()}
-                disabled={creating}
+                disabled={creating || draftItemsLoading}
                 className="col-span-2 flex flex-col gap-2 rounded-xl border-2 border-brand/40 bg-gradient-to-br from-brand/5 to-transparent p-5 text-left transition-all hover:border-brand/70 hover:shadow-md sm:col-span-1 disabled:opacity-50"
               >
                 <span className="flex items-center gap-2 font-mono text-sm font-semibold text-brand">
@@ -1604,7 +1620,7 @@ export default function SessionView({
                 <button
                   key={t.id}
                   onClick={() => handleCreate(t.id)}
-                  disabled={creating}
+                  disabled={creating || draftItemsLoading}
                   className="flex flex-col gap-1.5 rounded-xl border border-edge bg-base p-4 text-left transition-all hover:border-brand/50 hover:shadow-sm disabled:opacity-50"
                 >
                   <span className="flex items-center gap-2 font-mono text-sm text-ink">
@@ -1634,21 +1650,33 @@ export default function SessionView({
                     ))}
                   </select>
                 </label>
-                {draftItems.length > 0 && (
+                {/* P-0085: render the control while the fetch is in flight, disabled,
+                    instead of hiding it until items arrive. Hiding it is what made the
+                    race invisible — the operator saw a form with no work-item field and
+                    no reason to expect one, so creating immediately looked deliberate. */}
+                {(draftItemsLoading || draftItems.length > 0) && (
                   <label className="flex items-center gap-2 text-xs text-muted">
                     <span className="font-mono text-[11px] uppercase tracking-wider">Work item</span>
                     <select
                       value={workItemDraft}
                       onChange={(e) => setWorkItemDraft(e.target.value)}
-                      className="max-w-64 rounded-md border border-edge bg-base px-2 py-1 font-mono text-xs text-ink outline-none focus:border-brand/60"
+                      disabled={draftItemsLoading}
+                      className="max-w-64 rounded-md border border-edge bg-base px-2 py-1 font-mono text-xs text-ink outline-none focus:border-brand/60 disabled:opacity-60"
                       aria-label="Work item for the new session (optional)"
+                      aria-busy={draftItemsLoading}
                     >
-                      <option value="">none</option>
-                      {draftItems.map((w) => (
-                        <option key={w.id} value={String(w.id)}>
-                          #{w.id} {w.title.length > 48 ? `${w.title.slice(0, 48)}…` : w.title} · {w.state}
-                        </option>
-                      ))}
+                      {draftItemsLoading ? (
+                        <option value="">loading…</option>
+                      ) : (
+                        <>
+                          <option value="">none</option>
+                          {draftItems.map((w) => (
+                            <option key={w.id} value={String(w.id)}>
+                              #{w.id} {w.title.length > 48 ? `${w.title.slice(0, 48)}…` : w.title} · {w.state}
+                            </option>
+                          ))}
+                        </>
+                      )}
                     </select>
                   </label>
                 )}
@@ -1708,6 +1736,21 @@ export default function SessionView({
                       title="Project (fixed when the session was created)"
                     >
                       <FolderKanban size={11} /> {projectName(detail.project_id)}
+                    </span>
+                  )}
+                  {/* P-0085: the WorkItem binding is the session's execution contract and
+                      was never rendered anywhere — `work_item_id` appeared exactly once in
+                      this file, at the create call. A correctly bound session and one whose
+                      binding was silently lost to the creation race looked identical, which
+                      is what made that race expensive rather than a one-retry annoyance.
+                      Absence of this chip now means "no work item", and it means it
+                      reliably. */}
+                  {detail?.work_item_id != null && (
+                    <span
+                      className="hidden items-center gap-1 rounded border border-edge bg-base px-1.5 py-0.5 font-mono text-[10px] text-muted sm:flex"
+                      title="Work item this session is bound to (fixed when the session was created)"
+                    >
+                      <ListChecks size={11} /> WI #{detail.work_item_id}
                     </span>
                   )}
                   {detail?.confidential && (

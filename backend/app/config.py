@@ -7,20 +7,20 @@ DEPLOYMENT_MODE controls which credential modes are available:
 """
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 from functools import lru_cache
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class DeploymentMode(str, Enum):
+class DeploymentMode(StrEnum):
     personal = "personal"
     oss = "oss"
     managed = "managed"
 
 
-class CredMode(str, Enum):
+class CredMode(StrEnum):
     plan = "plan"
     byo_key = "byo_key"
     hosted = "hosted"

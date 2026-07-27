@@ -284,6 +284,14 @@ export interface Cockpit {
     sessions_confidential: number;
     turns_total: number;
     turns_by_status: Record<string, number>;
+    // P-0070 item 1 — work outcome vs transport status. A turn that returned text
+    // is `succeeded` in turns_by_status even when the declared work never reached
+    // the workspace; these read the advisories that already record that.
+    turns_by_outcome: Record<string, number>;
+    turns_scored: number;
+    turns_delivered: number;
+    build_success_rate: number;
+    turn_failures: Record<string, number>;
   };
 }
 

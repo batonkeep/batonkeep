@@ -14,7 +14,7 @@ import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models import Owner, Run, Session, SessionTurn, Task
-from app.telemetry import classify_error, operational_cockpit
+from app.telemetry import classify_error, classify_turn_outcome, operational_cockpit
 
 
 @pytest.fixture
@@ -196,3 +196,88 @@ class TestCockpit:
         async with fresh_db() as db:
             c = await operational_cockpit(db, "local", window_days=9999)
         assert c["window_days"] == 90
+
+
+class TestBuildOutcomeVisibility:
+    """P-0070 item 1 — the cockpit must not count undelivered work as success.
+
+    R6 packaged two deliberately-escaped turns: the provider claimed three files,
+    none reached the workspace, and the cockpit reported them among `succeeded`
+    while displaying "No failures". Transport status is what it measured; work
+    outcome is what an operator reads it as.
+    """
+
+    def test_transport_success_with_no_flags_is_delivered(self):
+        assert classify_turn_outcome("succeeded", None) == "succeeded"
+        assert classify_turn_outcome("succeeded", {"v": 1}) == "succeeded"
+
+    def test_escape_scope_is_carried_into_the_outcome(self):
+        assert classify_turn_outcome(
+            "succeeded", {"escaped_workspace": True, "escape_scope": "full"}
+        ) == "escaped_full"
+        assert classify_turn_outcome(
+            "succeeded", {"escaped_workspace": True, "escape_scope": "partial"}
+        ) == "escaped_partial"
+        # Flagged before escape_scope existed: still not a success.
+        assert classify_turn_outcome(
+            "succeeded", {"escaped_workspace": True}
+        ) == "escaped_workspace"
+
+    def test_contract_and_link_advisories_are_distinct_outcomes(self):
+        assert classify_turn_outcome(
+            "succeeded", {"outputs_missing": ["a.py"]}
+        ) == "outputs_missing"
+        assert classify_turn_outcome("succeeded", {"unbacked": ["b.py"]}) == "unbacked"
+
+    def test_escape_takes_precedence_over_unbacked(self):
+        """An escape is *also* an unbacked claim — counting both double-reports it."""
+        assert classify_turn_outcome(
+            "succeeded",
+            {"escaped_workspace": True, "escape_scope": "full", "unbacked": ["a.py"]},
+        ) == "escaped_full"
+
+    def test_non_success_statuses_pass_through_unchanged(self):
+        for st in ("failed", "cancelled", "running"):
+            assert classify_turn_outcome(st, None) == st
+        # Flags never rescue or reclassify a non-success status.
+        assert classify_turn_outcome("failed", {"escaped_workspace": True}) == "failed"
+
+    @pytest.mark.asyncio
+    async def test_cockpit_scores_build_turns_by_outcome(self, fresh_db):
+        """The R6 shape end-to-end: 2 clean, 1 escaped, 1 failed, 1 cancelled."""
+        async with fresh_db() as db:
+            db.add(Session(id="s1", owner_id="local", title="A", workspace_path="/w/1",
+                           created_at=_now(1)))
+            await db.commit()
+            rows = [
+                ("succeeded", None),
+                ("succeeded", {"v": 1}),
+                ("succeeded", {"v": 1, "escaped_workspace": True, "escape_scope": "full"}),
+                ("failed", None),
+                ("cancelled", None),
+            ]
+            for i, (status, flags) in enumerate(rows, start=1):
+                db.add(SessionTurn(session_id="s1", owner_id="local", seq=i, prompt="x",
+                                   status=status, output_flags=flags, created_at=_now(1)))
+            await db.commit()
+            act = (await operational_cockpit(db, "local"))["activity"]
+
+        # Transport view is unchanged — the escaped turn still *ran* successfully.
+        assert act["turns_by_status"]["succeeded"] == 3
+        # Work view separates it out.
+        assert act["turns_by_outcome"]["succeeded"] == 2
+        assert act["turns_by_outcome"]["escaped_full"] == 1
+        # Cancelled leaves the denominator; the escape stays in it, out of the top.
+        assert act["turns_scored"] == 4  # 2 clean + 1 escaped + 1 failed
+        assert act["turns_delivered"] == 2
+        assert act["build_success_rate"] == 0.5
+        # The "No failures." regression: both non-deliveries are named.
+        assert act["turn_failures"] == {"escaped_full": 1, "failed": 1}
+
+    @pytest.mark.asyncio
+    async def test_no_build_turns_is_zero_not_a_false_hundred(self, fresh_db):
+        async with fresh_db() as db:
+            act = (await operational_cockpit(db, "local"))["activity"]
+        assert act["turns_scored"] == 0
+        assert act["build_success_rate"] == 0.0
+        assert act["turn_failures"] == {}

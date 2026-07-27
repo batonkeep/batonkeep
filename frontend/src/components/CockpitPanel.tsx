@@ -29,6 +29,19 @@ const ERROR_CLASS_COLOR: Record<string, string> = {
 };
 const errorColor = (k: string) => ERROR_CLASS_COLOR[k] ?? "text-ink";
 
+// Why a build turn did not deliver (P-0070 item 1). An escape is the severe case:
+// the provider reported work the workspace never received. `unbacked` is weaker —
+// a link to a file the committed tree lacks, which can be an honest mistake.
+const TURN_FAILURE_COLOR: Record<string, string> = {
+  escaped_full: "text-bad",
+  escaped_partial: "text-bad",
+  escaped_workspace: "text-bad",
+  outputs_missing: "text-bad",
+  failed: "text-bad",
+  unbacked: "text-defer",
+};
+const turnFailureColor = (k: string) => TURN_FAILURE_COLOR[k] ?? "text-ink";
+
 function Stat({ label, value, sub, tone }: {
   label: string; value: string; sub?: string; tone?: string;
 }) {
@@ -148,8 +161,19 @@ export default function CockpitPanel() {
               sub={runs!.total === 0
                 ? "Run your first task to see data here"
                 : `${runs!.active_runs} active · ${runs!.deferred_now} deferred`} />
-            <Stat label="Success rate" value={fmtPct(runs!.success_rate)}
+            {/* Dual headline (P-0070 item 1): task runs and build turns are
+                different lanes and are reported separately rather than blended —
+                a 100% task rate used to sit beside failed build work and hide it. */}
+            <Stat label="Tasks succeeded" value={fmtPct(runs!.success_rate)}
+              sub="scheduled + manual runs"
               tone={runs!.success_rate >= 0.8 ? "text-ok" : "text-ink"} />
+            <Stat label="Build delivered" value={fmtPct(act!.build_success_rate)}
+              sub={act!.turns_scored === 0
+                ? "No build turns in window"
+                : `${act!.turns_delivered}/${act!.turns_scored} turns · cancelled excluded`}
+              tone={act!.turns_scored === 0
+                ? "text-ink"
+                : act!.build_success_rate >= 0.8 ? "text-ok" : "text-bad"} />
             <Stat label="Error rate" value={fmtPct(runs!.error_rate)}
               tone={runs!.error_rate > 0.2 ? "text-bad" : "text-ink"} />
             <Stat label="Failover rate" value={fmtPct(rel!.failover_rate)}
@@ -217,6 +241,20 @@ export default function CockpitPanel() {
                 </div>
                 <Breakdown data={act!.turns_by_status} empty="No turns." />
               </div>
+            </Section>
+
+            {/* P-0070 item 1: the reason a build turn did not deliver. Without
+                this the cockpit showed "No failures" while turns whose work had
+                escaped the workspace sat inside the succeeded count. */}
+            <Section title="Build failures by reason" hint="work outcome, not transport">
+              <Breakdown data={act!.turn_failures} empty="No failures." tone={turnFailureColor} />
+              <p className="mt-2 text-[11px] leading-snug text-muted">
+                A turn counts as delivered only when it is not flagged. <span className="font-mono">escaped_full</span>{" "}
+                / <span className="font-mono">escaped_partial</span> mean the provider reported writing files that
+                never reached the workspace; <span className="font-mono">outputs_missing</span> means declared
+                sub-task paths are absent; <span className="font-mono">unbacked</span> means the response linked to
+                files the committed tree does not contain.
+              </p>
             </Section>
 
             <Section title="Spend by provider" hint="today">

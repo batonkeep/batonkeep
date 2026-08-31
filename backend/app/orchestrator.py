@@ -19,10 +19,11 @@ import logging
 import os
 import re
 from collections import defaultdict
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm.attributes import flag_modified
 
 from app import task_assets, task_workspace
@@ -36,6 +37,7 @@ from app.providers.registry import get_executor
 from app.quota import quota_tracker
 from app.redact import redact_json, redact_text
 from app.router import DeferredResult, resolve
+from app.runtime import RUNTIME_EPOCH
 from app.schemas import RunOut
 from app.ws import ws_manager
 
@@ -101,7 +103,11 @@ async def _do_execute(run_id: int, task: Task) -> None:
         claim = await db.execute(
             update(Run)
             .where(Run.id == run_id, Run.status == "queued")
-            .values(status="planning", started_at=now)
+            # RUNTIME_EPOCH stamps *which process* owns this run, so boot-time
+            # reconciliation can tell an orphan from a run a live sibling is driving
+            # (D-0068). Written in the same atomic statement as the claim — a separate
+            # write could leave a claimed run with no owner if the process died between.
+            .values(status="planning", started_at=now, runtime_epoch=RUNTIME_EPOCH)
         )
         await db.commit()
         if claim.rowcount == 0:
@@ -686,7 +692,7 @@ async def _do_execute(run_id: int, task: Task) -> None:
         )
 
 
-# ── startup reaper (D-0021) ─────────────────────────────────────────────────────
+# ── attempt log ────────────────────────────────────────────────────────────────
 
 def record_attempts(run: Run, attempts: list[dict[str, Any]]) -> None:
     """Persist the per-attempt log so terminal outcomes actually reach the DB (P-0105).
@@ -714,33 +720,141 @@ def record_attempts(run: Run, attempts: list[dict[str, Any]]) -> None:
     flag_modified(run, "attempts")
 
 
-async def reap_orphaned_runs() -> int:
-    """Reconcile runs stranded by a backend restart; return how many were reaped.
+# ── boot-time reconciliation (D-0021 → D-0067/D-0068) ─────────────────────────
 
-    Runs execute as in-memory fire-and-forget asyncio tasks (no durable queue), so a
-    crash/restart leaves any `queued`, `planning`, or `running` run with no executor — it
-    would sit non-terminal forever (a `planning` run in particular keeps showing the live
-    pulse when reopened). On startup we mark these `failed` with a clear reason so the
-    state is honest and the user can requeue (P5: tasks are the real-work unit). Note:
-    `deferred` runs are intentionally left alone — the scheduler's deferred-sweep owns
-    those. Durable queueing/auto-requeue is a later managed-scale graduation (D-0021).
+#: What reconciliation decided to do with an orphaned run.
+RESUME, SKIP, FAIL = "resume", "skip", "fail"
+
+
+def classify_orphan(run: Run, task: Task | None) -> tuple[str, str]:
+    """Decide what to do with a non-terminal run left behind by a restart (D-0068).
+
+    Pure and DB-free so the rule can be tested exhaustively without fixtures — the
+    decision matters more than the plumbing around it.
+
+    **Safety is decided from evidence, never from intent.** A tag records what a job
+    *wanted*; whether resuming is safe depends on what it already *did*. The dividing
+    line is the atomic ``queued → planning`` claim and the dispatch that follows it:
+
+    * ``queued`` with no ``started_at`` — the claim never fired, so no executor ever
+      touched this row. Provably nothing happened.
+    * ``planning`` with no ``provider`` — claimed, but routing/selection only; no
+      provider was dispatched, so still nothing external happened.
+    * anything else (``running``, or ``planning`` that already picked a provider) —
+      **dispatched**. ``status`` is committed immediately before the executor is invoked,
+      so this means quota may be spent, tools may have fired and files may be written.
+      Re-running is not safe, and no policy may override that.
+
+    Only once a run is known safe does *policy* apply — see ``Task.recovery_policy``.
+
+    On the finer grade: D-0068 originally also keyed on a trailing
+    ``attempts[-1].outcome == "pending"`` to separate "died mid-provider-call" from
+    "provider returned, post-processing died". That field never transitioned until
+    P-0105, and even with it fixed **both cases stay unsafe** — a returned provider call
+    has already spent and may have written output. The refinement therefore improves the
+    *reason recorded*, not the *verdict*, and is deliberately not a branch here.
+    """
+    dispatched = not (
+        (run.status == "queued" and run.started_at is None)
+        or (run.status == "planning" and run.provider is None)
+    )
+    if dispatched:
+        return FAIL, (
+            "interrupted by backend restart after the run was dispatched to "
+            f"{run.provider or 'a provider'} — not auto-resumed, because a dispatched "
+            "run may already have spent quota or produced side effects"
+        )
+
+    # Safe to re-run. Now, and only now, does intent get a say.
+    policy = (task.recovery_policy if task is not None else None) or "next_occurrence"
+    scheduled = run.trigger == "schedule"
+    has_schedule = bool(task is not None and getattr(task, "schedule_expr", None))
+    if scheduled and has_schedule and policy == "next_occurrence":
+        return SKIP, (
+            "not resumed: the task's recovery_policy is next_occurrence, so the next "
+            "scheduled run is the recovery (re-running now risks double-firing)"
+        )
+    return RESUME, "re-queued after a backend restart (never dispatched, so safe to re-run)"
+
+
+async def reap_orphaned_runs(
+    *, dispatch: Callable[[int], None] | None = None
+) -> int:
+    """Reconcile runs stranded by a backend restart; return how many were acted on.
+
+    ``dispatch`` is the seam used to re-execute a resumable run; it defaults to spawning
+    ``execute_run`` as a background task. It exists so the *decision* can be tested
+    without actually running anything — a reconciliation test should assert on what was
+    classified, not spawn real provider work.
+
+    Runs execute as in-memory fire-and-forget asyncio tasks, so a crash/restart leaves
+    ``queued``/``planning``/``running`` rows with no executor — they would sit
+    non-terminal forever (a ``planning`` run in particular keeps showing the live pulse
+    when reopened).
+
+    Two things changed with D-0067 (always-on operation became a durable-jobstore
+    trigger) and D-0068:
+
+    1. **Only rows this process did not start are considered.** A non-terminal run whose
+       ``runtime_epoch`` is the current one is being driven right now and must be left
+       alone. The previous rule — "if I am starting, everything non-terminal is orphaned"
+       — is true of one process and false of two, and reconciling a live sibling's run is
+       precisely how a durable queue becomes a double-execution bug.
+    2. **Not everything is failed.** A run that was never dispatched is re-queued (or
+       deliberately skipped per ``Task.recovery_policy``); only a dispatched run is failed.
+
+    ``deferred`` runs are still left alone — the scheduler's deferred sweep owns those.
     """
     now = datetime.now(UTC)
-    reaped = 0
+    counts = {RESUME: 0, SKIP: 0, FAIL: 0}
+    to_resume: list[int] = []
     async with AsyncSessionLocal() as db:
         result = await db.execute(
-            select(Run).where(Run.status.in_(("running", "queued", "planning")))
+            select(Run).where(
+                Run.status.in_(("running", "queued", "planning")),
+                # NULL = written before this column existed ⇒ certainly not ours.
+                or_(Run.runtime_epoch.is_(None), Run.runtime_epoch != RUNTIME_EPOCH),
+            )
         )
         for run in result.scalars().all():
-            run.status = "failed"
-            run.error = "interrupted by backend restart (reaped at startup)"
-            run.finished_at = now
-            reaped += 1
-        if reaped:
+            task = await db.get(Task, run.task_id) if run.task_id else None
+            action, reason = classify_orphan(run, task)
+            counts[action] += 1
+            if action == RESUME:
+                # Back to ``queued`` so the atomic claim still fences double-dispatch;
+                # clear the ownership stamp so the run is unambiguously unowned until a
+                # process claims it again.
+                run.status = "queued"
+                run.started_at = None
+                run.runtime_epoch = None
+                run.error = None
+                to_resume.append(run.id)
+            elif action == SKIP:
+                # ``cancelled``, not ``failed``: nothing failed. Filing a deliberate
+                # policy decision as a failure is the dishonesty P-0070 was fixing.
+                run.status = "cancelled"
+                run.error = reason
+                run.finished_at = now
+            else:
+                run.status = "failed"
+                run.error = reason
+                run.finished_at = now
+        if any(counts.values()):
             await db.commit()
-    if reaped:
-        logger.warning("reaped %d orphaned run(s) on startup", reaped)
-    return reaped
+
+    # Dispatch outside the session so a slow spawn cannot hold the transaction open.
+    spawn = dispatch or (lambda rid: asyncio.create_task(execute_run(rid)))
+    for run_id in to_resume:
+        spawn(run_id)
+
+    total = sum(counts.values())
+    if total:
+        logger.warning(
+            "boot reconciliation: %d orphaned run(s) — %d resumed, %d skipped "
+            "(recovery_policy), %d failed (dispatched)",
+            total, counts[RESUME], counts[SKIP], counts[FAIL],
+        )
+    return total
 
 
 # ── enqueue ────────────────────────────────────────────────────────────────────

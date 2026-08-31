@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select, update
+from sqlalchemy.orm.attributes import flag_modified
 
 from app import task_assets, task_workspace
 from app.config import get_settings
@@ -282,7 +283,7 @@ async def _do_execute(run_id: int, task: Task) -> None:
 
                     attempt: dict[str, Any] = {"provider": provider_name, "outcome": "pending"}
                     attempts.append(attempt)
-                    run.attempts = list(attempts)
+                    record_attempts(run, attempts)
                     # Provenance stamp: the executing CLI version onto the receipt
                     # (last candidate attempted wins on failover — the one whose
                     # output the run records). API-lane executors have no probe.
@@ -390,7 +391,7 @@ async def _do_execute(run_id: int, task: Task) -> None:
                             run_id, provider_name,
                         )
 
-                    run.attempts = list(attempts)
+                    record_attempts(run, attempts)
                     await db.commit()
 
                     if final_result is not None:
@@ -475,7 +476,7 @@ async def _do_execute(run_id: int, task: Task) -> None:
                     if outcome == "cooling":
                         run.status = "deferred"
                         run.deferred_until = quota_tracker.earliest_reset(candidates)
-                        run.attempts = attempts
+                        record_attempts(run, attempts)
                         await db.commit()
                         await _record_routing_outcome(db, run)  # P-0053 slice 2
                         await _broadcast_run(run)
@@ -495,7 +496,7 @@ async def _do_execute(run_id: int, task: Task) -> None:
                             data={"attempt": retry_count, "max_retries": max_retries,
                                   "delay_seconds": delay, "error": error_msg},
                         )
-                        run.attempts = attempts
+                        record_attempts(run, attempts)
                         await db.commit()
                         await _broadcast_run(run)
                         await asyncio.sleep(delay)
@@ -505,7 +506,7 @@ async def _do_execute(run_id: int, task: Task) -> None:
                     # a non-cooling exhaustion now fails honestly instead of deferring
                     # with a null deferred_until that the sweep can never pick up).
                     plural = "y" if retry_count == 1 else "ies"
-                    run.attempts = attempts
+                    record_attempts(run, attempts)
                     await _fail(
                         db, run,
                         f"all candidates failed after {retry_count} retr{plural}: {error_msg}",
@@ -522,7 +523,7 @@ async def _do_execute(run_id: int, task: Task) -> None:
             await db.rollback()
             run = await db.get(Run, run_id)
             if run is not None and run.status not in _TERMINAL_RUN_STATUSES:
-                run.attempts = attempts
+                record_attempts(run, attempts)
                 await _fail(
                     db, run,
                     f"run timed out after {minutes:g} min "
@@ -614,7 +615,7 @@ async def _do_execute(run_id: int, task: Task) -> None:
         run.tool_calls = tool_calls
         run.model = final_result.model if final_result else None
         run.tier = _get_tier(run.provider or "")
-        run.attempts = attempts
+        record_attempts(run, attempts)
 
         # Substrate evidence: index the run's report in the append-only evidence
         # store. Best-effort — evidence must never break the run that produced it.
@@ -686,6 +687,32 @@ async def _do_execute(run_id: int, task: Task) -> None:
 
 
 # ── startup reaper (D-0021) ─────────────────────────────────────────────────────
+
+def record_attempts(run: Run, attempts: list[dict[str, Any]]) -> None:
+    """Persist the per-attempt log so terminal outcomes actually reach the DB (P-0105).
+
+    Attempt dicts are built with ``outcome: "pending"`` *before* a provider is dispatched
+    and then finalised by **in-place mutation** (``attempt["outcome"] = "success"``) once
+    the stream ends. ``Run.attempts`` is a plain, untracked ``JSON`` column, so the value
+    SQLAlchemy holds as "old" is the *same object* that just got mutated: a later
+    ``run.attempts = attempts`` compares equal against itself, no change is detected, and
+    **no UPDATE is emitted**. Every run therefore persisted ``"pending"`` forever —
+    succeeded runs included — silently losing the failover audit trail and making
+    ``failover_reasons`` attribute every failover to a reason of ``"pending"``.
+
+    Two things are needed, and both matter:
+
+    * **store copies** — so the ORM-held value can never alias the dicts we keep mutating
+      (otherwise the "persisted" state changes under us mid-transaction), and
+    * **flag the attribute explicitly** — because once the old value has been mutated,
+      *no* equality-based dirty check can see the difference.
+
+    ``MutableList.as_mutable(JSON)`` does **not** fix this: it tracks list operations, not
+    mutation of a dict *inside* the list.
+    """
+    run.attempts = [dict(a) for a in attempts]
+    flag_modified(run, "attempts")
+
 
 async def reap_orphaned_runs() -> int:
     """Reconcile runs stranded by a backend restart; return how many were reaped.

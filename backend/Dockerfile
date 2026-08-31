@@ -87,13 +87,17 @@ RUN mkdir -p /data /data/sessions /work \
 # ── Final stage: Node 20 + CLI agents + application code ───────────────────────
 FROM pyenv
 
-# ── Node 20 + CLI agents ───────────────────────────────────────────────────────
+# ── Node 24 (Active LTS) + CLI agents ─────────────────────────────────────────
+# Node 20 went EOL 2026-04-30. This one is RUNTIME, not build-time: the plan-CLI
+# lanes `claude` and `grok` are npm globals executed here. It is also invisible to
+# Dependabot — a `RUN curl … | bash` is not a base image, so no ecosystem watches it
+# and it will never raise a PR of its own (see P-0094).
 # Each RUN is isolated so a best-effort failure (subscription-gated betas, etc.)
 # doesn't abort the build. Manual `make auth` activates subscriptions.
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl git gnupg gosu ripgrep \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 

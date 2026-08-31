@@ -54,6 +54,18 @@ sys.exit(4)
 PY
 }
 
+# A login command that no longer exists is indistinguishable from a cancelled login if
+# all we print is "re-run to retry" — that advice can never work, and it is what hid the
+# broken `agy auth` and `claude /login` commands. Name the exit code and point at the
+# CLI's own help, so a drifted command is diagnosable in one step.
+login_failed() {
+  local bin="$1" rc="$2"
+  echo " ! '${bin}' login exited ${rc}."
+  echo "   If you did not cancel it, the login command may have changed in your installed"
+  echo "   version ($(${bin} --version 2>/dev/null | head -1 || echo 'version unknown'))."
+  echo "   Check the CLI's own help and report the difference:  ${bin} --help"
+}
+
 usage() {
   cat <<EOF
 Usage: auth.sh [provider|instance ...]
@@ -79,17 +91,30 @@ run_provider() {
   local token="$1" template slug cfg_env cfg_dir
   template="${token%%:*}"   # part before ':' (or whole token if no ':')
   local key="$template"
-  local label bin login hint
+  local label bin login hint post=""
   case "$key" in
     claude)
-      label="Claude (Anthropic Max/Pro)"; bin="claude"; login="claude /login"
-      hint="npm i -g @anthropic-ai/claude-code   # then: claude /login" ;;
+      # `claude /login` is a slash command for inside the TUI. Passed as argv the CLI
+      # answers "/login isn't available in this environment" AND EXITS 0, so the failure
+      # was invisible to the check below. `claude auth login` is the real subcommand.
+      label="Claude (Anthropic Max/Pro)"; bin="claude"; login="claude auth login"
+      hint="npm i -g @anthropic-ai/claude-code   # then: claude auth login" ;;
     grok)
       label="Grok (xAI SuperGrok)"; bin="grok"; login="grok login"
       hint="npm install -g @xai-official/grok   # then: grok login" ;;
     agy)
-      label="Antigravity (Google / Gemini)"; bin="agy"; login="agy auth"
-      hint="curl -fsSL https://antigravity.google/cli/install.sh | bash   # then: agy auth" ;;
+      # There is no `agy auth` subcommand (the CLI answers "unknown subcommand: auth").
+      # agy signs in by launching with NO arguments: `agy models` says so directly —
+      # "Please sign in to view available models. Launch the CLI without arguments to
+      # sign in." That opens the interactive TUI, so the operator exits it once signed in.
+      # NOTE: unlike claude/codex (which print a URL or device code), agy's sign-in is a
+      # full TUI and therefore REQUIRES A TTY — it aborts with "error opening TTY" without
+      # one. Both supported routes provide one (the in-UI console runs this under a PTY via
+      # PtyAuthSession; the documented CLI route is an interactive `docker compose exec`),
+      # so this is a constraint to preserve, not a bug to work around.
+      label="Antigravity (Google / Gemini)"; bin="agy"; login="agy"
+      post="Antigravity signs in inside its interactive UI — once you are signed in, exit it (Ctrl+C) to return here."
+      hint="curl -fsSL https://antigravity.google/cli/install.sh | bash   # then run: agy" ;;
     codex)
       label="Codex (OpenAI ChatGPT Plus)"; bin="codex"
       login="codex login --device-auth"   # device-auth prints a URL+code — works headless/SSH
@@ -131,17 +156,18 @@ run_provider() {
 
   echo " Found '${bin}'. Launching its login flow."
   echo " Follow the printed URL / device code in a browser, then return here."
+  [ -n "$post" ] && echo " ${post}"
   if [ -n "$cfg_dir" ]; then
     echo " Account config dir: ${cfg_env}=${cfg_dir}"
     mkdir -p "$cfg_dir"
     echo
     # Scope the env var to a subshell so it only affects this account's login.
     # shellcheck disable=SC2086
-    ( export "${cfg_env}=${cfg_dir}"; $login ) || echo " ! '${bin}' login exited non-zero — re-run to retry."
+    ( export "${cfg_env}=${cfg_dir}"; $login ) || login_failed "$bin" "$?"
   else
     echo
     # shellcheck disable=SC2086
-    $login || echo " ! '${bin}' login exited non-zero — re-run to retry."
+    $login || login_failed "$bin" "$?"
   fi
   echo
 }

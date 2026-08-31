@@ -434,6 +434,18 @@ class Task(Base):
     # run_timeout_seconds default (1800s). Bounds elapsed wall-clock time for the
     # whole run; clamped to a 6h ceiling at the API boundary.
     timeout_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # How a run of this task should be recovered when a restart strands it before it
+    # was ever dispatched (D-0068). This is the *policy* half of resume — the *safety*
+    # half is decided from run evidence and can never be overridden by it.
+    #   next_occurrence (default) — do not re-run; the next scheduled fire is the
+    #     recovery. Correct for point-in-time work ("what is the market doing now"),
+    #     where a late catch-up run near the next boundary would double-fire.
+    #   catch_up — re-run it; the work is about a moment that passed (a daily brief).
+    # Only meaningful for scheduled runs: a manual run has no "next occurrence", so
+    # next_occurrence cannot apply and such runs resume when safe.
+    recovery_policy: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="next_occurrence"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -465,8 +477,17 @@ class Run(Base):
     )
     # "manual" | "schedule"
     trigger: Mapped[str] = mapped_column(String(16), default="manual")
-    # "queued" | "running" | "succeeded" | "failed" | "deferred" | "cancelled"
+    # "queued" | "planning" | "running" | "succeeded" | "failed" | "deferred" | "cancelled"
+    # `planning` is a real state (set by the atomic claim in orchestrator._do_execute) and
+    # the boot-time reconciliation in D-0068 turns on it — it was missing from this list.
     status: Mapped[str] = mapped_column(String(16), default="queued", index=True)
+    # Which backend process owned this run (D-0068). Stamped by the atomic queued→planning
+    # claim with that process's RUNTIME_EPOCH. At startup, a non-terminal run whose epoch is
+    # not the current one is orphaned **by construction** rather than by assuming "if I am
+    # starting, nothing else is running" — an assumption that is true of one process and
+    # false of two, and which would otherwise make a durable queue a double-execution bug.
+    # NULL for rows written before this column existed; treated as orphaned.
+    runtime_epoch: Mapped[str | None] = mapped_column(String(32), nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     # provider instance id that ultimately produced the result (e.g. "claude:work")

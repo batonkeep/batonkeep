@@ -12,6 +12,14 @@ from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 # P-0046 code-exec execution policies (single source of truth: code_exec.POLICIES).
 from app.providers.tools.code_exec import POLICIES as EXEC_POLICIES
 
+#: D-0068 — how a stranded, never-dispatched run of this task is recovered.
+#: `next_occurrence` is the default because for recurring work the next
+#: scheduled fire is usually the correct recovery and double-firing is the
+#: worse failure; `catch_up` opts in to re-running work about a moment that
+#: has passed. It is a *policy* filter applied only after a run is known safe
+#: to re-run — it can never make a dispatched run resumable.
+RECOVERY_POLICIES = frozenset({"next_occurrence", "catch_up"})
+
 # P-0056/D-0052: bounds for the per-task run-timeout override (seconds). Floor 1 min;
 # ceiling 6h (runaway-cost protection). None means "inherit the global default".
 TIMEOUT_SECONDS_MIN = 60
@@ -546,12 +554,21 @@ class TaskCreate(BaseModel):
     # P-0056/D-0052: per-task run timeout in seconds. None = global default (1800s).
     # Bounds elapsed wall-clock time; clamped to [60s, 6h].
     timeout_seconds: int | None = None
+    # D-0068: recovery for a run stranded by a restart *before* it was dispatched.
+    recovery_policy: str = "next_occurrence"
 
     @field_validator("exec_policy")
     @classmethod
     def _valid_policy(cls, v: str) -> str:
         if v not in EXEC_POLICIES:
             raise ValueError(f"exec_policy must be one of {sorted(EXEC_POLICIES)}")
+        return v
+
+    @field_validator("recovery_policy")
+    @classmethod
+    def _valid_recovery_policy(cls, v: str) -> str:
+        if v not in RECOVERY_POLICIES:
+            raise ValueError(f"recovery_policy must be one of {sorted(RECOVERY_POLICIES)}")
         return v
 
     @field_validator("image_model_id")
@@ -594,12 +611,21 @@ class TaskUpdate(BaseModel):
     # P-0056/D-0052 per-task run timeout (seconds). -1 clears back to the global
     # default; None means "unchanged" (exclude_unset). Bounds elapsed wall-clock time.
     timeout_seconds: int | None = None
+    # D-0068 recovery policy; None means "unchanged".
+    recovery_policy: str | None = None
 
     @field_validator("exec_policy")
     @classmethod
     def _valid_policy(cls, v: str | None) -> str | None:
         if v is not None and v not in EXEC_POLICIES:
             raise ValueError(f"exec_policy must be one of {sorted(EXEC_POLICIES)}")
+        return v
+
+    @field_validator("recovery_policy")
+    @classmethod
+    def _valid_recovery_policy(cls, v: str | None) -> str | None:
+        if v is not None and v not in RECOVERY_POLICIES:
+            raise ValueError(f"recovery_policy must be one of {sorted(RECOVERY_POLICIES)}")
         return v
 
     @field_validator("image_model_id")
@@ -644,6 +670,7 @@ class TaskOut(BaseModel):
     enabled: bool
     routing: dict[str, Any] | None
     exec_policy: str = "confirmation"  # P-0046 code-exec execution policy
+    recovery_policy: str = "next_occurrence"  # D-0068 stranded-run recovery
     image_model_id: str | None = None  # P-0046 slice 6: image-gen model override
     asset_max_count: int | None = None  # P-0050 retention cap; None = unlimited
     asset_max_bytes: int | None = None  # P-0050 retention cap; None = unlimited

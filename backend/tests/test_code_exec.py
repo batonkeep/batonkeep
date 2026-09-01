@@ -24,11 +24,19 @@ def test_policy_offers_tool_only_runnable():
     assert policy_offers_tool(None) is False  # default confirmation
 
 
-def test_confirmation_offered_only_with_human_in_loop():
-    # Slice 3b: confirmation offers code-exec when a human can approve.
-    assert policy_offers_tool("confirmation", human_in_loop=True) is True
-    assert policy_offers_tool("confirmation", human_in_loop=False) is False
-    assert policy_offers_tool("off", human_in_loop=True) is False
+def test_confirmation_offered_whenever_an_approver_exists():
+    """P-0098 / Gate B: the question is 'is there an approver', not 'is a human watching'.
+
+    Before Gate B this keyed on `human_in_loop`, so an unattended run on `confirmation`
+    was never offered the tool — leaving only 'withhold the capability' or 'run it
+    unsupervised'. A run lane that can park on a durable approval is an approver too.
+    """
+    assert policy_offers_tool("confirmation", has_approver=True) is True
+    assert policy_offers_tool("confirmation", has_approver=False) is False
+    # `off` still means off, approver or not.
+    assert policy_offers_tool("off", has_approver=True) is False
+    # ...and the runnable policies never needed one.
+    assert policy_offers_tool("allow-safe", has_approver=False) is True
 
 
 async def test_confirmation_approved_executes(tmp_path):
@@ -142,9 +150,19 @@ def test_executor_offers_code_exec_by_policy(policy, offered):
     assert {"fs_read", "web_search"} <= names
 
 
-def test_executor_offers_confirmation_with_human_in_loop():
+def test_executor_offers_confirmation_when_an_approve_callback_is_present():
+    """The executor's test is the presence of the callback, not a human_in_loop flag."""
     from app.providers.model_executor import _active_tool_schemas
 
-    names = {s["name"] for s in _active_tool_schemas(
-        {"exec_policy": "confirmation", "human_in_loop": True})}
-    assert "code_exec" in names
+    async def approve(code, label):
+        return True
+
+    offered = {s["name"] for s in _active_tool_schemas(
+        {"exec_policy": "confirmation", "approve": approve})}
+    assert "code_exec" in offered
+
+    # An unattended run with NO approver still must not be offered the tool — that is the
+    # safety property Gate B relaxed the *reason* for, not the property itself.
+    withheld = {s["name"] for s in _active_tool_schemas(
+        {"exec_policy": "confirmation", "human_in_loop": False})}
+    assert "code_exec" not in withheld

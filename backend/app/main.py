@@ -1411,23 +1411,53 @@ async def decide_approval(
     db: AsyncSession = Depends(get_db),
     owner_id: str = Depends(_owner_id),
 ):
-    """Decide a pending canonical-write proposal. Approving applies the write
-    (git commit on git roots); denying records the refusal. Code-exec approvals
-    are decided through their session route — this one refuses them so a
-    blocked turn's Future can't be bypassed."""
+    """Decide a pending canonical-write proposal, or an **unattended run**'s code-exec
+    request (P-0098 / Gate B).
+
+    Approving a canonical write applies it (git commit on git roots); denying records the
+    refusal. A run-lane code-exec approval simply releases the parked run, which then
+    proceeds or skips the call.
+
+    **Session** code-exec approvals are still refused here and go through their session
+    route. That is not an inconsistency: a session has a live operator and a live view, so
+    routing its decision anywhere else would let a blocked turn's Future be settled from
+    outside the surface showing it. An unattended run has no such surface — the general
+    approvals queue *is* its surface, which is precisely why it must be decidable here."""
     from app import canonical
 
     row = await db.get(Approval, approval_id)
     if row is None or row.owner_id != owner_id:
         raise HTTPException(status_code=404, detail="Approval not found")
-    if row.kind != "canonical_write":
+    is_unattended_run = row.kind == "code_exec" and row.run_id is not None
+    if row.kind != "canonical_write" and not is_unattended_run:
         raise HTTPException(
             status_code=400,
-            detail="only canonical_write approvals are decided here; "
-                   "code-exec approvals go through their session route",
+            detail="only canonical_write and unattended-run code_exec approvals are "
+                   "decided here; a session's code-exec approval goes through its "
+                   "session route",
         )
     if row.status != "pending":
         raise HTTPException(status_code=409, detail=f"approval already {row.status}")
+
+    if is_unattended_run:
+        # Order matters. Release the parked run FIRST: a failed resolve means no run is
+        # waiting, and settling before that check would record a decision that nothing
+        # ever acted on — an audit trail saying "approved" for work that never ran.
+        if not approvals.resolve(row.request_id, body.approved):
+            raise HTTPException(
+                status_code=409,
+                detail="the run waiting on this approval is no longer running "
+                       "(a restart ends a parked run; the record stays for the audit "
+                       "trail and the task can be re-run)",
+            )
+        settled = await approvals.settle(
+            db, row.request_id, approved=body.approved, decided_by="human"
+        )
+        await db.commit()
+        # The run's own approver also calls settle when it wakes; that call finds the row
+        # non-pending and no-ops, which is why the decided_by recorded here ("human") is
+        # the one that survives rather than the approver's fallback classification.
+        return ApprovalDecideOut(approval=ApprovalOut.model_validate(settled or row))
 
     settled = await approvals.settle(
         db, row.request_id, approved=body.approved, decided_by="human"

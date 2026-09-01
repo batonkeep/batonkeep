@@ -47,6 +47,12 @@ class Settings(BaseSettings):
     per_provider_concurrency: int = 1
     max_concurrent_runs: int = 4
     run_timeout_seconds: int = 1800
+    # P-0098 / Gate B: how long an *unattended* run will park on a code-exec
+    # approval before treating it as denied. Far longer than the interactive
+    # session default (300s) because the whole point is that nobody is watching —
+    # but still bounded, and still inside the run's own wall-clock timeout, so a
+    # parked run can never outlive the budget the operator set for it.
+    unattended_approval_timeout_seconds: int = 900
     # P-0078: planning turns are meant to be cheap, frequent meta-work — they read
     # DB state and call a couple of proposal tools. They must NOT inherit the
     # 30-minute run budget: a planner that takes half an hour has already failed at

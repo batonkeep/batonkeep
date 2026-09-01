@@ -186,7 +186,9 @@ class TestPlanningMode:
         answer "nothing is bound" — it is handed the project half instead."""
         from app.providers.model_executor import _active_tool_schemas
         names = {s["name"] for s in _active_tool_schemas({"planning": True})}
-        assert names == {"triage_signal", "summarize_project"}
+        # `propose_schedule` is project-level (D-0070): recurring work belongs to the
+        # project, not to one work item — and like its siblings it proposes only.
+        assert names == {"triage_signal", "summarize_project", "propose_schedule"}
 
     def test_base_run_excludes_every_planner_tool(self):
         from app.providers.model_executor import _active_tool_schemas

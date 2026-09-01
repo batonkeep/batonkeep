@@ -474,6 +474,12 @@ class ApprovalDecideIn(BaseModel):
     # silent, while the cost of an unwanted declaration is a visible extra row.
     # No-op when an existing source already covers the path.
     declare_source: bool = True
+    # D-0070: approving a `schedule_proposal` is where the operator sets the **real**
+    # schedule. The agent proposed cadence in plain words on purpose — writing cron is
+    # the precise authority being withheld, so it is supplied here, by the human, at the
+    # moment of granting. Required to approve a schedule proposal; ignored otherwise.
+    schedule_expr: str | None = None
+    schedule_kind: str | None = None
 
 
 class ApprovalDecideOut(BaseModel):

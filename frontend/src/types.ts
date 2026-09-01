@@ -890,7 +890,8 @@ export interface Approval {
   id: number;
   owner_id: string;
   request_id: string;
-  // canonical_write (decidable here) | code_exec (decided via its session route).
+  // canonical_write | code_exec. Both are decidable through /approvals/{id}/decide
+  // EXCEPT a session's code_exec (run_id === null), which its session route owns.
   kind: string;
   status: ApprovalStatus;
   project_id: string | null;

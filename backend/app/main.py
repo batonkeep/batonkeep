@@ -64,6 +64,7 @@ from app.projects import (
     resolve_work_item_id,
 )
 from app.schemas import (
+    ActivityItem,
     ApprovalBatchDecideIn,
     ApprovalBatchDecideOut,
     ApprovalBatchItemOut,
@@ -148,6 +149,7 @@ from app.schemas import (
     WorkItemOut,
     WorkItemPatch,
 )
+from app.telemetry import classify_turn_outcome
 from app.ws import ws_manager
 
 logger = logging.getLogger(__name__)
@@ -1344,6 +1346,101 @@ async def propose_canonical_write(
     await db.commit()
     await db.refresh(row)
     return ApprovalOut.model_validate(row)
+
+
+@app.get("/api/activity", response_model=list[ActivityItem], tags=["activity"])
+async def list_activity(
+    limit: int = 50,
+    project_id: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """One timeline across every lane — what the agents have been doing (Gate C / P-0100).
+
+    Per-run logs already existed; what did not was the *aggregate*, and an operator who
+    has to open three views and correlate by timestamp cannot answer "what happened while
+    I was away". That question is the whole point of unattended work.
+
+    Two properties are deliberate:
+
+    * **The `outcome` is the work outcome, not the transport status.** Both are returned,
+      because a run that is `succeeded`/`outputs_missing` is a specific and interesting
+      thing — but a feed keyed on transport would report delivering nothing as success,
+      which is the dishonesty [[P-0070]] #182 was fixing.
+    * **Anything waiting on the operator carries its approval id**, so the feed answers
+      "what needs me" in the same place it answers "what happened" — the two questions an
+      operator actually has.
+    """
+    limit = max(1, min(limit, 200))
+    items: list[ActivityItem] = []
+
+    # Pending approvals, indexed so an item can say it is waiting rather than merely
+    # looking stalled. One query, not one per row.
+    appr_stmt = select(Approval).where(
+        Approval.owner_id == owner_id, Approval.status == "pending"
+    )
+    pending = (await db.execute(appr_stmt)).scalars().all()
+    appr_by_run = {a.run_id: a.id for a in pending if a.run_id is not None}
+    appr_by_session = {a.session_id: a.id for a in pending if a.session_id is not None}
+
+    run_stmt = (
+        select(Run, Task.name)
+        .join(Task, Task.id == Run.task_id)
+        .where(Run.owner_id == owner_id)
+        .order_by(Run.created_at.desc())
+        .limit(limit)
+    )
+    if project_id is not None:
+        run_stmt = run_stmt.where(Run.project_id == project_id)
+    for run, task_name in (await db.execute(run_stmt)).all():
+        items.append(ActivityItem(
+            kind="run", id=run.id, at=run.created_at,
+            actor=task_name or f"task {run.task_id}",
+            project_id=run.project_id, provider=run.provider, model=run.model,
+            outcome=classify_turn_outcome(run.status, run.output_flags),
+            status=run.status, cost_usd=run.cost_usd or 0.0,
+            artifact=run.markdown_path, error=run.error,
+            awaiting_approval_id=appr_by_run.get(run.id),
+        ))
+
+    turn_stmt = (
+        select(SessionTurn, Session.title)
+        .join(Session, Session.id == SessionTurn.session_id)
+        .where(Session.owner_id == owner_id)
+        .order_by(SessionTurn.created_at.desc())
+        .limit(limit)
+    )
+    if project_id is not None:
+        turn_stmt = turn_stmt.where(Session.project_id == project_id)
+    for turn, title in (await db.execute(turn_stmt)).all():
+        items.append(ActivityItem(
+            kind="turn", id=turn.id, at=turn.created_at,
+            actor=title or f"session {turn.session_id[:8]}",
+            provider=turn.provider,
+            outcome=classify_turn_outcome(turn.status, turn.output_flags),
+            status=turn.status, cost_usd=turn.cost_usd or 0.0,
+            awaiting_approval_id=appr_by_session.get(turn.session_id),
+        ))
+
+    plan_stmt = (
+        select(PlannerRun)
+        .where(PlannerRun.owner_id == owner_id)
+        .order_by(PlannerRun.created_at.desc())
+        .limit(limit)
+    )
+    if project_id is not None:
+        plan_stmt = plan_stmt.where(PlannerRun.project_id == project_id)
+    for pr in (await db.execute(plan_stmt)).scalars().all():
+        items.append(ActivityItem(
+            kind="planner", id=pr.id, at=pr.created_at, actor="planner",
+            project_id=pr.project_id, provider=pr.provider, model=pr.model,
+            # The planner's own terminal states already *are* work outcomes (P-0080:
+            # `no_proposals` is not a failure), so they pass through unclassified.
+            outcome=pr.status, status=pr.status, cost_usd=pr.cost_usd or 0.0,
+        ))
+
+    items.sort(key=lambda i: i.at, reverse=True)
+    return items[:limit]
 
 
 @app.get("/api/approvals", response_model=list[ApprovalOut], tags=["approvals"])

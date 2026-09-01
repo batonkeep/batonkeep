@@ -10,6 +10,7 @@ import TaskList from "./components/TaskList";
 import TaskForm from "./components/TaskForm";
 import RunViewer from "./components/RunViewer";
 import SessionView from "./components/SessionView";
+import ActivityFeed from "./components/ActivityFeed";
 import ApprovalInbox from "./components/ApprovalInbox";
 import SettingsPanel from "./components/SettingsPanel";
 import CockpitPanel from "./components/CockpitPanel";
@@ -70,7 +71,7 @@ function AuthGate() {
 function AppShell({ appAuthEnabled, onLogout }: { appAuthEnabled: boolean; onLogout: () => void }) {
   const { status: wsStatus, liveRuns } = useLiveFeed();
   const [view, setView] = useState<View>("tasks");
-  const [tasksTab, setTasksTab] = useState<"tasks" | "live">("tasks");
+  const [tasksTab, setTasksTab] = useState<"tasks" | "live" | "activity">("tasks");
   const [tasks, setTasks] = useState<Task[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
   const [providers, setProviders] = useState<ProviderHealth[]>([]);
@@ -396,10 +397,15 @@ function AppShell({ appAuthEnabled, onLogout }: { appAuthEnabled: boolean; onLog
               tabs={[
                 { id: "tasks", label: "Tasks" },
                 { id: "live", label: activeRuns > 0 ? `Runs · ${activeRuns}` : "Runs" },
+                // Gate C: a third sub-tab rather than a sixth nav item — Sidebar.tsx
+                // calls the current five the mobile platform ceiling.
+                { id: "activity", label: "Activity" },
               ] as const}
               active={tasksTab}
               onChange={setTasksTab}
             />
+
+            {tasksTab === "activity" && <ActivityFeed />}
 
             {tasksTab === "tasks" && (
               <TaskList

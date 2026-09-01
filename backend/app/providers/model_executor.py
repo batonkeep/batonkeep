@@ -73,8 +73,10 @@ def _active_tool_schemas(extra: dict | None) -> list[dict]:
             return list(_PLANNER_ITEM_SCHEMAS)
         return list(_PLANNER_PROJECT_SCHEMAS)
     schemas = list(_BASE_TOOL_SCHEMAS)
+    # An approver is an approver: a live operator on a session, or a run lane that can
+    # park on a durable approval (P-0098). The presence of the callback is the test.
     if _CODE_EXEC_SCHEMA and policy_offers_tool(
-        extra.get("exec_policy"), bool(extra.get("human_in_loop"))
+        extra.get("exec_policy"), callable(extra.get("approve"))
     ):
         schemas.append(_CODE_EXEC_SCHEMA)
     if _IMAGE_GEN_SCHEMA and extra.get("image_gen"):

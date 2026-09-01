@@ -89,16 +89,24 @@ TOOL_SCHEMA = {
 }
 
 
-def policy_offers_tool(policy: str | None, human_in_loop: bool = False) -> bool:
+def policy_offers_tool(policy: str | None, has_approver: bool = False) -> bool:
     """Whether code-exec should be listed to the model.
 
-    `allow-safe`/`auto` always offer it. `confirmation` offers it only when a human
-    is in the loop to approve each run (interactive sessions, P-0046 slice 3b) —
-    unattended tasks left on `confirmation` still don't get it."""
+    ``allow-safe``/``auto`` always offer it. ``confirmation`` offers it whenever
+    **an approver exists** — which is the honest question, and it is not the same as
+    "is a human watching right now" (P-0098 / Gate B).
+
+    Until Gate B the parameter was ``human_in_loop`` and only interactive sessions
+    qualified, so an unattended task left on ``confirmation`` was simply never offered
+    the tool. That left exactly two options for background work — withhold the
+    capability, or run it unsupervised on ``allow-safe``/``auto`` — and the whole point
+    of an always-on agent is the third one: *ask, and wait*. A run lane that can park on
+    a durable approval is an approver, so it qualifies.
+    """
     policy = policy or DEFAULT_POLICY
     if policy in _RUNNABLE_POLICIES:
         return True
-    return policy == "confirmation" and human_in_loop
+    return policy == "confirmation" and has_approver
 
 
 def _python_bin() -> str:

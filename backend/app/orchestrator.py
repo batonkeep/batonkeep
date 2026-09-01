@@ -26,7 +26,7 @@ from typing import Any
 from sqlalchemy import or_, select, update
 from sqlalchemy.orm.attributes import flag_modified
 
-from app import task_assets, task_workspace
+from app import approvals, task_assets, task_workspace
 from app.config import get_settings
 from app.db import AsyncSessionLocal
 from app.logging_config import bind_run
@@ -315,7 +315,12 @@ async def _do_execute(run_id: int, task: Task) -> None:
                             # code-exec runs only if the task carries allow-safe/auto.
                             extra={
                                 "task": True, "exec_policy": policy.exec_policy,
+                                # P-0098: an unattended run is now an approver — it parks
+                                # on a durable approval instead of being denied the tool.
                                 "human_in_loop": False,
+                                "approve": _make_run_approver(
+                                    run_id, run.owner_id, provider_name
+                                ),
                                 # P-0046 slice 6: image-gen model override (None → default).
                                 "image_model_id": task.image_model_id,
                             },
@@ -429,6 +434,9 @@ async def _do_execute(run_id: int, task: Task) -> None:
                                 extra={
                                     "task": True, "exec_policy": policy.exec_policy,
                                     "human_in_loop": False,
+                                    "approve": _make_run_approver(
+                                        run_id, run.owner_id, provider_name
+                                    ),
                                     "image_model_id": task.image_model_id,
                                 }):
                             if ev.kind != EventKind.token:
@@ -690,6 +698,76 @@ async def _do_execute(run_id: int, task: Task) -> None:
         logger.info(
             "[orchestrator] run %d succeeded via %s (%.4f USD)", run_id, run.provider, run.cost_usd
         )
+
+
+def _make_run_approver(run_id: int, owner_id: str, provider_name: str):
+    """Build the approver an **unattended** run uses to park on a code-exec proposal.
+
+    This is Gate B's core move (P-0098). Before it, ``confirmation`` on a background run
+    meant the tool was simply never offered, leaving only two options — withhold the
+    capability, or run unsupervised on ``allow-safe``/``auto``. The always-on premise
+    needs the third: *ask, and wait*.
+
+    Mirrors the session approver (`sessions/orchestrator._approve`) deliberately, so both
+    lanes produce the **same durable adjudication record** — the thing MCP's MRTR
+    commoditizes the *gesture* of but not the substance. The differences are the two that
+    matter for unattended work:
+
+    * the decision arrives through the general approvals API (`/api/approvals/{id}/decide`)
+      rather than a session route, because there is no session to route through; and
+    * the wait is bounded by ``unattended_approval_timeout_seconds`` rather than the
+      interactive 300s, since nobody is watching a live view.
+
+    **Honest limit, and it is load-bearing:** the wait is an in-process ``await``. The
+    *record* survives a restart; the *parked run* does not — a restart makes it a
+    dispatched orphan, which Gate A correctly fails rather than silently re-running.
+    Surviving a restart *mid-run* needs the agent loop itself to be checkpointable, which
+    is a separate design (see P-0098 notes), not something to fake here.
+    """
+    async def _approve(code: str, label: str | None) -> bool:
+        request_id, fut = approvals.request()
+        try:
+            async with AsyncSessionLocal() as adb:
+                await approvals.record_request(
+                    adb, owner_id=owner_id, request_id=request_id, kind="code_exec",
+                    payload={"v": 1, "code": redact_text(code), "label": label,
+                             "unattended": True},
+                    producer=provider_name, run_id=run_id,
+                )
+                await adb.commit()
+        except Exception:
+            logger.exception("[approvals] could not persist run code_exec request row")
+
+        # Surface it on the run's own event stream so the request is visible wherever the
+        # run is, not only to a client that happened to be connected.
+        async with AsyncSessionLocal() as edb:
+            run = await edb.get(Run, run_id)
+            if run is not None:
+                await _emit_event(
+                    edb, run, EventKind.approval,
+                    label or "Approve code execution?",
+                    data={"request_id": request_id, "code": code, "label": label,
+                          "tool": "code_exec", "unattended": True},
+                    seq_override=await _next_seq(edb, run_id),
+                )
+                await edb.commit()
+
+        approved = await approvals.await_decision(
+            request_id, fut,
+            timeout=float(_settings.unattended_approval_timeout_seconds),
+        )
+        try:
+            async with AsyncSessionLocal() as adb:
+                await approvals.settle(
+                    adb, request_id, approved=approved,
+                    decided_by="human" if approvals.was_resolved(request_id) else "timeout",
+                )
+                await adb.commit()
+        except Exception:
+            logger.exception("[approvals] could not settle run code_exec request row")
+        return approved
+
+    return _approve
 
 
 # ── attempt log ────────────────────────────────────────────────────────────────

@@ -40,7 +40,7 @@ def test_confirmation_offered_whenever_an_approver_exists():
 
 
 async def test_confirmation_approved_executes(tmp_path):
-    async def approve(code, label):
+    async def approve(code, label, **_kw):
         return True
     out = await code_exec.run(
         "print('approved-run')", workdir=str(tmp_path), policy="confirmation", approve=approve
@@ -49,7 +49,7 @@ async def test_confirmation_approved_executes(tmp_path):
 
 
 async def test_confirmation_denied_refuses(tmp_path):
-    async def deny(code, label):
+    async def deny(code, label, **_kw):
         return False
     out = await code_exec.run(
         "print('nope')", workdir=str(tmp_path), policy="confirmation", approve=deny
@@ -154,7 +154,7 @@ def test_executor_offers_confirmation_when_an_approve_callback_is_present():
     """The executor's test is the presence of the callback, not a human_in_loop flag."""
     from app.providers.model_executor import _active_tool_schemas
 
-    async def approve(code, label):
+    async def approve(code, label, **_kw):
         return True
 
     offered = {s["name"] for s in _active_tool_schemas(

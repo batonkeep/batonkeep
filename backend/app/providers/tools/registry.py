@@ -129,7 +129,8 @@ class CodeExecToolProvider(ToolProvider):
         ctx = context or {}
         return await code_exec.run(
             workdir=workdir, policy=ctx.get("exec_policy"),
-            approve=ctx.get("approve"), **arguments,
+            approve=ctx.get("approve"), checkpoint=ctx.get("_checkpoint"),
+            pre_approved=bool(ctx.get("_pre_approved")), **arguments,
         )
 
 

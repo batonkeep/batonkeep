@@ -1440,15 +1440,37 @@ async def decide_approval(
         raise HTTPException(status_code=409, detail=f"approval already {row.status}")
 
     if is_unattended_run:
-        # Order matters. Release the parked run FIRST: a failed resolve means no run is
+        # Two shapes of unattended approval, and the run's own state says which:
+        #   parked  — checkpointed and not running (P-0106). The decision restarts it
+        #             from its stored conversation, which is what makes a verdict given
+        #             after a restart mean something.
+        #   running — still holding an in-process await (no checkpoint could be stored).
+        #             Releasing the Future is the whole decision.
+        run = await db.get(Run, row.run_id) if row.run_id else None
+        if run is not None and run.status == "parked":
+            from app.orchestrator import resume_parked_run
+
+            settled = await approvals.settle(
+                db, row.request_id, approved=body.approved, decided_by="human"
+            )
+            await db.commit()
+            why = await resume_parked_run(row.run_id, approved=body.approved)
+            if why is not None:
+                # The decision stands and is recorded; only the *resume* failed, and the
+                # run has been failed with the reason. Reporting 200 here would claim the
+                # work continued when it did not.
+                raise HTTPException(status_code=409, detail=f"could not resume: {why}")
+            return ApprovalDecideOut(approval=ApprovalOut.model_validate(settled or row))
+
+        # Order matters. Release the waiting run FIRST: a failed resolve means no run is
         # waiting, and settling before that check would record a decision that nothing
         # ever acted on — an audit trail saying "approved" for work that never ran.
         if not approvals.resolve(row.request_id, body.approved):
             raise HTTPException(
                 status_code=409,
                 detail="the run waiting on this approval is no longer running "
-                       "(a restart ends a parked run; the record stays for the audit "
-                       "trail and the task can be re-run)",
+                       "(it was neither parked nor still waiting; the record stays for "
+                       "the audit trail and the task can be re-run)",
             )
         settled = await approvals.settle(
             db, row.request_id, approved=body.approved, decided_by="human"

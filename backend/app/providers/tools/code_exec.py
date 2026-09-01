@@ -37,15 +37,20 @@ import re
 import sys
 import tempfile
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 from app import sandbox
 from app.exec_env import load as load_exec_env
 
 logger = logging.getLogger(__name__)
 
-# Async approval callback an interactive session injects to drive `confirmation`:
-# (code, label) -> approved?  (P-0046 slice 3b)
-ApproveFn = Callable[[str, "str | None"], Awaitable[bool]]
+# Async approval callback an approver injects to drive `confirmation` (P-0046 slice 3b).
+#   (code, label, *, checkpoint=None) -> approved?
+# `checkpoint` is supplied by the executor (P-0106): calling it stores the run's
+# conversation so the approver may **park** the run — stop and be resumed after a
+# restart — instead of holding the process on an `await`. An approver that cannot or
+# will not park simply ignores it, which is what the interactive session lane does.
+ApproveFn = Callable[..., Awaitable[bool]]
 
 POLICIES = ("off", "confirmation", "allow-safe", "auto")
 DEFAULT_POLICY = "confirmation"
@@ -133,6 +138,8 @@ def _reset_umask() -> None:
 async def run(
     code: str, *, workdir: str, policy: str | None = None, label: str | None = None,
     approve: ApproveFn | None = None,
+    checkpoint: Callable[[], Any] | None = None,
+    pre_approved: bool = False,
 ) -> str:
     """Run `code` under `policy`. `approve` is an async callback
     `(code, label) -> bool` supplied by interactive sessions to drive the
@@ -149,7 +156,13 @@ async def run(
                 "(policy: confirmation); set the execution policy to allow-safe or auto "
                 "to run code in this session/task"
             )
-        approved = await approve(code, label)
+        if pre_approved:
+            # Resuming a parked run: the operator already decided on this exact payload
+            # (P-0106). Asking again would be a second gate on one decision, and would
+            # park forever with nobody expecting a prompt.
+            approved = True
+        else:
+            approved = await approve(code, label, checkpoint=checkpoint)
         if not approved:
             return "[code_exec] execution denied by operator"
         # Approved → fall through and execute this one snippet.

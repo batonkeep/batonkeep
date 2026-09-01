@@ -15,6 +15,7 @@ import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
+from app import checkpoint
 from app.providers.base import (
     EventKind,
     ExecEvent,
@@ -472,20 +473,37 @@ class ModelExecutor(Executor):
             return
 
         client = AsyncOpenAI(api_key=api_key, base_url=base_url)
-        vimgs = self._vision_images(prompt, workdir)
+        # P-0106: resuming a parked run replays the stored conversation instead of
+        # starting over — re-running from the prompt could propose a *different* action
+        # than the one the operator approved.
+        _resume = self._resume_state("openai_compat")
+        vimgs = [] if _resume else self._vision_images(prompt, workdir)
         if vimgs:
             user_content = [{"type": "text", "text": prompt}] + [
                 {"type": "image_url", "image_url": {"url": im.data_url}} for im in vimgs
             ]
         else:
             user_content = prompt
-        messages = [
+        messages = list(_resume["messages"]) if _resume else [
             {"role": "system", "content": _base_system_prompt(self._extra)},
             {"role": "user", "content": user_content},
         ]
         tools = _active_tool_schemas(self._extra) if tools_enabled else []
         total_usage = Usage()
         full_text = ""
+        if _resume:
+            _u = _resume.get("usage") or {}
+            total_usage = Usage(
+                tokens_in=_u.get("tokens_in", 0), tokens_out=_u.get("tokens_out", 0),
+                cost_usd=_u.get("cost_usd", 0.0),
+            )
+            _tc = _resume["tool_call"]
+            _result = await self._resolve_parked_tool(_tc, workdir=workdir)
+            messages.append(
+                {"role": "tool", "content": _result, "tool_call_id": _tc["id"]}
+            )
+            yield ExecEvent(kind=EventKind.tool, message=f"[{_tc['name']}] resumed",
+                            data={"tool": _tc["name"], "resumed": True})
 
         if vimgs:
             yield ExecEvent(
@@ -605,7 +623,20 @@ class ModelExecutor(Executor):
                                  for v in tool_calls_acc.values()
                              ]})
             for v in tool_calls_acc.values():
-                result = await self._call_tool(v["name"], v["args"], workdir=workdir)
+                self._arm_checkpoint(
+                    path="openai_compat", messages=messages, usage=total_usage,
+                    round_num=round_num,
+                    tool_call={"id": v["id"], "name": v["name"], "args": v["args"]},
+                )
+                try:
+                    result = await self._call_tool(v["name"], v["args"], workdir=workdir)
+                except checkpoint.ParkRequested as park:
+                    yield ExecEvent(
+                        kind=EventKind.parked,
+                        message=f"awaiting approval for {v['name']}",
+                        data={"request_id": park.request_id, "tool": v["name"]},
+                    )
+                    return
                 yield ExecEvent(kind=EventKind.tool, message=f"[{v['name']}] called",
                                 data={"tool": v["name"], "result_chars": len(result)})
                 messages.append({"role": "tool", "content": result, "tool_call_id": v["id"]})
@@ -641,8 +672,14 @@ class ModelExecutor(Executor):
             return
         client = anthropic.AsyncAnthropic(api_key=api_key)
 
-        vimgs = self._vision_images(prompt, workdir)
-        if vimgs:
+        # P-0106: resuming a parked run replays the stored conversation instead of
+        # starting over — re-running from the prompt could propose a *different* action
+        # than the one the operator approved.
+        _resume = self._resume_state("anthropic")
+        vimgs = [] if _resume else self._vision_images(prompt, workdir)
+        if _resume:
+            messages = list(_resume["messages"])
+        elif vimgs:
             first_content = [{"type": "text", "text": prompt}] + [
                 {
                     "type": "image",
@@ -668,6 +705,21 @@ class ModelExecutor(Executor):
 
         total_usage = Usage()
         full_text = ""
+        if _resume:
+            _u = _resume.get("usage") or {}
+            total_usage = Usage(
+                tokens_in=_u.get("tokens_in", 0), tokens_out=_u.get("tokens_out", 0),
+                cost_usd=_u.get("cost_usd", 0.0),
+            )
+            # The approved (or denied) call runs *now*, at resume time — the operator
+            # decided on this exact payload, so this is the one thing that may execute.
+            _tc = _resume["tool_call"]
+            _result = await self._resolve_parked_tool(_tc, workdir=workdir)
+            messages.append({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": _tc["id"], "content": _result}
+            ]})
+            yield ExecEvent(kind=EventKind.tool, message=f"[{_tc['name']}] resumed",
+                            data={"tool": _tc["name"], "resumed": True})
         # Moving cache breakpoint over settled history: each round we mark the last
         # tool_result block of the most-recent turn, so the *growing* conversation
         # prefix (not just system+tools) replays at the cache-read rate. We carry the
@@ -781,9 +833,26 @@ class ModelExecutor(Executor):
                     messages.append({"role": "assistant", "content": final_msg.content})
                     tool_results = []
                     for tu in tool_uses:
-                        result = await self._call_tool(
-                            tu.name, json.dumps(tu.input), workdir=workdir
+                        self._arm_checkpoint(
+                            path="anthropic", messages=messages, usage=total_usage,
+                            round_num=round_num,
+                            tool_call={"id": tu.id, "name": tu.name,
+                                       "args": json.dumps(tu.input)},
                         )
+                        try:
+                            result = await self._call_tool(
+                                tu.name, json.dumps(tu.input), workdir=workdir
+                            )
+                        except checkpoint.ParkRequested as park:
+                            # The approver stored the conversation and wants the process
+                            # freed. Ending the stream here is the point: an in-process
+                            # await cannot survive a restart.
+                            yield ExecEvent(
+                                kind=EventKind.parked,
+                                message=f"awaiting approval for {tu.name}",
+                                data={"request_id": park.request_id, "tool": tu.name},
+                            )
+                            return
                         yield ExecEvent(kind=EventKind.tool, message=f"[{tu.name}] called",
                                         data={"tool": tu.name, "result_chars": len(result)})
                         tool_results.append(
@@ -858,15 +927,39 @@ class ModelExecutor(Executor):
                     for t in _active_tool_schemas(self._extra)
                 ])
             ]
-        vimgs = self._vision_images(prompt, workdir)
-        first_parts = [types.Part(text=prompt)] + [
-            types.Part.from_bytes(data=im.data, mime_type=im.mime) for im in vimgs
-        ]
-        contents: list[types.Content] = [
-            types.Content(role="user", parts=first_parts)
-        ]
+        _resume = self._resume_state("gemini")
+        vimgs = [] if _resume else self._vision_images(prompt, workdir)
+        if _resume:
+            # Rehydrate provider-native Content — including each part's
+            # `thought_signature`, which thinking models require replayed verbatim or the
+            # next tool round 400s (D-0034/P-0043). This round-trip through the SDK's own
+            # validator is exactly why the checkpoint is version-fenced: a shape written
+            # by a different google-genai would be refused before reaching here.
+            contents: list[types.Content] = [
+                types.Content.model_validate(c) for c in _resume["messages"]
+            ]
+        else:
+            first_parts = [types.Part(text=prompt)] + [
+                types.Part.from_bytes(data=im.data, mime_type=im.mime) for im in vimgs
+            ]
+            contents = [types.Content(role="user", parts=first_parts)]
         total_usage = Usage()
         full_text = ""
+        if _resume:
+            _u = _resume.get("usage") or {}
+            total_usage = Usage(
+                tokens_in=_u.get("tokens_in", 0), tokens_out=_u.get("tokens_out", 0),
+                cost_usd=_u.get("cost_usd", 0.0),
+            )
+            _tc = _resume["tool_call"]
+            _result = await self._resolve_parked_tool(_tc, workdir=workdir)
+            contents.append(types.Content(role="user", parts=[
+                types.Part.from_function_response(
+                    name=_tc["name"], response={"result": _result}
+                )
+            ]))
+            yield ExecEvent(kind=EventKind.tool, message=f"[{_tc['name']}] resumed",
+                            data={"tool": _tc["name"], "resumed": True})
 
         if vimgs:
             yield ExecEvent(
@@ -980,9 +1073,23 @@ class ModelExecutor(Executor):
             contents.append(types.Content(role="model", parts=model_parts))
             resp_parts = []
             for fc in fcalls:
-                result = await self._call_tool(
-                    fc.name, json.dumps(dict(fc.args or {})), workdir=workdir
+                self._arm_checkpoint(
+                    path="gemini", messages=contents, usage=total_usage,
+                    round_num=round_num,
+                    tool_call={"id": fc.name, "name": fc.name,
+                               "args": json.dumps(dict(fc.args or {}))},
                 )
+                try:
+                    result = await self._call_tool(
+                        fc.name, json.dumps(dict(fc.args or {})), workdir=workdir
+                    )
+                except checkpoint.ParkRequested as park:
+                    yield ExecEvent(
+                        kind=EventKind.parked,
+                        message=f"awaiting approval for {fc.name}",
+                        data={"request_id": park.request_id, "tool": fc.name},
+                    )
+                    return
                 yield ExecEvent(kind=EventKind.tool, message=f"[{fc.name}] called",
                                 data={"tool": fc.name, "result_chars": len(result)})
                 resp_parts.append(
@@ -999,6 +1106,59 @@ class ModelExecutor(Executor):
                         data={"result": exec_result, "usage": total_usage.__dict__})
 
     # ── Tool dispatch ─────────────────────────────────────────────────────────
+
+
+    # ── P-0106: parking support ────────────────────────────────────────────────
+    def _arm_checkpoint(
+        self, *, path: str, messages: list[Any], usage: Usage, round_num: int,
+        tool_call: dict[str, Any],
+    ) -> None:
+        """Give the approver a way to store this conversation before it decides.
+
+        `self._extra` is a *copy* of the orchestrator's dict, so the builder is handed to
+        the approver explicitly through the tool ABI (`registry` → `code_exec` →
+        `approve(..., checkpoint=)`) rather than through shared mutable state. The closure
+        captures `messages` by reference, so it always reflects the conversation as it
+        stands at the moment the approver calls it.
+        """
+        def _build() -> dict[str, Any]:
+            return checkpoint.build(
+                path=path,
+                provider=self.name,
+                model=self._extra.get("model") or getattr(self._def, "model", None),
+                messages=checkpoint.serialize_messages(messages),
+                usage={"tokens_in": usage.tokens_in, "tokens_out": usage.tokens_out,
+                       "cost_usd": usage.cost_usd},
+                round_num=round_num,
+                tool_call=tool_call,
+            )
+        self._extra["_checkpoint"] = _build
+
+    async def _resolve_parked_tool(self, tool_call: dict[str, Any], *, workdir: str) -> str:
+        """Produce the tool result for the call a parked run stopped on.
+
+        The operator's decision is already recorded, so this must **not** ask again — the
+        resume path injects `_pre_approved` into the tool context, which the code-exec
+        approver honours instead of opening a second request. If the decision was a
+        denial, nothing runs and the model is told so, exactly as an in-process denial
+        would have.
+        """
+        if not self._extra.get("_resume_approved", False):
+            return "[code_exec] execution denied by operator"
+        self._extra["_pre_approved"] = True
+        try:
+            return await self._call_tool(
+                tool_call["name"], tool_call.get("args") or "{}", workdir=workdir
+            )
+        finally:
+            self._extra.pop("_pre_approved", None)
+
+    def _resume_state(self, path: str) -> dict[str, Any] | None:
+        """The checkpoint this run is resuming from, if any (validated by the caller)."""
+        cp = self._extra.get("resume")
+        if cp and (cp.get("fence") or {}).get("path") == path:
+            return cp
+        return None
 
     async def _call_tool(self, name: str, args_json: str, *, workdir: str) -> str:
         return await get_tool_registry().call(

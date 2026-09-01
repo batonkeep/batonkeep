@@ -27,10 +27,11 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.orm.attributes import flag_modified
 
 from app import approvals, notify, task_assets, task_workspace
+from app import checkpoint as checkpoint_mod
 from app.config import get_settings
 from app.db import AsyncSessionLocal
 from app.logging_config import bind_run
-from app.models import RoutingDecision, Run, RunEvent, Task
+from app.models import Approval, RoutingDecision, Run, RunEvent, Task
 from app.policy import resolve_effective_policy
 from app.providers.base import EventKind, ExecEvent, ExecResult, Usage
 from app.providers.registry import get_executor
@@ -49,6 +50,11 @@ _provider_sems: dict[str, asyncio.Semaphore] = defaultdict(
     lambda: asyncio.Semaphore(_settings.per_provider_concurrency)
 )
 _global_sem = asyncio.Semaphore(_settings.max_concurrent_runs)
+
+# P-0106: checkpoint + verdict for a run being resumed after an approval. Handed to
+# the executor on the next execute_run and consumed once — a resume is a one-shot
+# hand-off, not durable state (the durable copy lives on the Approval row).
+_RESUME_CONTEXT: dict[int, dict[str, Any]] = {}
 
 # Active run cancel handles
 _cancel_handles: dict[int, asyncio.Task] = {}
@@ -257,6 +263,12 @@ async def _do_execute(run_id: int, task: Task) -> None:
                 "[orchestrator] run %d context projection failed — continuing", run_id
             )
 
+        # Consumed once: a second attempt must not silently re-inject a stale conversation.
+        _rc = _RESUME_CONTEXT.pop(run_id, None)
+        _resume_extra: dict[str, Any] = (
+            {"resume": _rc["checkpoint"], "_resume_approved": _rc["approved"]} if _rc else {}
+        )
+
         async def _run_candidates() -> tuple[str, str | None]:
             """Run the candidate chain (+ overflow) once.
 
@@ -321,6 +333,7 @@ async def _do_execute(run_id: int, task: Task) -> None:
                                 "approve": _make_run_approver(
                                     run_id, run.owner_id, provider_name
                                 ),
+                                **_resume_extra,
                                 # P-0046 slice 6: image-gen model override (None → default).
                                 "image_model_id": task.image_model_id,
                             },
@@ -341,6 +354,19 @@ async def _do_execute(run_id: int, task: Task) -> None:
                                 tool_calls += 1
 
                             # Terminal events
+                            if ev.kind == EventKind.parked:
+                                # The executor checkpointed and ended the stream. Not a
+                                # failure and not an orphan: nothing is lost and nobody
+                                # is driving it, so it leaves the candidate loop entirely
+                                # rather than failing over to another provider — the
+                                # operator is deciding on *this* provider's proposal.
+                                attempt["outcome"] = "parked"
+                                record_attempts(run, attempts)
+                                run.status = "parked"
+                                run.runtime_epoch = None
+                                await db.commit()
+                                await _broadcast_run(run)
+                                return "parked", None
                             if ev.kind == EventKind.result:
                                 final_result = ev.data.get("result")
                                 usage_raw = ev.data.get("usage", {})
@@ -437,6 +463,7 @@ async def _do_execute(run_id: int, task: Task) -> None:
                                     "approve": _make_run_approver(
                                         run_id, run.owner_id, provider_name
                                     ),
+                                    **_resume_extra,
                                     "image_model_id": task.image_model_id,
                                 }):
                             if ev.kind != EventKind.token:
@@ -444,6 +471,19 @@ async def _do_execute(run_id: int, task: Task) -> None:
                                                   data=ev.data, seq_override=seq)
                                 seq += 1
                             await _broadcast_event(run_id, ev, seq)
+                            if ev.kind == EventKind.parked:
+                                # The executor checkpointed and ended the stream. Not a
+                                # failure and not an orphan: nothing is lost and nobody
+                                # is driving it, so it leaves the candidate loop entirely
+                                # rather than failing over to another provider — the
+                                # operator is deciding on *this* provider's proposal.
+                                attempt["outcome"] = "parked"
+                                record_attempts(run, attempts)
+                                run.status = "parked"
+                                run.runtime_epoch = None
+                                await db.commit()
+                                await _broadcast_run(run)
+                                return "parked", None
                             if ev.kind == EventKind.result:
                                 final_result = ev.data.get("result")
                                 usage_raw = ev.data.get("usage", {})
@@ -482,6 +522,15 @@ async def _do_execute(run_id: int, task: Task) -> None:
 
                     if outcome == "success":
                         break
+
+                    if outcome == "parked":
+                        # The run stopped mid-conversation awaiting a human. `_run_candidates`
+                        # already set the status and cleared the ownership stamp; there is
+                        # nothing to post-process and nothing to fail over to. Returning
+                        # here also releases the wall-clock timeout, so a run does not burn
+                        # its budget while a person sleeps — the resume gets a fresh bound.
+                        await _record_routing_outcome(db, run)
+                        return
 
                     if outcome == "hard_fail":
                         await _fail(db, run, error_msg or "provider error (failover disabled)")
@@ -724,7 +773,8 @@ def _make_run_approver(run_id: int, owner_id: str, provider_name: str):
     Surviving a restart *mid-run* needs the agent loop itself to be checkpointable, which
     is a separate design (see P-0098 notes), not something to fake here.
     """
-    async def _approve(code: str, label: str | None) -> bool:
+    async def _approve(code: str, label: str | None, *, checkpoint=None) -> bool:
+        checkpoint_fn = checkpoint
         request_id, fut = approvals.request()
         try:
             async with AsyncSessionLocal() as adb:
@@ -757,6 +807,32 @@ def _make_run_approver(run_id: int, owner_id: str, provider_name: str):
         await notify.approval_pending(
             request_id=request_id, run_id=run_id, label=label, producer=provider_name,
         )
+
+        # P-0106: park rather than wait, when the conversation can be stored. An
+        # in-process await cannot survive a restart, so a run that waits is a run that
+        # dies on the next deploy — and on an always-on box the nightly backup alone
+        # restarts the backend daily. Storing the checkpoint first and *then* raising
+        # means a failure here degrades to the old behaviour (wait in-process) rather
+        # than losing the run: parking can only ever be better than waiting.
+        if callable(checkpoint_fn):
+            try:
+                cp = checkpoint_fn()
+                async with AsyncSessionLocal() as adb:
+                    row = (await adb.execute(
+                        select(Approval).where(Approval.request_id == request_id)
+                    )).scalar_one_or_none()
+                    if row is not None:
+                        row.checkpoint = cp
+                        await adb.commit()
+                        raise checkpoint_mod.ParkRequested(request_id)
+            except checkpoint_mod.ParkRequested:
+                raise
+            except Exception:
+                logger.warning(
+                    "[approvals] run %d could not be checkpointed — falling back to an "
+                    "in-process wait (this run will not survive a restart)",
+                    run_id, exc_info=True,
+                )
 
         approved = await approvals.await_decision(
             request_id, fut,
@@ -802,6 +878,48 @@ def record_attempts(run: Run, attempts: list[dict[str, Any]]) -> None:
     """
     run.attempts = [dict(a) for a in attempts]
     flag_modified(run, "attempts")
+
+
+async def resume_parked_run(run_id: int, *, approved: bool) -> str | None:
+    """Restart a parked run from its checkpoint. Returns None on success, else why not.
+
+    This is what makes an approval decided *after* a restart mean something. The run is
+    re-driven from the stored conversation rather than from its prompt — re-running from
+    the prompt could propose a **different** action than the one the operator approved,
+    which would void the adjudication record (D-0069).
+    """
+    async with AsyncSessionLocal() as db:
+        run = await db.get(Run, run_id)
+        if run is None:
+            return "run not found"
+        if run.status != "parked":
+            return f"run is {run.status}, not parked"
+        row = (await db.execute(
+            select(Approval)
+            .where(Approval.run_id == run_id, Approval.kind == "code_exec")
+            .order_by(Approval.id.desc())
+        )).scalars().first()
+        cp = row.checkpoint if row is not None else None
+
+        # The fence is the whole safety story for storing opaque provider state: refuse
+        # rather than replay a stale signature into a provider error nobody can trace.
+        why = checkpoint_mod.verify_fence(cp, provider=run.provider, model=run.model)
+        if why is not None:
+            run.status = "failed"
+            run.error = f"cannot resume after approval: {why}"
+            run.finished_at = datetime.now(UTC)
+            await db.commit()
+            await _broadcast_run(run)
+            return why
+
+        run.status = "queued"
+        run.started_at = None
+        run.runtime_epoch = None
+        await db.commit()
+
+    _RESUME_CONTEXT[run_id] = {"checkpoint": cp, "approved": approved}
+    asyncio.create_task(execute_run(run_id))
+    return None
 
 
 # ── boot-time reconciliation (D-0021 → D-0067/D-0068) ─────────────────────────
@@ -895,6 +1013,10 @@ async def reap_orphaned_runs(
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             select(Run).where(
+                # `parked` is excluded with `deferred`: a parked run is non-terminal but
+                # NOT an orphan — it is checkpointed, nobody is driving it, and its
+                # approval is still decidable. Reconciling it would destroy exactly the
+                # state P-0106 exists to preserve.
                 Run.status.in_(("running", "queued", "planning")),
                 # NULL = written before this column existed ⇒ certainly not ours.
                 or_(Run.runtime_epoch.is_(None), Run.runtime_epoch != RUNTIME_EPOCH),

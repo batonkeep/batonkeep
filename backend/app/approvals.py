@@ -150,22 +150,24 @@ async def reap_pending() -> int:
     Canonical-write proposals are NOT reaped — they carry no Future and stay decidable
     through the approvals API across restarts.
 
-    **Unattended-run code-exec approvals (P-0098) ARE reaped, and that is deliberate.**
-    Their wait is an in-process ``await``: the record outlives the process but the parked
-    run does not, so after a restart there is nothing left to release and leaving the row
-    ``pending`` would show the operator a decision that could never take effect. Expiring
-    it is the honest state, and it pairs with Gate A failing the run itself rather than
-    silently re-running it. Making a parked run genuinely survive a restart needs the
-    agent loop to be checkpointable — a separate design, not something this reaper can
-    paper over.
+    **A checkpointed (``parked``) run's approval is NOT reaped either (P-0106).** It has a
+    stored conversation, so a decision taken now still means something — that is the whole
+    point of the checkpoint. Only an approval whose run was waiting *in process* is
+    expired, because its Future died with the process and nothing is left to release;
+    leaving that one ``pending`` would show the operator a decision that could never take
+    effect.
     """
     from app.db import AsyncSessionLocal
 
     reaped = 0
     async with AsyncSessionLocal() as db:
+        # A checkpointed row stays decidable across the restart; an in-process wait does
+        # not. `checkpoint IS NULL` is exactly that distinction, recorded at park time.
         result = await db.execute(
             select(Approval).where(
-                Approval.status == "pending", Approval.kind != "canonical_write"
+                Approval.status == "pending",
+                Approval.kind != "canonical_write",
+                Approval.checkpoint.is_(None),
             )
         )
         now = datetime.now(UTC)

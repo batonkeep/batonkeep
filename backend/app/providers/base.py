@@ -24,6 +24,10 @@ class EventKind(StrEnum):
     result = "result"
     error = "error"
     route = "route"
+    # P-0106: the run stopped mid-conversation awaiting a human decision. Distinct from
+    # `approval` (a request for one): this says the stream is *ending* and the run has
+    # been checkpointed, so the orchestrator marks it parked rather than failed.
+    parked = "parked"
     approval = "approval"  # P-0046: code-exec confirmation request (awaiting operator)
 
 

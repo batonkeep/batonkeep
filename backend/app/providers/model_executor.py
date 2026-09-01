@@ -1113,9 +1113,19 @@ class ModelExecutor(Executor):
 
     # ── P-0106: parking support ────────────────────────────────────────────────
     def _checkpoint_model(self) -> str | None:
-        """The model a checkpoint is written for — one resolver, used by both the fence
-        stamp and the parked event, so the two can never disagree."""
-        return self._extra.get("model") or getattr(self._def, "model", None)
+        """The model a checkpoint is written for — the **effective** one, i.e. the model
+        the request actually goes to.
+
+        This must be `self._model`, which resolves runtime override → instance override →
+        catalog default → template default (see `__init__`). An earlier version read
+        `self._def.model` — the *template* default — which is a near-constant: it ignored
+        an operator's per-instance model override entirely. The fence still passed its own
+        checks, because the stamp and the comparison both came from that same wrong
+        source, so it was self-consistent and inert. It would have let a checkpoint
+        written on one model resume on another, which is exactly the mismatch it exists to
+        catch. Found on the testbed when a provider set to `gpt-4.1` stamped `gpt-4o`.
+        """
+        return self._model
 
     def _arm_checkpoint(
         self, *, path: str, messages: list[Any], usage: Usage, round_num: int,

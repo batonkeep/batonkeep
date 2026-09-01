@@ -24,6 +24,7 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+from app.checkpoint import ParkRequested
 from app.providers.tools import file_write, flights, web_fetch, web_search
 
 logger = logging.getLogger(__name__)
@@ -256,6 +257,13 @@ class ToolRegistry:
         try:
             arguments = json.loads(args_json) if args_json else {}
             return await provider.call_tool(name, arguments, workdir=workdir, context=context)
+        except ParkRequested:
+            # A tool failing is a *result* the model should see, which is why everything
+            # else below is turned into a string. Parking is not a failure: it is a
+            # control-flow signal that the run must stop so the process is freed
+            # (P-0106). Swallowing it here turned a parked run into a completed one that
+            # told the user its work was "awaiting approval" — found live on the testbed.
+            raise
         except Exception as exc:
             return f"[{name} error] {exc}"
 

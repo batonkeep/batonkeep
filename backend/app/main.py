@@ -1372,6 +1372,10 @@ async def list_approvals(
     roots: dict[str, str | None] = {}
     for r in rows:
         item = ApprovalOut.model_validate(r)
+        # Derived, not stored: `resumable` is "was this checkpointed", which is what the
+        # queue needs to distinguish "decide whenever" from "decide before the next
+        # restart". The checkpoint blob itself is never serialized out (P-0106).
+        item.resumable = r.checkpoint is not None
         if r.kind == "canonical_write" and r.status == "pending" and r.project_id:
             if r.project_id not in roots:
                 proj = await db.get(Project, r.project_id)
@@ -1725,6 +1729,7 @@ async def create_task(
         exec_policy=body.exec_policy,
         image_model_id=body.image_model_id,
         timeout_seconds=body.timeout_seconds,
+        recovery_policy=body.recovery_policy,
     )
     db.add(task)
     await db.commit()

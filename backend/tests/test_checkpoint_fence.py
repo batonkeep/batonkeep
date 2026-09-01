@@ -92,3 +92,26 @@ def test_unserializable_state_raises_rather_than_dropping_it():
         assert "cannot serialize" in str(exc)
     else:  # pragma: no cover
         raise AssertionError("expected a TypeError")
+
+
+def test_the_fence_stamps_the_effective_model_not_the_template_default():
+    """A near-inert fence, found on the testbed: the stamp must follow the model the
+    request actually goes to, or an operator's per-instance override is invisible to it.
+
+    The earlier version read the *template* default, so stamp and comparison came from the
+    same near-constant — self-consistent, and therefore silently useless.
+    """
+    from app.providers.model_executor import ModelExecutor
+
+    class _Def:
+        model = "template-default"
+        kind = "anthropic"
+
+    ex = ModelExecutor.__new__(ModelExecutor)
+    ex._def = _Def()
+    ex._extra = {}
+    ex._model = "instance-override"
+
+    assert ex._checkpoint_model() == "instance-override", (
+        "the fence must follow the effective model, not the template default"
+    )

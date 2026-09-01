@@ -497,13 +497,19 @@ async def run_turn_background(
     # whatever the agent produced before it was stopped.
     partial_chunks: list[str] = []
 
-    async def _approve(code: str, label: str | None) -> bool:
+    async def _approve(code: str, label: str | None, *, checkpoint=None) -> bool:
         """P-0046 slice 3b: drive the code-exec `confirmation` round-trip — emit an
         approval-request event to the live view, then await the operator's decision
         (POST /api/sessions/{id}/approvals/{rid}; timeout → denied).
 
         The Future is the wakeup; the Approval row is the durable record
-        (persisted best-effort — a DB hiccup must never wedge the turn)."""
+        (persisted best-effort — a DB hiccup must never wedge the turn).
+
+        `checkpoint` (P-0106) is accepted and **deliberately ignored**: parking is for
+        *unattended* work. A build session has a live operator watching a live view, so
+        stopping the turn and resuming it later would be strictly worse than holding the
+        few seconds it takes them to click — and it would tear down a workspace they are
+        looking at."""
         request_id, fut = approvals.request()
         try:
             async with AsyncSessionLocal() as adb:

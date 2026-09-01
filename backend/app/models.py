@@ -370,6 +370,16 @@ class Approval(Base):
     # canonical_write carries {rel_path, content, diff, base_revision}.
     # Additive-only evolution — readers tolerate unknown keys, never migrate.
     payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # P-0106 / D-0069: the parked run's conversation, so a decision can be acted on after
+    # a restart instead of the run dying with the process. Shape:
+    #   {"v":1, "fence": {...}, "messages": [...], "usage": {...}, "round": int,
+    #    "tool_call": {...}}
+    # `messages` is the **provider-native** list — normalizing it would lose Gemini's
+    # `thought_signature` and Anthropic's cache-breakpoint placement, i.e. reintroduce the
+    # exact bug `_run_gemini` exists to avoid. `fence` is what makes storing opaque
+    # provider blobs safe: a checkpoint written by a different provider/SDK refuses to
+    # resume rather than replaying a stale signature into an opaque 400.
+    checkpoint: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # Who proposed / who decided ("human", provider instance id, or "system").
     producer: Mapped[str] = mapped_column(String(96), nullable=False, default="system")
     decided_by: Mapped[str | None] = mapped_column(String(96), nullable=True)
@@ -477,7 +487,11 @@ class Run(Base):
     )
     # "manual" | "schedule"
     trigger: Mapped[str] = mapped_column(String(16), default="manual")
-    # "queued" | "planning" | "running" | "succeeded" | "failed" | "deferred" | "cancelled"
+    # "queued" | "planning" | "running" | "parked" | "succeeded" | "failed" | "deferred"
+    #   | "cancelled"
+    # `parked` (P-0106) = stopped mid-conversation awaiting a human decision. Non-terminal
+    # but **not** an orphan: nobody is driving it and nothing is lost, so boot-time
+    # reconciliation must leave it alone exactly as it leaves `deferred` alone.
     # `planning` is a real state (set by the atomic claim in orchestrator._do_execute) and
     # the boot-time reconciliation in D-0068 turns on it — it was missing from this list.
     status: Mapped[str] = mapped_column(String(16), default="queued", index=True)

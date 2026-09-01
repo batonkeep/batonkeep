@@ -287,3 +287,60 @@ def test_registry_does_not_swallow_the_park_signal():
         assert "the tool broke" in out
 
     asyncio.get_event_loop().run_until_complete(_body())
+
+
+def test_a_parked_run_records_the_model_its_checkpoint_was_written_for(maker, monkeypatch):
+    """The false-positive fence, found on the testbed and not by the tests above.
+
+    `Run.model` is otherwise written only from a *final result*, which a parked run has
+    not produced. So the fence compared a checkpoint stamped `gpt-4o` against a run whose
+    model was NULL and refused every resume as a mismatch — the safety valve firing on
+    correct state. The unit tests missed it because they construct the run and the
+    checkpoint consistently; only a real park could disagree with itself.
+    """
+    import app.orchestrator as orch
+    from app import approvals as approvals_mod
+    from app import checkpoint
+    from app.models import Run
+
+    async def _body():
+        run_id = await _seed(maker, status="parked")
+        monkeypatch.setattr(orch, "AsyncSessionLocal", maker)
+
+        # A run parked *without* its model stamped — the pre-fix state.
+        async with maker() as db:
+            run = await db.get(Run, run_id)
+            run.model = None
+            row = await approvals_mod.record_request(
+                db, owner_id="local", request_id="p1", kind="code_exec",
+                payload={"v": 1}, producer="claude-api", run_id=run_id,
+            )
+            row.checkpoint = checkpoint.build(
+                path="anthropic", provider="claude-api", model="claude-x",
+                messages=[], usage={}, round_num=0,
+                tool_call={"id": "t1", "name": "code_exec", "args": "{}"},
+            )
+            await db.commit()
+
+        why = await orch.resume_parked_run(run_id, approved=True)
+        assert why and "model" in why, (
+            "a run with no model recorded cannot satisfy the fence — which is why the "
+            "parked handler must stamp it"
+        )
+
+        # With the model stamped, as the parked handler now does, the same checkpoint
+        # resumes cleanly.
+        async with maker() as db:
+            run = await db.get(Run, run_id)
+            run.status = "parked"
+            run.model = "claude-x"
+            run.error = None
+            await db.commit()
+
+        async def _noop(rid):
+            return None
+
+        monkeypatch.setattr(orch, "execute_run", _noop)
+        assert await orch.resume_parked_run(run_id, approved=True) is None
+
+    asyncio.get_event_loop().run_until_complete(_body())

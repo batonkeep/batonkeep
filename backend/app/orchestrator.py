@@ -363,6 +363,13 @@ async def _do_execute(run_id: int, task: Task) -> None:
                                 attempt["outcome"] = "parked"
                                 record_attempts(run, attempts)
                                 run.status = "parked"
+                                # Stamp the model the checkpoint was written for. `model`
+                                # is otherwise only set from a *final result*, which a
+                                # parked run has not produced — so without this the fence
+                                # compares the checkpoint against NULL and refuses every
+                                # resume as a mismatch. Found on the testbed: the run
+                                # failed with "written for gpt-4o, would resume on None".
+                                run.model = ev.data.get("model") or run.model
                                 run.runtime_epoch = None
                                 await db.commit()
                                 await _broadcast_run(run)
@@ -480,6 +487,13 @@ async def _do_execute(run_id: int, task: Task) -> None:
                                 attempt["outcome"] = "parked"
                                 record_attempts(run, attempts)
                                 run.status = "parked"
+                                # Stamp the model the checkpoint was written for. `model`
+                                # is otherwise only set from a *final result*, which a
+                                # parked run has not produced — so without this the fence
+                                # compares the checkpoint against NULL and refuses every
+                                # resume as a mismatch. Found on the testbed: the run
+                                # failed with "written for gpt-4o, would resume on None".
+                                run.model = ev.data.get("model") or run.model
                                 run.runtime_epoch = None
                                 await db.commit()
                                 await _broadcast_run(run)

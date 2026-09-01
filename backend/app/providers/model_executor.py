@@ -634,7 +634,8 @@ class ModelExecutor(Executor):
                     yield ExecEvent(
                         kind=EventKind.parked,
                         message=f"awaiting approval for {v['name']}",
-                        data={"request_id": park.request_id, "tool": v["name"]},
+                        data={"request_id": park.request_id, "tool": v["name"],
+                              "model": self._checkpoint_model()},
                     )
                     return
                 yield ExecEvent(kind=EventKind.tool, message=f"[{v['name']}] called",
@@ -850,7 +851,8 @@ class ModelExecutor(Executor):
                             yield ExecEvent(
                                 kind=EventKind.parked,
                                 message=f"awaiting approval for {tu.name}",
-                                data={"request_id": park.request_id, "tool": tu.name},
+                                data={"request_id": park.request_id, "tool": tu.name,
+                                      "model": self._checkpoint_model()},
                             )
                             return
                         yield ExecEvent(kind=EventKind.tool, message=f"[{tu.name}] called",
@@ -1087,7 +1089,8 @@ class ModelExecutor(Executor):
                     yield ExecEvent(
                         kind=EventKind.parked,
                         message=f"awaiting approval for {fc.name}",
-                        data={"request_id": park.request_id, "tool": fc.name},
+                        data={"request_id": park.request_id, "tool": fc.name,
+                              "model": self._checkpoint_model()},
                     )
                     return
                 yield ExecEvent(kind=EventKind.tool, message=f"[{fc.name}] called",
@@ -1109,6 +1112,11 @@ class ModelExecutor(Executor):
 
 
     # ── P-0106: parking support ────────────────────────────────────────────────
+    def _checkpoint_model(self) -> str | None:
+        """The model a checkpoint is written for — one resolver, used by both the fence
+        stamp and the parked event, so the two can never disagree."""
+        return self._extra.get("model") or getattr(self._def, "model", None)
+
     def _arm_checkpoint(
         self, *, path: str, messages: list[Any], usage: Usage, round_num: int,
         tool_call: dict[str, Any],
@@ -1125,7 +1133,7 @@ class ModelExecutor(Executor):
             return checkpoint.build(
                 path=path,
                 provider=self.name,
-                model=self._extra.get("model") or getattr(self._def, "model", None),
+                model=self._checkpoint_model(),
                 messages=checkpoint.serialize_messages(messages),
                 usage={"tokens_in": usage.tokens_in, "tokens_out": usage.tokens_out,
                        "cost_usd": usage.cost_usd},

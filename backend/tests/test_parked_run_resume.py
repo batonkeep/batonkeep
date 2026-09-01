@@ -244,3 +244,46 @@ def test_resume_requeues_a_parked_run_and_hands_over_the_verdict(maker, monkeypa
         )
 
     asyncio.get_event_loop().run_until_complete(_body())
+
+
+def test_registry_does_not_swallow_the_park_signal():
+    """The bug that made P-0106 inert in production, found on the testbed (not by tests).
+
+    `ToolRegistry.call` turns any exception into a string, because a *tool failure* is a
+    result the model should see. `ParkRequested` is not a failure — it is control flow
+    saying the run must stop. Swallowing it produced a run that reported success while
+    telling the user its work was "awaiting approval", with the approval left pending
+    forever and the checkpoint never used.
+    """
+    from app.checkpoint import ParkRequested
+    from app.providers.tools.registry import McpTool, ToolProvider, ToolRegistry
+
+    def _tool(name):
+        return McpTool(name=name, description="x", input_schema={})
+
+    class Parking(ToolProvider):
+        def list_tools(self):
+            return [_tool("code_exec")]
+
+        async def call_tool(self, name, arguments, *, workdir, context=None):
+            raise ParkRequested("req-1")
+
+    class Failing(ToolProvider):
+        def list_tools(self):
+            return [_tool("boom")]
+
+        async def call_tool(self, name, arguments, *, workdir, context=None):
+            raise RuntimeError("the tool broke")
+
+    async def _body():
+        reg = ToolRegistry([Parking(), Failing()])
+
+        with pytest.raises(ParkRequested):
+            await reg.call("code_exec", "{}", workdir="/tmp")
+
+        # An ordinary failure must still come back as a string for the model to read —
+        # the re-raise must be narrow, not a blanket change of contract.
+        out = await reg.call("boom", "{}", workdir="/tmp")
+        assert "the tool broke" in out
+
+    asyncio.get_event_loop().run_until_complete(_body())

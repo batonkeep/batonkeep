@@ -434,6 +434,12 @@ class ApprovalOut(BaseModel):
     # P-0077: shared across every row settled by one batch decision; NULL when
     # decided individually.
     batch_id: str | None = None
+    # P-0106: whether the run behind this approval was checkpointed, i.e. whether a
+    # decision taken after a restart still means something. Deliberately a **boolean, not
+    # the checkpoint** — the stored conversation is large and carries whatever the agent
+    # was working on, which has no business in a list endpoint. The queue needs to know
+    # *that* a row survives, not what it contains.
+    resumable: bool = False
     # Computed on listing, not stored: the canonical root's current revision no
     # longer matches the `base_revision` this proposal was written against, so
     # its content was authored from a different version of the file. Advisory —

@@ -904,6 +904,9 @@ export interface Approval {
   decided_by: string | null;
   created_at: string;
   decided_at: string | null;
+  // P-0106: the run behind this was checkpointed, so a decision still applies after a
+  // restart. When false, the run is holding an in-process wait and dies with a restart.
+  resumable?: boolean;
   // P-0077: shared across every row settled by one batch decision; null when
   // decided individually.
   batch_id: string | null;

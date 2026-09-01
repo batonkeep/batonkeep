@@ -148,6 +148,14 @@ export default function ApprovalInbox({ onCountChange }: Props) {
                 </div>
                 <div className="mt-0.5 font-mono text-[11px] text-muted">
                   {d.where} · {a.producer}
+                  {/* P-0106: a checkpointed run survives a restart, so its decision can
+                      wait. One holding an in-process wait cannot — say which, because the
+                      operator's choice of "later" depends on it. */}
+                  {a.kind === "code_exec" && a.run_id !== null && !a.resumable && (
+                    <span className="ml-1.5 text-amber-500" title="This run is waiting in memory — a restart ends it.">
+                      · decide before restart
+                    </span>
+                  )}
                 </div>
                 {d.body && (
                   <pre className="mt-2 max-h-32 overflow-auto rounded-lg bg-base p-2 font-mono text-[10px] leading-relaxed text-ink">

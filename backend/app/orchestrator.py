@@ -26,7 +26,7 @@ from typing import Any
 from sqlalchemy import or_, select, update
 from sqlalchemy.orm.attributes import flag_modified
 
-from app import approvals, task_assets, task_workspace
+from app import approvals, notify, task_assets, task_workspace
 from app.config import get_settings
 from app.db import AsyncSessionLocal
 from app.logging_config import bind_run
@@ -751,6 +751,12 @@ def _make_run_approver(run_id: int, owner_id: str, provider_name: str):
                     seq_override=await _next_seq(edb, run_id),
                 )
                 await edb.commit()
+
+        # Reach out before waiting. Best-effort by construction: a notification failure
+        # must never change what the agent does (app/notify.py).
+        await notify.approval_pending(
+            request_id=request_id, run_id=run_id, label=label, producer=provider_name,
+        )
 
         approved = await approvals.await_decision(
             request_id, fut,

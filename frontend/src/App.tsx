@@ -10,6 +10,7 @@ import TaskList from "./components/TaskList";
 import TaskForm from "./components/TaskForm";
 import RunViewer from "./components/RunViewer";
 import SessionView from "./components/SessionView";
+import ApprovalInbox from "./components/ApprovalInbox";
 import SettingsPanel from "./components/SettingsPanel";
 import CockpitPanel from "./components/CockpitPanel";
 import ProjectsPanel from "./components/ProjectsPanel";
@@ -306,6 +307,11 @@ function AppShell({ appAuthEnabled, onLogout }: { appAuthEnabled: boolean; onLog
           </div>
 
           <div className={`items-center gap-2 ${immersive ? "hidden md:flex" : "flex"}`}>
+            {/* P-0100 / Gate B3: "what needs me" across every run and project. Lives in
+                the header rather than the nav because it is cross-cutting (a parked
+                code-exec belongs to a run, a canonical write to a project) and the
+                bottom nav is already at its five-item mobile ceiling. */}
+            <ApprovalInbox />
             <Button
               variant="outline"
               size="sm"

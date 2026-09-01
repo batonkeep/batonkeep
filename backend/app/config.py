@@ -53,6 +53,14 @@ class Settings(BaseSettings):
     # but still bounded, and still inside the run's own wall-clock timeout, so a
     # parked run can never outlive the budget the operator set for it.
     unattended_approval_timeout_seconds: int = 900
+    # P-0100 / Gate B4: where to POST when an unattended run parks on an approval.
+    # An outbound webhook is the sovereign-correct first channel: Web Push cannot
+    # be used without routing every notification through Google FCM or Mozilla
+    # autopush (there is no direct-delivery path), which contradicts the whole
+    # premise on a self-hosted box. A webhook delegates the choice to the operator —
+    # their own ntfy/Gotify, a chat hook, a shell script — so we pick no vendor for
+    # them. Empty = no notification (the polled in-app queue still works).
+    approval_webhook_url: str = ""
     # P-0078: planning turns are meant to be cheap, frequent meta-work — they read
     # DB state and call a couple of proposal tools. They must NOT inherit the
     # 30-minute run budget: a planner that takes half an hour has already failed at

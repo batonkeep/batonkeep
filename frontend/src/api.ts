@@ -205,7 +205,8 @@ export const api = {
     const qs = q.toString();
     return req<Approval[]>(`/approvals${qs ? `?${qs}` : ""}`);
   },
-  // Decide a pending canonical-write proposal (code-exec approvals go through
+  // Decide a pending canonical-write proposal, or an unattended run's parked code-exec
+  // request (P-0098). A *session's* code-exec approval still goes through
   // their session route — the backend refuses them here).
   // `declareSource` (P-0073): approving also declares the written path as a
   // context source so the write reaches later sessions. Defaults to true

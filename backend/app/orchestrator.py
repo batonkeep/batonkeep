@@ -1205,12 +1205,29 @@ def _find_best_agent_md(workdir: str, exclude: str | None = None) -> str | None:
     excluded: excluding it discarded exactly the report we wanted and let the
     plain-text narration become the deliverable. `exclude` is kept optional only
     for callers that still share a dir with our own writes.
+
+    **Except the projected work ledger.** `project_context` writes `WORKITEM.md` into the
+    same workdir as *input context* (§4.2). It is not agent-authored, and on a run whose
+    final text is short it is comfortably the largest `.md` present — so it won the scan
+    and **replaced the model's answer with the ledger we handed the model**. Observed
+    live: identical prompts returned the report on `openai-api` (long final text, so the
+    size test failed) and the bare ledger on `claude-api` (81 output tokens). A control
+    run with parking disabled reproduced it, ruling out the resume path.
+
+    The ledger is excluded by name rather than by heuristic. It is also written `0o444`,
+    but "not writable" is a property of one projection today, not a contract — filtering
+    on it would silently start swallowing agent files the day anything else is projected
+    read-only.
     """
     import glob
+
+    from app.work_ledger import LEDGER_FILENAME
+
     pattern = os.path.join(workdir, "*.md")
     candidates = [
         p for p in glob.glob(pattern)
-        if exclude is None or os.path.basename(p) != exclude
+        if os.path.basename(p) != LEDGER_FILENAME
+        and (exclude is None or os.path.basename(p) != exclude)
     ]
     if not candidates:
         return None

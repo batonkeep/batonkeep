@@ -240,6 +240,64 @@ def _compact_openai_messages(messages: list[dict]) -> None:
             m["content"] = _compact_result_text(m["content"])
 
 
+def _strip_nulls(obj: Any) -> Any:
+    """Drop null-valued keys, recursively. See `_responses_echo_item`."""
+    if isinstance(obj, dict):
+        return {k: _strip_nulls(v) for k, v in obj.items() if v is not None}
+    if isinstance(obj, list):
+        return [_strip_nulls(v) for v in obj]
+    return obj
+
+
+def _responses_echo_item(item: Any) -> Any:
+    """Normalize one `/v1/responses` output item into the form the API accepts back.
+
+    **This exists because of a live failure, and it is a P-0106 fix, not a tidy-up.**
+    `model_dump()` on an output item emits output-only fields — notably `"status": null`
+    on a `reasoning` item — and echoing that back is a hard 400
+    (`Unknown parameter: 'input[1].status'`). The SDK strips them when you hand it its own
+    objects, so the **live** loop would have worked and only a **resumed** one would have
+    failed: a checkpoint stores `serialize_messages(...)`, i.e. exactly the `model_dump()`
+    shape the API rejects. Parking on this lane would have been a one-way door, and no
+    unit test could have found it — the fake defines the shape it then asserts on.
+
+    So the fix removes the divergence rather than patching the resume side: the live loop
+    stores the *same* normalized dicts it would replay, and the checkpoint is byte-for-byte
+    what was already being sent. Idempotent, so a resumed list passes through unchanged.
+
+    Nulls are dropped wholesale rather than `status` by name: the offending key is one
+    instance of "output-only field, absent on input", and a name-list would have to be
+    maintained against an API we do not control. A null carries no information on echo-back.
+    Found by DRILL-D0074-R3 on Runtime B against `gpt-5.6-terra`.
+    """
+    dump = getattr(item, "model_dump", None)
+    return _strip_nulls(dump() if callable(dump) else item)
+
+
+def _compact_responses_input(items: list) -> None:
+    """Compact aged `function_call_output` items in place, protecting the most-recent
+    tool turn — the `/v1/responses` analogue of `_compact_openai_messages`.
+
+    Only the outputs *we* wrote are touched. Model-produced items (`reasoning` above
+    all) are never rewritten, for the same reason `_compact_gemini_contents` leaves
+    model parts alone: their encrypted payload has to come back byte-identical or the
+    next round rejects it.
+    """
+    call_idxs = [
+        i for i, it in enumerate(items)
+        if (it.get("type") if isinstance(it, dict) else getattr(it, "type", None))
+        == "function_call"
+    ]
+    last_turn_start = call_idxs[-1] if call_idxs else None
+    for i, it in enumerate(items):
+        if not isinstance(it, dict) or it.get("type") != "function_call_output":
+            continue
+        if last_turn_start is not None and i > last_turn_start:
+            continue  # most-recent turn — keep verbatim
+        if isinstance(it.get("output"), str):
+            it["output"] = _compact_result_text(it["output"])
+
+
 def _compact_anthropic_messages(messages: list[dict]) -> None:
     """Compact aged `tool_result` blocks in place, protecting the most-recent
     tool-result turn. Only the block `content` text changes — `cache_control`
@@ -423,7 +481,13 @@ class ModelExecutor(Executor):
             self._extra.get("image_model_id") or self._def.supports_image_gen
         ):
             await self._configure_image_gen()
-        if self._def.kind == "anthropic":
+        if self._api_shape() == "responses":
+            async for ev in self._run_openai_responses(
+                prompt, workdir=workdir, tools_enabled=tools_enabled,
+                max_rounds=max_rounds, budget_usd=budget_usd,
+            ):
+                yield ev
+        elif self._def.kind == "anthropic":
             async for ev in self._run_anthropic(
                 prompt, workdir=workdir, tools_enabled=tools_enabled,
                 max_rounds=max_rounds, budget_usd=budget_usd,
@@ -448,8 +512,6 @@ class ModelExecutor(Executor):
         self, prompt: str, *, workdir: str, tools_enabled: bool,
         max_rounds: int, budget_usd: float,
     ) -> AsyncIterator[ExecEvent]:
-        import os
-
         from openai import AsyncOpenAI
 
         from app.credentials import resolve_api_key
@@ -461,7 +523,7 @@ class ModelExecutor(Executor):
             api_key = "no-key"
         else:
             api_key = await resolve_api_key(self._cred_provider, self._def.env_key)
-        base_url = self._def.base_url or os.environ.get("OPENAI_BASE_URL") or None
+        base_url = self._effective_base_url()
         if not api_key:
             yield ExecEvent(
                 kind=EventKind.error,
@@ -641,6 +703,242 @@ class ModelExecutor(Executor):
                 yield ExecEvent(kind=EventKind.tool, message=f"[{v['name']}] called",
                                 data={"tool": v["name"], "result_chars": len(result)})
                 messages.append({"role": "tool", "content": result, "tool_call_id": v["id"]})
+
+        total_usage.cost_usd = self._compute_cost(total_usage) + self._aux_cost()
+        exec_result = ExecResult(text=full_text, usage=total_usage, provider=self.name,
+                                 model=self._model or "unknown")
+        yield ExecEvent(kind=EventKind.result, message=f"[{self.name}] done",
+                        data={"result": exec_result, "usage": total_usage.__dict__})
+
+    # ── OpenAI /v1/responses (D-0074) ─────────────────────────────────────────
+
+    async def _run_openai_responses(
+        self, prompt: str, *, workdir: str, tools_enabled: bool,
+        max_rounds: int, budget_usd: float,
+    ) -> AsyncIterator[ExecEvent]:
+        """OpenAI's Responses API — the tool path for the reasoning-model class (D-0074).
+
+        **Why a fourth loop rather than a branch in `_run_openai_compat`.** Replacing the
+        chat loop was never available: `openai_compatible` is also Ollama, LM Studio,
+        vLLM, OpenRouter, xAI and every custom provider an operator declares, and
+        `/v1/responses` is OpenAI-proprietary — almost nothing else implements it. So the
+        two shapes coexist by necessity, and D-0074's carried question ("replaces or sits
+        beside") is answered by the provider inventory rather than by preference. Given
+        that, a branch-riddled single loop would be a worse version of the same duplication:
+        the conversation representation differs at every step (flat input items vs
+        role messages, `function_call`/`function_call_output` vs `tool_calls`/`role:tool`,
+        opaque `reasoning` items that must round-trip), so the branches would outnumber
+        the shared lines. The cost is real and is recorded as debt, not hidden.
+
+        **We do not use `previous_response_id`.** It is the ergonomic path and it is the
+        wrong one here: it makes OpenAI the holder of conversation state. Three things
+        break at once — sovereignty (the transcript lives on their servers, against
+        P-0009's whole posture), P-0106 resumption (a checkpoint would hold a pointer to a
+        server-side object with its own retention, so "resumable" would depend on their
+        expiry, not on our fence), and D-0008 cross-provider switching (state you do not
+        hold cannot be handed to another provider). `store=False` plus
+        `include=["reasoning.encrypted_content"]` keeps the entire conversation in our
+        process and in our checkpoint, which is the only shape that satisfies all three.
+        """
+        from openai import AsyncOpenAI
+
+        from app.credentials import resolve_api_key
+
+        api_key = await resolve_api_key(self._cred_provider, self._def.env_key)
+        if not api_key:
+            yield ExecEvent(
+                kind=EventKind.error,
+                message=(
+                    f"no credentials for {self.name}: set {self._def.env_key} "
+                    "or store a key via /api/credentials"
+                ),
+            )
+            return
+
+        client = AsyncOpenAI(api_key=api_key, base_url=self._effective_base_url())
+        # P-0106: a resumed run replays the stored conversation rather than starting
+        # over — re-running from the prompt could propose a *different* action than the
+        # one the operator approved.
+        _resume = self._resume_state("openai_responses")
+        vimgs = [] if _resume else self._vision_images(prompt, workdir)
+        if vimgs:
+            user_content: Any = [{"type": "input_text", "text": prompt}] + [
+                {"type": "input_image", "image_url": im.data_url} for im in vimgs
+            ]
+        else:
+            user_content = prompt
+        # The system prompt is *not* an input item here — it is the `instructions`
+        # parameter, rebuilt each round. That drops `_run_openai_compat`'s
+        # `messages[0] = …` rewrite (which mutated history to swap the synthesis nudge in)
+        # and means a resumed conversation cannot carry a stale system prompt forward.
+        items: list[Any] = list(_resume["messages"]) if _resume else [
+            {"role": "user", "content": user_content}
+        ]
+        tools = _active_tool_schemas(self._extra) if tools_enabled else []
+        total_usage = Usage()
+        full_text = ""
+        if _resume:
+            _u = _resume.get("usage") or {}
+            total_usage = Usage(
+                tokens_in=_u.get("tokens_in", 0), tokens_out=_u.get("tokens_out", 0),
+                cost_usd=_u.get("cost_usd", 0.0),
+            )
+            _tc = _resume["tool_call"]
+            _result = await self._resolve_parked_tool(_tc, workdir=workdir)
+            items.append({"type": "function_call_output", "call_id": _tc["id"],
+                          "output": _result})
+            yield ExecEvent(kind=EventKind.tool, message=f"[{_tc['name']}] resumed",
+                            data={"tool": _tc["name"], "resumed": True})
+
+        if vimgs:
+            yield ExecEvent(
+                kind=EventKind.log,
+                message=f"[{self.name}] vision: attached {len(vimgs)} referenced image(s)",
+            )
+        yield ExecEvent(kind=EventKind.log, message=f"[{self.name}] starting (responses)")
+        yield ExecEvent(kind=EventKind.phase, phase="running")
+
+        pending_synthesis = False
+        for round_num in range(max_rounds):
+            over_budget = total_usage.cost_usd + self._aux_cost() > budget_usd
+            force_answer = over_budget or round_num == max_rounds - 1 or pending_synthesis
+            if over_budget:
+                yield ExecEvent(
+                    kind=EventKind.log,
+                    message=f"[{self.name}] budget ${budget_usd:.4f} reached — synthesizing",
+                )
+            _compact_responses_input(items)
+            if force_answer and len(items) > 1:
+                items.append({"role": "user", "content": _SYNTHESIS_USER_MSG})
+            create_kwargs: dict[str, Any] = dict(
+                model=self._model or "gpt-4o-mini",
+                instructions=_base_system_prompt(self._extra) + (
+                    _SYNTHESIS_NUDGE if force_answer else ""),
+                input=items,
+                stream=True,
+                # See the docstring: our process holds the conversation, not OpenAI's.
+                # `include` is what makes that possible for reasoning models — without it
+                # the encrypted reasoning is dropped and multi-round tool use degrades.
+                store=False,
+                include=["reasoning.encrypted_content"],
+            )
+            if tools:
+                # Responses takes function tools **flat** — no nested "function" object,
+                # which is the chat shape. Passing the chat shape here is accepted by the
+                # SDK and then rejected by the API, so the difference is load-bearing.
+                create_kwargs["tools"] = [
+                    {"type": "function", "name": t["name"],
+                     "description": t.get("description", ""),
+                     "parameters": t["parameters"]}
+                    for t in tools
+                ]
+                create_kwargs["tool_choice"] = "none" if force_answer else "auto"
+            # Deliberately no `reasoning_effort`: sending it is what broke the chat lane
+            # for this model class in the first place, and the server-side default is the
+            # capability we are here to keep.
+
+            try:
+                stream = await client.responses.create(**create_kwargs)
+            except Exception as exc:
+                err_msg = str(exc)
+                if any(kw in err_msg.lower() for kw in ("rate", "limit", "quota", "429")):
+                    yield ExecEvent(
+                        kind=EventKind.error,
+                        message=f"rate_limit_reached: {err_msg}",
+                        data={"rate_limit": True},
+                    )
+                else:
+                    yield ExecEvent(kind=EventKind.error, message=err_msg)
+                return
+
+            assistant_text = ""
+            output_items: list[Any] = []
+            usage_delta = Usage()
+            try:
+                async for event in stream:
+                    etype = getattr(event, "type", "")
+                    if etype == "response.output_text.delta":
+                        delta = getattr(event, "delta", "") or ""
+                        assistant_text += delta
+                        yield ExecEvent(kind=EventKind.token, text=delta)
+                    elif etype in ("response.completed", "response.incomplete"):
+                        # The terminal event carries the authoritative output — the full
+                        # item list including `reasoning`. Reading it here rather than
+                        # reassembling from deltas is what keeps the opaque items intact.
+                        resp = getattr(event, "response", None)
+                        output_items = list(getattr(resp, "output", None) or [])
+                        usage = getattr(resp, "usage", None)
+                        if usage:
+                            # Responses reports `input_tokens` *including* the cached
+                            # portion (as chat/completions does), so split it out rather
+                            # than billing the cached prefix twice.
+                            in_tok = getattr(usage, "input_tokens", 0) or 0
+                            cached = getattr(
+                                getattr(usage, "input_tokens_details", None),
+                                "cached_tokens", 0) or 0
+                            usage_delta = Usage(
+                                tokens_in=max(in_tok - cached, 0),
+                                tokens_out=getattr(usage, "output_tokens", 0) or 0,
+                                cache_read_tokens=cached,
+                            )
+                    elif etype == "response.failed":
+                        resp = getattr(event, "response", None)
+                        err = getattr(resp, "error", None)
+                        yield ExecEvent(
+                            kind=EventKind.error,
+                            message=getattr(err, "message", None) or "response failed",
+                        )
+                        return
+            except Exception as exc:
+                yield ExecEvent(kind=EventKind.error, message=str(exc))
+                return
+
+            usage_delta.cost_usd = self._compute_cost(usage_delta)
+            total_usage = total_usage + usage_delta
+            if assistant_text:
+                full_text = assistant_text
+
+            calls = [
+                it for it in output_items
+                if getattr(it, "type", None) == "function_call"
+            ]
+            if force_answer:
+                break
+            if not calls:
+                if full_text:
+                    break
+                pending_synthesis = True
+                continue
+
+            # Echo the model's own output back, reasoning items included, in order —
+            # the Responses equivalent of replaying Gemini's `thought_signature`
+            # (D-0034/P-0043). Normalized rather than appended raw, so that what a live
+            # round sends and what a resumed round replays are the same bytes; see
+            # `_responses_echo_item` for the 400 that taught us the difference.
+            items.extend(_responses_echo_item(it) for it in output_items)
+            for call in calls:
+                call_id = getattr(call, "call_id", None) or getattr(call, "id", "")
+                name = getattr(call, "name", "")
+                args = getattr(call, "arguments", "") or "{}"
+                self._arm_checkpoint(
+                    path="openai_responses", messages=items, usage=total_usage,
+                    round_num=round_num,
+                    tool_call={"id": call_id, "name": name, "args": args},
+                )
+                try:
+                    result = await self._call_tool(name, args, workdir=workdir)
+                except checkpoint.ParkRequested as park:
+                    yield ExecEvent(
+                        kind=EventKind.parked,
+                        message=f"awaiting approval for {name}",
+                        data={"request_id": park.request_id, "tool": name,
+                              "model": self._checkpoint_model()},
+                    )
+                    return
+                yield ExecEvent(kind=EventKind.tool, message=f"[{name}] called",
+                                data={"tool": name, "result_chars": len(result)})
+                items.append({"type": "function_call_output", "call_id": call_id,
+                              "output": result})
 
         total_usage.cost_usd = self._compute_cost(total_usage) + self._aux_cost()
         exec_result = ExecResult(text=full_text, usage=total_usage, provider=self.name,
@@ -1112,6 +1410,35 @@ class ModelExecutor(Executor):
 
 
     # ── P-0106: parking support ────────────────────────────────────────────────
+    def _effective_base_url(self) -> str | None:
+        """The URL this provider's requests actually go to.
+
+        `openai-api` ships with no `base_url`, so `OPENAI_BASE_URL` redirects it — that
+        is a documented deployment knob (a proxy, a gateway, a compat shim), not an
+        accident. It is therefore the honest test for *whether we are talking to OpenAI*.
+        """
+        import os
+
+        return self._def.base_url or os.environ.get("OPENAI_BASE_URL") or None
+
+    def _api_shape(self) -> str:
+        """"responses" only when the request really is going to OpenAI (D-0074).
+
+        The shape is a property of the **endpoint**, not of the template. An operator who
+        set `OPENAI_BASE_URL` has pointed this provider somewhere else by definition, and
+        almost nothing but OpenAI implements `/v1/responses` — so a redirected provider
+        falls back to chat/completions and keeps working. The failure direction is
+        deliberate: losing the reasoning-model capability behind a proxy is recoverable
+        (unset the variable, or declare a custom provider); sending Responses at an
+        endpoint that has never heard of it is a hard failure on every run.
+        """
+        if self._def.api_shape != "responses":
+            return "chat"
+        base = self._effective_base_url()
+        if base and "api.openai.com" not in base:
+            return "chat"
+        return "responses"
+
     def _checkpoint_model(self) -> str | None:
         """The model a checkpoint is written for — the **effective** one, i.e. the model
         the request actually goes to.

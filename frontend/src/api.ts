@@ -60,6 +60,7 @@ import type {
   WorkItemInput,
   WorkItemPatchInput,
   ActivityItem,
+  AgentSummary,
 } from "./types";
 
 const BASE = "/api";
@@ -199,6 +200,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  // P-0107 shape (b) / Gate C1: scheduled tasks presented as agents.
+  listAgents: () => req<AgentSummary[]>("/agents"),
   // P-0100 / Gate C: the cross-lane timeline.
   listActivity: (params?: { limit?: number; project_id?: string }) => {
     const q = new URLSearchParams();

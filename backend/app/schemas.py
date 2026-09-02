@@ -414,6 +414,42 @@ class PackageOut(BaseModel):
     existing: bool
 
 
+class AgentSummary(BaseModel):
+    """A named, persistent actor as the operator sees it (P-0107 shape (b) / Gate C1).
+
+    **A grouping, not a table.** An agent here is a scheduled Task presented with the
+    context that makes it legible as an actor — its project, its provider default, what it
+    last did and what it is waiting on. That is honest about what exists: [[P-0107]] found
+    the durable `Agent` entity is the designed target but that minting it before the
+    agent-to-agent boundary is decided would bake an authority model in by accident.
+
+    The `principal_id` is the join to the attribution envelope, so "what has this agent
+    done" is answerable from the audit record rather than inferred from timestamps — and
+    it is already the identity a durable Agent would carry, so nothing here has to be
+    unpicked later.
+    """
+
+    # Stable identity, matching the attribution envelope's principal (D-0059 D3).
+    principal_id: str
+    name: str
+    task_id: int
+    project_id: str | None = None
+    project_name: str | None = None
+    enabled: bool
+    schedule_expr: str | None = None
+    # What it runs on by default; NULL means the router decides per run.
+    provider: str | None = None
+    # Last activity, as the work outcome — never the transport status (P-0070).
+    last_run_at: datetime | None = None
+    last_outcome: str | None = None
+    runs_total: int = 0
+    # How many of its recent runs did *not* deliver. The number an operator actually
+    # wants when deciding whether to trust an agent that has been running unattended.
+    recent_failures: int = 0
+    # Decisions this agent is blocked on right now.
+    awaiting: int = 0
+
+
 class ActivityItem(BaseModel):
     """One thing an agent did, in the cross-lane timeline (P-0100 / Gate C).
 

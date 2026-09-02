@@ -323,6 +323,21 @@ class Evidence(Base):
     digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # Actor: "human", a provider instance id, or "system".
     producer: Mapped[str] = mapped_column(String(96), nullable=False, default="system")
+    # ── Attribution envelope (D-0059 D3 / P-0103) ────────────────────────────
+    # Who this event is about, and who set it in motion. Typed and namespaced
+    # (`human:local`, `agent:planner/project-x`, `system:scheduler`) so a reader can
+    # tell a person from a lane from the engine without parsing prose — unlike
+    # `producer` above, which is free-form and conflates all three.
+    #
+    # `delegated_by` is NULL today and stays that way until agents can ask each other
+    # for work; it exists now because D-0059 marks these fields **can't-retrofit**.
+    # Rows accumulate: an approval written without an envelope is an adjudication whose
+    # actor can never be recovered.
+    principal_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    principal_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    initiated_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    executed_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    delegated_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     sensitivity: Mapped[str] = mapped_column(String(16), nullable=False, default="inherit")
     created_at: Mapped[datetime] = mapped_column(
@@ -370,6 +385,21 @@ class Approval(Base):
     # canonical_write carries {rel_path, content, diff, base_revision}.
     # Additive-only evolution — readers tolerate unknown keys, never migrate.
     payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # ── Attribution envelope (D-0059 D3 / P-0103) ────────────────────────────
+    # Who this event is about, and who set it in motion. Typed and namespaced
+    # (`human:local`, `agent:planner/project-x`, `system:scheduler`) so a reader can
+    # tell a person from a lane from the engine without parsing prose — unlike
+    # `producer` above, which is free-form and conflates all three.
+    #
+    # `delegated_by` is NULL today and stays that way until agents can ask each other
+    # for work; it exists now because D-0059 marks these fields **can't-retrofit**.
+    # Rows accumulate: an approval written without an envelope is an adjudication whose
+    # actor can never be recovered.
+    principal_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    principal_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    initiated_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    executed_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    delegated_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     # P-0106 / D-0069: the parked run's conversation, so a decision can be acted on after
     # a restart instead of the run dying with the process. Shape:
     #   {"v":1, "fence": {...}, "messages": [...], "usage": {...}, "round": int,

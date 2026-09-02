@@ -35,6 +35,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import attribution
 from app.models import Approval
 
 logger = logging.getLogger(__name__)
@@ -96,6 +97,26 @@ async def await_decision(
 
 # ── Durable rows ──────────────────────────────────────────────────────────────
 
+def _envelope_for(producer: str, owner_id: str) -> attribution.Envelope:
+    """Map the free-form `producer` onto a typed envelope.
+
+    `producer` predates attribution and conflates three things — `"human"`, `"system"`,
+    and a provider instance id — which is exactly why it cannot be queried and why the
+    envelope exists. Rather than break every caller, it is interpreted here, in one place:
+
+    * `human` → the operator asked for it directly.
+    * `system` → the engine acted on its own (a sweep, a reaper).
+    * anything else → a lane produced it. Note the *lane*, not the provider: which model
+      answered can change mid-task by design (D-0008), so attributing an adjudication to
+      `claude-api` would record the backend rather than the actor.
+    """
+    if producer == "human":
+        return attribution.by_human(owner_id)
+    if producer == "system":
+        return attribution.by_system("engine")
+    return attribution.by_agent("run", producer, initiated_by=attribution.human(owner_id))
+
+
 async def record_request(
     db: AsyncSession,
     *,
@@ -110,6 +131,10 @@ async def record_request(
     run_id: int | None = None,
 ) -> Approval:
     """Persist the durable record for a pending approval. Flushes; caller commits."""
+    # The attribution envelope (D-0059 D3 / P-0103). Derived from `producer` rather than
+    # asked for at every call site, so no caller can forget it and leave an adjudication
+    # with no recoverable actor — the failure D-0059 marks can't-retrofit.
+    env = _envelope_for(producer, owner_id)
     row = Approval(
         owner_id=owner_id,
         request_id=request_id,
@@ -121,6 +146,7 @@ async def record_request(
         work_item_id=work_item_id,
         session_id=session_id,
         run_id=run_id,
+        **env.as_columns(),
     )
     db.add(row)
     await db.flush()

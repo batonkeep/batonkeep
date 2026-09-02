@@ -33,6 +33,7 @@ import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import attribution
 from app.config import get_settings
 from app.models import Evidence
 from app.redact import redact_text
@@ -121,10 +122,25 @@ async def capture(
         producer=producer[:96],
         bytes=len(payload),
         sensitivity=sensitivity,
+        # Attribution envelope (D-0059 D3 / P-0103). Evidence is the content-bearing
+        # half of the audit record, so "who produced this" is not decoration — it is
+        # what makes the row citable later.
+        **_envelope_for(producer, owner_id).as_columns(),
     )
     db.add(row)
     await db.flush()
     return row
+
+
+def _envelope_for(producer: str, owner_id: str) -> attribution.Envelope:
+    """Typed attribution from the free-form `producer` — same mapping as `approvals`,
+    kept beside its own write site rather than shared, because the two tables may need
+    to diverge (evidence can be produced by a lane the operator never addressed)."""
+    if producer == "human":
+        return attribution.by_human(owner_id)
+    if producer == "system":
+        return attribution.by_system("engine")
+    return attribution.by_agent("run", producer, initiated_by=attribution.human(owner_id))
 
 
 async def capture_safe(db: AsyncSession, **kwargs) -> Evidence | None:

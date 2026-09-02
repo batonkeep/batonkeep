@@ -33,7 +33,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.datastructures import Headers
 
-from app import approvals, evidence, sandbox, totp
+from app import approvals, attribution, evidence, sandbox, totp
 from app import version as appversion
 from app.auth import SESSION_COOKIE, issue_session, password_matches, verify_session
 from app.config import get_settings
@@ -65,6 +65,7 @@ from app.projects import (
 )
 from app.schemas import (
     ActivityItem,
+    AgentSummary,
     ApprovalBatchDecideIn,
     ApprovalBatchDecideOut,
     ApprovalBatchItemOut,
@@ -1346,6 +1347,79 @@ async def propose_canonical_write(
     await db.commit()
     await db.refresh(row)
     return ApprovalOut.model_validate(row)
+
+
+@app.get("/api/agents", response_model=list[AgentSummary], tags=["agents"])
+async def list_agents(
+    db: AsyncSession = Depends(get_db),
+    owner_id: str = Depends(_owner_id),
+):
+    """The operator's agents — scheduled tasks presented as the actors they are.
+
+    **A grouping over existing nouns, not a new entity** ([[P-0107]] shape (b)). The
+    durable `Agent` is the designed target, but minting it before the agent-to-agent
+    boundary is decided would settle an authority model by accident, so this delivers the
+    surface without spending that decision. The `principal_id` returned here is already
+    the identity a durable Agent would carry (D-0059 D3), so nothing has to be unpicked.
+
+    Only **scheduled** tasks are agents. A one-shot task is a job someone ran, not a thing
+    that persists and acts on its own — calling every task an agent would make the word
+    mean nothing, which is the drift that made "agent" unhelpful in the category to begin
+    with.
+    """
+    stmt = (
+        select(Task)
+        .where(Task.owner_id == owner_id, Task.schedule_expr.isnot(None))
+        .order_by(Task.name)
+    )
+    tasks = (await db.execute(stmt)).scalars().all()
+    if not tasks:
+        return []
+
+    projects = {
+        p.id: p.name
+        for p in (await db.execute(
+            select(Project).where(Project.owner_id == owner_id)
+        )).scalars().all()
+    }
+    pending = (await db.execute(
+        select(Approval).where(Approval.owner_id == owner_id, Approval.status == "pending")
+    )).scalars().all()
+
+    out: list[AgentSummary] = []
+    for t in tasks:
+        runs = (await db.execute(
+            select(Run).where(Run.task_id == t.id).order_by(Run.created_at.desc()).limit(20)
+        )).scalars().all()
+        total = await db.scalar(
+            select(func.count(Run.id)).where(Run.task_id == t.id)
+        ) or 0
+        last = runs[0] if runs else None
+        # "Did it deliver" — the work outcome, so an agent that reports success while
+        # producing nothing is not counted as healthy (P-0070).
+        failures = sum(
+            1 for r in runs
+            if classify_turn_outcome(r.status, r.output_flags)
+            not in ("succeeded", "running", "queued", "planning", "parked", "deferred")
+        )
+        run_ids = {r.id for r in runs}
+        awaiting = sum(1 for a in pending if a.run_id in run_ids)
+        routing = t.routing or {}
+        candidates = routing.get("candidates") or []
+        out.append(AgentSummary(
+            principal_id=attribution.agent("task", str(t.id)),
+            name=t.name, task_id=t.id,
+            project_id=t.project_id,
+            project_name=projects.get(t.project_id) if t.project_id else None,
+            enabled=t.enabled, schedule_expr=t.schedule_expr,
+            provider=candidates[0] if len(candidates) == 1 else None,
+            last_run_at=last.created_at if last else None,
+            last_outcome=(
+                classify_turn_outcome(last.status, last.output_flags) if last else None
+            ),
+            runs_total=total, recent_failures=failures, awaiting=awaiting,
+        ))
+    return out
 
 
 @app.get("/api/activity", response_model=list[ActivityItem], tags=["activity"])

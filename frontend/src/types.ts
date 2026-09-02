@@ -972,3 +972,23 @@ export interface ActivityItem {
   awaiting_approval_id: number | null;
   error: string | null;
 }
+
+// P-0107 shape (b) / Gate C1: a scheduled task presented as the actor it is.
+// A grouping over existing nouns, not a new entity — but `principal_id` is already
+// the identity a durable Agent would carry (D-0059 D3).
+export interface AgentSummary {
+  principal_id: string;
+  name: string;
+  task_id: number;
+  project_id: string | null;
+  project_name: string | null;
+  enabled: boolean;
+  schedule_expr: string | null;
+  provider: string | null;
+  last_run_at: string | null;
+  last_outcome: string | null;
+  runs_total: number;
+  // Counts runs that did not DELIVER, not runs that reported failure (P-0070).
+  recent_failures: number;
+  awaiting: number;
+}

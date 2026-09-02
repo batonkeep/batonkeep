@@ -952,3 +952,23 @@ export interface ContextCoverage {
   sample: string[];
   truncated: boolean;
 }
+
+// P-0100 / Gate C: one entry in the cross-lane activity timeline.
+export interface ActivityItem {
+  kind: "run" | "turn" | "planner";
+  id: number;
+  at: string;
+  // What the operator recognises the work by — task name, session title, "planner".
+  actor: string;
+  project_id: string | null;
+  provider: string | null;
+  model: string | null;
+  // The WORK outcome (P-0070's classifier), not the transport status. Both are sent,
+  // because the two disagreeing is itself the information.
+  outcome: string;
+  status: string;
+  cost_usd: number;
+  artifact: string | null;
+  awaiting_approval_id: number | null;
+  error: string | null;
+}

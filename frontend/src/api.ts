@@ -59,6 +59,7 @@ import type {
   SubtaskItemInput,
   WorkItemInput,
   WorkItemPatchInput,
+  ActivityItem,
 } from "./types";
 
 const BASE = "/api";
@@ -198,6 +199,14 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  // P-0100 / Gate C: the cross-lane timeline.
+  listActivity: (params?: { limit?: number; project_id?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.limit) q.set("limit", String(params.limit));
+    if (params?.project_id) q.set("project_id", params.project_id);
+    const qs = q.toString();
+    return req<ActivityItem[]>(`/activity${qs ? `?${qs}` : ""}`);
+  },
   listApprovals: (params?: { status?: string; project_id?: string }) => {
     const q = new URLSearchParams();
     if (params?.status) q.set("status", params.status);

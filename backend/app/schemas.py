@@ -414,6 +414,38 @@ class PackageOut(BaseModel):
     existing: bool
 
 
+class ActivityItem(BaseModel):
+    """One thing an agent did, in the cross-lane timeline (P-0100 / Gate C).
+
+    Deliberately lane-agnostic: an operator asking "what have my agents been doing" does
+    not care whether the work rode the task lane, a build session or the planner, and
+    three separate views is exactly the fragmentation that made unattended work
+    illegible.
+    """
+
+    kind: str            # run | turn | planner
+    id: int
+    at: datetime
+    # What the operator recognises it by — the task's name, the session's title, the
+    # project. Not an id: an activity feed keyed by id is a log, not a surface.
+    actor: str
+    project_id: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    # The **work** outcome (P-0070's classifier), never the transport status. A feed
+    # built on `succeeded` would report a run that delivered nothing as a success —
+    # precisely the dishonesty #182 was fixing.
+    outcome: str
+    # Transport status kept alongside, because the two disagreeing is itself information.
+    status: str
+    cost_usd: float = 0.0
+    # What it produced, when it produced something.
+    artifact: str | None = None
+    # Set when this item is *waiting on the operator* — the approval id to decide.
+    awaiting_approval_id: int | None = None
+    error: str | None = None
+
+
 class ApprovalOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

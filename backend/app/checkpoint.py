@@ -150,8 +150,57 @@ def _coerce(obj: Any) -> Any:
     raise TypeError(f"cannot serialize {type(obj).__name__} into a checkpoint")
 
 
+#: Keys whose value is a **tool call's own payload**, never provider metadata:
+#: Anthropic `tool_use.input`, Gemini `function_call.args` / `function_response.response`,
+#: OpenAI `function.arguments`. `_drop_null_fields` does not descend into these — see there.
+_PAYLOAD_KEYS = frozenset({"input", "args", "response", "arguments"})
+
+
+def _drop_null_fields(obj: Any) -> Any:
+    """Strip null-valued keys from provider message dicts, leaving tool payloads alone.
+
+    **Why this is here at all.** A checkpoint is only useful if the provider accepts it
+    back, and `model_dump()` emits *output-only* fields that the same provider refuses on
+    input. Found on Runtime B by `DRILL-PARK-R6`: an Anthropic assistant turn that narrates
+    before calling its tool carries a `text` block whose dump includes
+    `"citations": null, "parsed_output": null`, and replaying it is a hard 400 —
+
+        messages.1.content.0.text.parsed_output: Extra inputs are not permitted
+
+    The live path never sees this, because the loop appends the SDK's own objects and the
+    SDK strips them. Only a **resumed** run replays these dicts. So Gate B's
+    restart-survival guarantee was broken on the Anthropic lane for any run where the model
+    said something before calling the tool — most of them. `DRILL-PARK-R3a` passed only
+    because that turn happened to be a bare `tool_use`.
+
+    **Why here rather than in each loop.** [[D-0074]] fixed the same defect on the
+    Responses lane by normalizing where the loop appends, so live and resumed rounds send
+    identical bytes. That is the better shape when it is available — and on the Anthropic
+    lane it is not: the loop deliberately re-sends the SDK's objects (cache-control
+    breakpoints are managed around them), so normalizing at the append site would change
+    the **live** request path to fix a **resume-only** defect. Doing it in the checkpoint
+    instead gives a stronger and simpler guarantee anyway: *what this function returns is
+    valid provider input, by construction, for every lane.*
+
+    **The carve-out is the load-bearing part.** A tool call's arguments are **the action the
+    operator approved**. Stripping a null from inside them would resume a *different* call
+    than the one adjudicated — the exact substitution D-0069 refuses, arriving by the back
+    door. So `_PAYLOAD_KEYS` values are kept verbatim, nulls included.
+    """
+    if isinstance(obj, dict):
+        return {
+            k: (v if k in _PAYLOAD_KEYS else _drop_null_fields(v))
+            for k, v in obj.items()
+            if v is not None
+        }
+    if isinstance(obj, list):
+        return [_drop_null_fields(v) for v in obj]
+    return obj
+
+
 def serialize_messages(messages: list[Any]) -> list[Any]:
-    """Return a JSON-safe copy of a provider-native message list.
+    """Return a JSON-safe copy of a provider-native message list, in the shape the
+    provider will accept back.
 
     Raises on anything it cannot represent — deliberately. A checkpoint that silently
     dropped a `thought_signature` would resume into an opaque provider error much later;
@@ -159,4 +208,4 @@ def serialize_messages(messages: list[Any]) -> list[Any]:
     """
     import json
 
-    return json.loads(json.dumps(messages, default=_coerce))
+    return _drop_null_fields(json.loads(json.dumps(messages, default=_coerce)))

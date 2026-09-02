@@ -33,6 +33,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import select
 
+from app import attribution
 from app.db import AsyncSessionLocal
 from app.models import PlannerRun, Project, WorkItem
 
@@ -48,6 +49,13 @@ _MAX_CHILDREN = 10
 _MAX_TITLE = 256
 _MAX_OBJECTIVE = 4000
 _VALID_RISKS = ("low", "medium", "high")
+# Hand-offs are capped far harder than anything else a planning turn produces
+# ([[D-0072]]): every other tool writes inside the project the operator pointed the
+# turn at, whereas a hand-off writes into a *different* project. Spraying proposals
+# across every project is the abuse an injected planner would attempt, so the ceiling
+# is per-turn and low enough that a human reviewing the turn can read all of them.
+_MAX_HANDOFFS_PER_TURN = 3
+_MAX_ASK = 4000
 
 
 PROPOSE_SUBTASKS_SCHEMA = {
@@ -170,6 +178,58 @@ PROPOSE_SCHEDULE_SCHEMA = {
             },
         },
         "required": ["name", "prompt", "cadence"],
+    },
+}
+
+
+LIST_PROJECTS_SCHEMA = {
+    "name": "list_projects",
+    "description": (
+        "List the operator's other active projects, so you can address a hand-off. "
+        "You get each project's id, name and kind and NOTHING ELSE — not its work, "
+        "its files, its history or its agents. Use this only when you have work that "
+        "genuinely belongs to another project; for work in this project, use "
+        "triage_signal."
+    ),
+    "parameters": {"type": "object", "properties": {}},
+}
+
+HANDOFF_SCHEMA = {
+    "name": "handoff",
+    "description": (
+        "Ask another project to take on a piece of work. This is the ONLY way to reach "
+        "another project, and all that crosses is this request: you cannot read that "
+        "project, run anything in it, or use its files or credentials. It arrives as a "
+        "proposed work item that THAT project's operator accepts or rejects — so state "
+        "plainly what you want and why it belongs to them, and expect a human to read "
+        "it. Call list_projects first to get the target id."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "to_project_id": {
+                "type": "string",
+                "description": "The receiving project's id, from list_projects.",
+            },
+            "title": {"type": "string", "description": "Short name for the work you want."},
+            "objective": {
+                "type": "string",
+                "description": "What done means, concretely, in terms they can act on cold.",
+            },
+            "reason": {
+                "type": "string",
+                "description": (
+                    "Why you are asking them — what you are doing, and why this piece "
+                    "belongs to their project rather than yours."
+                ),
+            },
+            "kind": {
+                "type": "string",
+                "description": "task | investigation | review | chore (default task).",
+            },
+            "risk": {"type": "string", "enum": list(_VALID_RISKS), "description": "Default low."},
+        },
+        "required": ["to_project_id", "title", "reason"],
     },
 }
 
@@ -385,6 +445,10 @@ async def decompose(items: list[dict], *, context: dict | None = None) -> str:
                     "parent_id": parent.id,
                     "ts": datetime.now(UTC).isoformat(),
                 },
+                # Same-project mint: an agent produced it, but the operator is who
+                # wanted the planning turn, so `initiated_by` stays human and
+                # `delegated_by` stays NULL. Only a hand-off makes those differ.
+                **attribution.by_agent("planner", parent.project_id).as_columns(),
             )
             db.add(child)
             children.append(child)
@@ -436,6 +500,7 @@ async def triage_signal(
                 "kind": "triage",
                 "ts": datetime.now(UTC).isoformat(),
             },
+            **attribution.by_agent("planner", project_id).as_columns(),
         )
         db.add(item)
         await db.flush()
@@ -573,4 +638,188 @@ async def propose_schedule(
     return (
         f"Proposed a recurring task '{clean_name}' ({cadence}). It is pending the "
         "operator's approval and will not run until they accept it and set the schedule."
+    )
+
+
+async def _handoff_count(db, run_id: int | None, owner_id: str) -> int:
+    """How many hand-offs this planning turn has already made."""
+    if not run_id:
+        return 0
+    run = await db.get(PlannerRun, run_id)
+    if run is None or run.owner_id != owner_id:
+        return 0
+    return len((run.proposals or {}).get("handoffs") or [])
+
+
+async def _record_handoff(db, run_id: int | None, owner_id: str, entry: dict) -> None:
+    """Record a hand-off on the *sending* turn's audit row.
+
+    The received item carries its own envelope, but that only tells the receiving
+    operator where the ask came from. This is the other half: the sending turn's own
+    record of what it sent out of its project — which is what an operator reviewing
+    agent A reads, and what makes a spraying planner visible in one place.
+    """
+    if not run_id:
+        return
+    run = await db.get(PlannerRun, run_id)
+    if run is None or run.owner_id != owner_id:
+        return
+    prior = (run.proposals or {}).get("handoffs") or []
+    # Reassign (never mutate in place) so the JSON column change is tracked.
+    run.proposals = {**(run.proposals or {}), "handoffs": [*prior, entry]}
+
+
+async def list_projects(*, context: dict | None = None) -> str:
+    """The operator's other active projects — ids and names only.
+
+    Discovery is the smallest thing that has to cross for [[D-0072]]'s hand-off to be
+    addressable at all: you cannot ask a project for something without a way to name
+    it. So it is held to exactly that — id, name, kind. No work items, no evidence, no
+    status, no history. A planner that is talked into leaking still has nothing to leak
+    but a list of names the operator chose themselves.
+
+    Archived projects are omitted: handing work to a project the operator has shut is
+    a proposal nobody will ever read.
+    """
+    owner_id, project_id, _ = _project_ctx(context)
+    if not project_id:
+        return "[list_projects error] no project is bound to this planning turn"
+    async with AsyncSessionLocal() as db:
+        rows = (await db.execute(
+            select(Project)
+            .where(
+                Project.owner_id == owner_id,
+                Project.status == "active",
+                Project.id != project_id,
+            )
+            .order_by(Project.name)
+        )).scalars().all()
+    if not rows:
+        return (
+            "[list_projects] no other active projects — there is nowhere to hand work "
+            "off to, so keep this work here"
+        )
+    lines = [f"- {p.id} · {p.name} ({p.kind})" for p in rows]
+    return "[list_projects] other projects you can hand work to:\n" + "\n".join(lines)
+
+
+async def handoff(
+    to_project_id: str,
+    title: str,
+    reason: str,
+    *,
+    objective: str = "",
+    kind: str = "task",
+    risk: str = "low",
+    context: dict | None = None,
+) -> str:
+    """Ask another project for work, by minting a `proposed` work item in it (D-0072).
+
+    **This is the whole agent-to-agent transport.** [[D-0072]] chose it over a durable
+    inter-agent message and over direct invocation precisely because it needs *no new
+    trust surface*: it reuses the proposer-only machinery [[P-0078]]/[[D-0061]] already
+    built and the approval boundary [[D-0070]] just extended to schedules. Nothing else
+    crosses — not the workspace, not credentials, not memory, not execution. The
+    receiving operator accepts the item like any other proposal, or it never becomes
+    work. That is slower than direct invocation on purpose; the cost is accepted in the
+    decision, not overlooked here.
+
+    The contrast that motivates it: xAI's own guidance for the comparable feature is
+    *"don't treat separate Bots as separate security boundaries"* — one computer, one
+    filesystem, every login shared — against OWASP finding credential theft in 70% of
+    agent prompt-injection trials. Here, each agent **is** the boundary, and this
+    function is the only door in it.
+
+    Attribution (D-0059 D3, literal reading): the minted item's `initiated_by` is the
+    *sending* agent — an agent wanted this, not a human — and `delegated_by` is the
+    operator that agent was running for. So "work one agent asked another agent for" is
+    the query `initiated_by LIKE 'agent:%'`, not an inference from prose.
+    """
+    owner_id, project_id, run_id = _project_ctx(context)
+    if not project_id:
+        return "[handoff error] no project is bound to this planning turn"
+    target_id = (to_project_id or "").strip()
+    if not target_id:
+        return "[handoff error] to_project_id must not be empty — call list_projects first"
+    if target_id == project_id:
+        return (
+            "[handoff error] that is this project — use triage_signal to propose work "
+            "here; handoff is only for reaching a different project"
+        )
+    clean_title = (title or "").strip()[:_MAX_TITLE]
+    if not clean_title:
+        return "[handoff error] title must not be empty"
+    clean_reason = (reason or "").strip()[:_MAX_ASK]
+    if not clean_reason:
+        return (
+            "[handoff error] reason must not be empty — a human in another project has "
+            "to decide on this, and they cannot decide on an ask with no rationale"
+        )
+
+    async with AsyncSessionLocal() as db:
+        sender = await db.get(Project, project_id)
+        if sender is None or sender.owner_id != owner_id:
+            return "[handoff error] project not found"
+        # Ownership is the hard boundary: a hand-off never crosses owners, whatever the
+        # model was told. Same 404-shaped answer either way, so a wrong id cannot be
+        # used to probe whether another owner's project exists.
+        target = await db.get(Project, target_id)
+        if target is None or target.owner_id != owner_id or target.status != "active":
+            return f"[handoff error] no active project {target_id!r} — call list_projects"
+        target_name = target.name
+
+        sent = await _handoff_count(db, run_id, owner_id)
+        if sent >= _MAX_HANDOFFS_PER_TURN:
+            return (
+                f"[handoff error] this planning turn has already handed off "
+                f"{sent} item(s), the limit is {_MAX_HANDOFFS_PER_TURN} — say what "
+                "remains in your summary instead"
+            )
+
+        me = attribution.agent("planner", project_id)
+        envelope = attribution.Envelope(
+            principal_id=me,
+            principal_kind=attribution.KIND_AGENT,
+            initiated_by=me,
+            executed_by=me,
+            delegated_by=attribution.human(owner_id),
+        )
+        item = WorkItem(
+            owner_id=owner_id,
+            project_id=target_id,
+            state="proposed",
+            kind=(kind or "task").strip()[:64] or "task",
+            title=clean_title,
+            objective=(objective or "").strip()[:_MAX_OBJECTIVE],
+            risk=_clean_risk(risk),
+            signal={
+                "source": f"handoff from {sender.name}",
+                "kind": "handoff",
+                "from_project_id": project_id,
+                # Denormalised on purpose: `signal` is the content-safe origin
+                # reference, and the receiving operator should be able to read where
+                # this came from without a join into a project they may since have
+                # renamed or archived.
+                "from_project_name": sender.name,
+                "from_planner_run_id": run_id,
+                "reason": clean_reason,
+                "ts": datetime.now(UTC).isoformat(),
+            },
+            **envelope.as_columns(),
+        )
+        db.add(item)
+        await db.flush()
+        item_id = item.id
+        await _record_handoff(
+            db, run_id, owner_id,
+            {"to_project_id": target_id, "work_item_id": item_id, "title": clean_title},
+        )
+        await _record_produced(db, run_id, owner_id, "handoff")
+        await db.commit()
+
+    return (
+        f"[handoff] asked {target_name!r} for {clean_title!r} — it is work item "
+        f"#{item_id} there, in the proposed state. Nothing happens until that "
+        "project's operator accepts it, and you will not be told when they do. "
+        "Do not wait on it; carry on with what you can do here."
     )

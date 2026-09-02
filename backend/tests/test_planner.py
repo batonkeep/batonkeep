@@ -188,7 +188,13 @@ class TestPlanningMode:
         names = {s["name"] for s in _active_tool_schemas({"planning": True})}
         # `propose_schedule` is project-level (D-0070): recurring work belongs to the
         # project, not to one work item — and like its siblings it proposes only.
-        assert names == {"triage_signal", "summarize_project", "propose_schedule"}
+        # `list_projects`/`handoff` are project-level for a second reason (D-0072): a
+        # hand-off is about this project's relationship to another one, and keeping the
+        # only cross-project door off the high-frequency item scope is a rate limit.
+        assert names == {
+            "triage_signal", "summarize_project", "propose_schedule",
+            "list_projects", "handoff",
+        }
 
     def test_base_run_excludes_every_planner_tool(self):
         from app.providers.model_executor import _active_tool_schemas

@@ -181,6 +181,8 @@ class PlannerToolProvider(ToolProvider):
                 planner_tools.TRIAGE_SIGNAL_SCHEMA,
                 planner_tools.SUMMARIZE_PROJECT_SCHEMA,
                 planner_tools.PROPOSE_SCHEDULE_SCHEMA,
+                planner_tools.LIST_PROJECTS_SCHEMA,
+                planner_tools.HANDOFF_SCHEMA,
             )
         ]
 
@@ -196,6 +198,8 @@ class PlannerToolProvider(ToolProvider):
             "triage_signal": planner_tools.triage_signal,
             "summarize_project": planner_tools.summarize_project,
             "propose_schedule": planner_tools.propose_schedule,
+            "list_projects": planner_tools.list_projects,
+            "handoff": planner_tools.handoff,
         }.get(name)
         if fn is None:
             return f"[unknown planner tool: {name}]"
@@ -209,7 +213,15 @@ PLANNER_ITEM_TOOL_NAMES = ("propose_subtasks", "set_next_action", "decompose")
 # `propose_schedule` is project-level: recurring work belongs to the project, not to one
 # work item. It proposes only — D-0070 keeps the grant of recurring unattended execution
 # with the operator.
-PLANNER_PROJECT_TOOL_NAMES = ("triage_signal", "summarize_project", "propose_schedule")
+# `list_projects` + `handoff` are the [[D-0072]] agent-to-agent transport, and they are
+# project-scope **only** — deliberately, on two counts. A hand-off is a statement about
+# this project's relationship to another one, which is project-level meta-work; and the
+# item-scope tools (`decompose` especially) are the high-frequency ones, so keeping the
+# only cross-project door on the low-frequency scope is itself a rate limit. An item-scope
+# turn cannot address a target either, since `list_projects` is not offered to it.
+PLANNER_PROJECT_TOOL_NAMES = (
+    "triage_signal", "summarize_project", "propose_schedule", "list_projects", "handoff",
+)
 #: Names offered only on a planning turn — excluded from every non-planning run's
 #: toolset (mirrors the code_exec / image_generate gating in model_executor).
 PLANNER_TOOL_NAMES = (*PLANNER_ITEM_TOOL_NAMES, *PLANNER_PROJECT_TOOL_NAMES)

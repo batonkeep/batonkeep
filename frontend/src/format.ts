@@ -234,6 +234,10 @@ export const STATUS_META: Record<RunStatus, { label: string; dot: string; text: 
   queued: { label: "Queued", dot: "bg-muted", text: "text-muted" },
   planning: { label: "Planning", dot: "bg-live animate-pulse-live", text: "text-live" },
   running: { label: "Running", dot: "bg-live animate-pulse-live", text: "text-live" },
+  // "Waiting on you", not "Parked" — the status name describes what the *engine* did
+  // (freed the process); the label has to say what the *operator* must do about it, or
+  // the one status that needs a human reads as just another intermediate state.
+  parked: { label: "Waiting on you", dot: "bg-brand animate-pulse-live", text: "text-brand" },
   succeeded: { label: "Succeeded", dot: "bg-ok", text: "text-ok" },
   failed: { label: "Failed", dot: "bg-bad", text: "text-bad" },
   deferred: { label: "Deferred", dot: "bg-defer", text: "text-defer" },

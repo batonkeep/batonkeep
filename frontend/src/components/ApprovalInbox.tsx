@@ -91,11 +91,15 @@ export default function ApprovalInbox({ onCountChange }: Props) {
       await api.decideApproval(a.id, approved);
       await load();
     } catch (e) {
-      // The most likely failure is a parked run that ended while the panel was open
-      // (a restart kills the waiting run). Say that plainly instead of "failed".
+      // This message was written before P-0106 and said "a restart ends a parked run".
+      // That stopped being true when checkpointing landed — a parked run now *survives*
+      // a restart, which is the whole point of Gate B — so the advice ("re-run the task")
+      // was telling the operator to duplicate work the engine had preserved. The
+      // remaining honest causes are that the run was cancelled (P-0110) or that its
+      // checkpoint could not be replayed (the SDK fence refusing, correctly).
       setError(
         e instanceof Error && /no longer running/i.test(e.message)
-          ? "That run is no longer waiting — a restart ends a parked run. Re-run the task."
+          ? "That run is no longer waiting — it was cancelled, or its checkpoint could not be resumed. Check the run for the reason."
           : "Could not record that decision.",
       );
       await load();

@@ -1150,26 +1150,55 @@ async def enqueue_run(
 
 
 async def cancel_run(run_id: int) -> bool:
-    """Cancel a running task if possible."""
+    """Cancel a run. Returns False when the run is in a state that cannot be cancelled.
+
+    **Callers must not discard the return value** ([[P-0110]]). The HTTP layer used to,
+    and the result was the worst kind of bug in a safety control: cancelling a *parked*
+    run answered `200 OK` and did nothing at all — teaching the operator that a button
+    which had never worked did.
+    """
     task = _cancel_handles.get(run_id)
     if task and not task.done():
         task.cancel()
         async with AsyncSessionLocal() as db:
             run = await db.get(Run, run_id)
             if run:
-                run.status = "cancelled"
-                run.finished_at = datetime.now(UTC)
-                # Settle anything the run was waiting on. Cancelling terminated the run
-                # but left its approval `pending` forever: the operator was then shown a
-                # decision that could never take effect, which is the fastest way to teach
-                # them to stop trusting the queue. Recorded as `cancelled` rather than
-                # `denied` — nobody refused it, the work went away.
-                await _settle_pending_approvals(db, run_id, reason="cancelled")
-                await db.commit()
-                await _record_routing_outcome(db, run)  # P-0053 slice 2
-                await _broadcast_run(run)
+                await _mark_cancelled(db, run)
         return True
-    return False
+
+    # A **parked** run has no in-process task *by design* — [[P-0106]] freed the process
+    # precisely so the run could outlive it. So there is nothing to signal here, which
+    # makes this the *simplest* cancel we have rather than an impossible one; it was
+    # merely never written, because the live path's `_cancel_handles` lookup answered
+    # "no" and the HTTP layer swallowed it.
+    #
+    # This is a different intention from denying the approval, and both are needed:
+    # **deny** refuses one proposed action and lets the agent carry on and propose the
+    # next; **cancel** stops the run. An operator watching an unattended agent head
+    # somewhere they do not like wants the second, and [[D-0073]]'s browser is exactly
+    # the case where "carry on and propose the next thing" is not what they meant.
+    async with AsyncSessionLocal() as db:
+        run = await db.get(Run, run_id)
+        if run is None or run.status != "parked":
+            return False
+        await _mark_cancelled(db, run)
+    return True
+
+
+async def _mark_cancelled(db, run: Run) -> None:
+    """Terminate a run as cancelled and close out what it was waiting on.
+
+    Settling the approvals is not bookkeeping: cancelling used to leave the row `pending`
+    forever, so the operator was shown a decision that could never take effect — the
+    fastest way to teach them to stop trusting the queue (#212). Recorded as `cancelled`
+    rather than `denied`, because nobody refused it: the work went away.
+    """
+    run.status = "cancelled"
+    run.finished_at = datetime.now(UTC)
+    await _settle_pending_approvals(db, run.id, reason="cancelled")
+    await db.commit()
+    await _record_routing_outcome(db, run)  # P-0053 slice 2
+    await _broadcast_run(run)
 
 
 async def _settle_pending_approvals(db, run_id: int, *, reason: str) -> int:

@@ -2132,9 +2132,30 @@ async def cancel_run(
         raise HTTPException(status_code=404, detail="Run not found")
 
     from app.orchestrator import cancel_run as _cancel
-    await _cancel(run_id)
+
+    # [[P-0110]]: never discard this. Swallowing it is what turned "cancel a parked run"
+    # into a `200 OK` that changed nothing — a safety control that reports success while
+    # doing nothing is worse than one that is missing, because the operator stops looking.
+    if not await _cancel(run_id):
+        raise HTTPException(
+            status_code=409,
+            detail=_uncancellable_detail(run.status),
+        )
     await db.refresh(run)
     return _run_to_out(run)
+
+
+def _uncancellable_detail(status: str) -> str:
+    """Say what state the run is in *and* what the operator can do instead.
+
+    A bare "cannot cancel" sends them back to the UI to guess; `deferred` in particular
+    has a real answer (requeue) that is not obvious from the word.
+    """
+    if status == "deferred":
+        return "run is deferred, not running — requeue it to run now"
+    if status in _TERMINAL_RUN_STATUSES:
+        return f"run already finished ({status})"
+    return f"run cannot be cancelled from state {status!r}"
 
 
 @app.post("/api/runs/{run_id}/requeue", response_model=RunOut, status_code=202, tags=["runs"])

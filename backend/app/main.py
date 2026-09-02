@@ -57,6 +57,7 @@ from app.models import (
     Task,
     WorkItem,
 )
+from app.orchestrator import _TERMINAL_RUN_STATUSES
 from app.projects import (
     get_or_create_default_project,
     init_managed_root,
@@ -1539,6 +1540,18 @@ async def list_approvals(
     # Staleness is computed here rather than stored: it is a statement about the
     # root *now*, and it goes stale itself the moment anything else is applied.
     # Only pending canonical writes can be acted on, so only they are checked.
+    # Runs that can no longer act on a decision. One query, not one per row.
+    run_ids = [r.run_id for r in rows if r.run_id is not None]
+    terminal_runs: set[int] = set()
+    if run_ids:
+        terminal_runs = {
+            rid for (rid,) in (await db.execute(
+                select(Run.id).where(
+                    Run.id.in_(run_ids), Run.status.in_(_TERMINAL_RUN_STATUSES)
+                )
+            )).all()
+        }
+
     out: list[ApprovalOut] = []
     roots: dict[str, str | None] = {}
     for r in rows:
@@ -1546,7 +1559,12 @@ async def list_approvals(
         # Derived, not stored: `resumable` is "was this checkpointed", which is what the
         # queue needs to distinguish "decide whenever" from "decide before the next
         # restart". The checkpoint blob itself is never serialized out (P-0106).
-        item.resumable = r.checkpoint is not None
+        # `resumable` must answer "can this still be acted on", not merely "was a
+        # checkpoint stored" — for a run that has since terminated those diverge, and
+        # offering an action that cannot succeed is worse than showing none.
+        item.resumable = r.checkpoint is not None and (
+            r.run_id is None or r.run_id not in terminal_runs
+        )
         if r.kind == "canonical_write" and r.status == "pending" and r.project_id:
             if r.project_id not in roots:
                 proj = await db.get(Project, r.project_id)

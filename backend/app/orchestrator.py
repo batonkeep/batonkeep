@@ -1159,11 +1159,39 @@ async def cancel_run(run_id: int) -> bool:
             if run:
                 run.status = "cancelled"
                 run.finished_at = datetime.now(UTC)
+                # Settle anything the run was waiting on. Cancelling terminated the run
+                # but left its approval `pending` forever: the operator was then shown a
+                # decision that could never take effect, which is the fastest way to teach
+                # them to stop trusting the queue. Recorded as `cancelled` rather than
+                # `denied` — nobody refused it, the work went away.
+                await _settle_pending_approvals(db, run_id, reason="cancelled")
                 await db.commit()
                 await _record_routing_outcome(db, run)  # P-0053 slice 2
                 await _broadcast_run(run)
         return True
     return False
+
+
+async def _settle_pending_approvals(db, run_id: int, *, reason: str) -> int:
+    """Close out approvals a terminated run can no longer act on. Flushes; caller commits.
+
+    An undecided approval is audit-relevant, so the row is **kept and stamped**, never
+    deleted — what changes is that it stops being presented as a live decision.
+    """
+    rows = (await db.execute(
+        select(Approval).where(Approval.run_id == run_id, Approval.status == "pending")
+    )).scalars().all()
+    now = datetime.now(UTC)
+    for row in rows:
+        row.status = "expired"
+        row.decided_by = reason
+        row.decided_at = now
+        # Release anything still awaiting in-process, so a parked coroutine is not left
+        # holding the process after its run is gone.
+        approvals.resolve(row.request_id, False)
+    if rows:
+        await db.flush()
+    return len(rows)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

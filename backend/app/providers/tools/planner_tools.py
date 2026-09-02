@@ -28,6 +28,7 @@ model is never handed a tool that would just error.
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -138,6 +139,40 @@ DECOMPOSE_SCHEMA = {
         "required": ["items"],
     },
 }
+
+PROPOSE_SCHEDULE_SCHEMA = {
+    "name": "propose_schedule",
+    "description": (
+        "Propose that recurring work be scheduled for this project — say, a daily brief "
+        "or a weekly check. You are PROPOSING only: the schedule does not exist and will "
+        "never run until the operator approves it. Use this when work should repeat on a "
+        "cadence; use triage_signal for one-off work. State the cadence in plain words "
+        "(\"every weekday at 07:00\") and say why it should recur."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "Short name for the recurring task."},
+            "prompt": {
+                "type": "string",
+                "description": "The instruction the scheduled run should execute each time.",
+            },
+            "cadence": {
+                "type": "string",
+                "description": (
+                    "When it should run, in plain words. The operator sets the exact "
+                    "schedule when they approve — you are describing intent, not cron."
+                ),
+            },
+            "rationale": {
+                "type": "string",
+                "description": "Why this should recur rather than run once.",
+            },
+        },
+        "required": ["name", "prompt", "cadence"],
+    },
+}
+
 
 TRIAGE_SIGNAL_SCHEMA = {
     "name": "triage_signal",
@@ -474,4 +509,68 @@ async def summarize_project(
     return (
         f"[summarize_project] digest recorded: {line} · focus={focus_ids} "
         f"stalled={stalled_ids}{tail}"
+    )
+
+
+async def propose_schedule(
+    name: str,
+    prompt: str,
+    cadence: str,
+    *,
+    rationale: str = "",
+    context: dict | None = None,
+) -> str:
+    """Propose recurring work. Lands as a **pending approval**, never as a live schedule.
+
+    D-0070. This is the one agent capability that would otherwise escape the proposer-only
+    boundary: every other planner tool proposes a *thing the operator accepts one at a
+    time*, whereas a schedule grants **recurring, unattended, future execution — once, for
+    all future firings**. So nothing is created here. The proposal is recorded as an
+    `Approval` whose payload carries the intent, mirroring `canonical_write`: the engine
+    creates the Task **only** when the operator approves, and a denied proposal leaves no
+    Task behind.
+
+    The agent describes cadence in **plain words** on purpose. Letting a model write cron
+    directly would hand it the precise thing being withheld — the exact firing pattern —
+    and would make the operator's approval a rubber stamp on a string they must decode.
+    The operator sets the real schedule when they accept.
+    """
+    owner_id, project_id, run_id = _project_ctx(context)
+    if not project_id:
+        return "[propose_schedule error] no project is bound to this planning turn"
+    clean_name = (name or "").strip()[:_MAX_TITLE]
+    clean_prompt = (prompt or "").strip()
+    if not clean_name:
+        return "[propose_schedule error] name must not be empty"
+    if not clean_prompt:
+        return "[propose_schedule error] prompt must not be empty — a schedule with "\
+               "nothing to run is not a proposal"
+
+    from app import approvals as approvals_mod
+
+    async with AsyncSessionLocal() as db:
+        project = await db.get(Project, project_id)
+        if project is None or project.owner_id != owner_id:
+            return "[propose_schedule error] project not found"
+        request_id = uuid.uuid4().hex
+        await approvals_mod.record_request(
+            db, owner_id=owner_id, request_id=request_id, kind="schedule_proposal",
+            payload={
+                "v": 1,
+                "name": clean_name,
+                "prompt": clean_prompt,
+                "cadence": (cadence or "").strip()[:200],
+                "rationale": (rationale or "").strip()[:1000],
+            },
+            producer="planner", project_id=project_id,
+        )
+        # Attribute the proposal to this turn, so P-0080's completion contract sees it:
+        # a turn that proposed a schedule has produced something, and must not be filed
+        # as `no_proposals`.
+        await _record_produced(db, _run_id(context), owner_id, "propose_schedule")
+        await db.commit()
+
+    return (
+        f"Proposed a recurring task '{clean_name}' ({cadence}). It is pending the "
+        "operator's approval and will not run until they accept it and set the schedule."
     )

@@ -180,6 +180,7 @@ class PlannerToolProvider(ToolProvider):
                 planner_tools.DECOMPOSE_SCHEMA,
                 planner_tools.TRIAGE_SIGNAL_SCHEMA,
                 planner_tools.SUMMARIZE_PROJECT_SCHEMA,
+                planner_tools.PROPOSE_SCHEDULE_SCHEMA,
             )
         ]
 
@@ -194,6 +195,7 @@ class PlannerToolProvider(ToolProvider):
             "decompose": planner_tools.decompose,
             "triage_signal": planner_tools.triage_signal,
             "summarize_project": planner_tools.summarize_project,
+            "propose_schedule": planner_tools.propose_schedule,
         }.get(name)
         if fn is None:
             return f"[unknown planner tool: {name}]"
@@ -204,7 +206,10 @@ class PlannerToolProvider(ToolProvider):
 PLANNER_ITEM_TOOL_NAMES = ("propose_subtasks", "set_next_action", "decompose")
 #: Planner tools that operate on the project as a whole — offered on a project-level
 #: planning turn, where no single work item is in scope.
-PLANNER_PROJECT_TOOL_NAMES = ("triage_signal", "summarize_project")
+# `propose_schedule` is project-level: recurring work belongs to the project, not to one
+# work item. It proposes only — D-0070 keeps the grant of recurring unattended execution
+# with the operator.
+PLANNER_PROJECT_TOOL_NAMES = ("triage_signal", "summarize_project", "propose_schedule")
 #: Names offered only on a planning turn — excluded from every non-planning run's
 #: toolset (mirrors the code_exec / image_generate gating in model_executor).
 PLANNER_TOOL_NAMES = (*PLANNER_ITEM_TOOL_NAMES, *PLANNER_PROJECT_TOOL_NAMES)

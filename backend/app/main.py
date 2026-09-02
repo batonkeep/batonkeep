@@ -1530,7 +1530,8 @@ async def decide_approval(
     if row is None or row.owner_id != owner_id:
         raise HTTPException(status_code=404, detail="Approval not found")
     is_unattended_run = row.kind == "code_exec" and row.run_id is not None
-    if row.kind != "canonical_write" and not is_unattended_run:
+    is_schedule = row.kind == "schedule_proposal"
+    if row.kind != "canonical_write" and not is_unattended_run and not is_schedule:
         raise HTTPException(
             status_code=400,
             detail="only canonical_write and unattended-run code_exec approvals are "
@@ -1539,6 +1540,51 @@ async def decide_approval(
         )
     if row.status != "pending":
         raise HTTPException(status_code=409, detail=f"approval already {row.status}")
+
+    if is_schedule:
+        # D-0070: the agent proposed; the operator grants. Nothing was created when the
+        # proposal was made, so a denial leaves no Task behind — mirroring canonical_write,
+        # where the payload carries the change and the engine applies it only on approval.
+        if body.approved and not (body.schedule_expr or "").strip():
+            raise HTTPException(
+                status_code=400,
+                detail="approving a schedule proposal requires schedule_expr — the agent "
+                       "proposed a cadence in words; setting the actual schedule is the "
+                       "operator's part of the decision (D-0070)",
+            )
+        settled = await approvals.settle(
+            db, row.request_id, approved=body.approved, decided_by="human"
+        )
+        if settled is None:
+            raise HTTPException(status_code=409, detail="approval already settled")
+        applied = None
+        if body.approved:
+            p = row.payload or {}
+            task = Task(
+                owner_id=owner_id,
+                project_id=row.project_id,
+                name=(p.get("name") or "Scheduled task")[:200],
+                description=p.get("rationale") or None,
+                prompt_template=p.get("prompt") or "",
+                schedule_kind=body.schedule_kind or "cron",
+                schedule_expr=body.schedule_expr.strip(),
+                enabled=True,
+            )
+            db.add(task)
+            await db.flush()
+            applied = {"task_id": task.id, "schedule_expr": task.schedule_expr}
+        await db.commit()
+        if applied:
+            # Register immediately, for the same reason create_task does: otherwise an
+            # approved schedule silently does not fire until something else touches it.
+            try:
+                from app.scheduler import scheduler_instance
+                await scheduler_instance.sync_task(task)
+            except (ImportError, AttributeError):
+                pass
+        return ApprovalDecideOut(
+            approval=ApprovalOut.model_validate(settled), applied=applied
+        )
 
     if is_unattended_run:
         # Two shapes of unattended approval, and the run's own state says which:

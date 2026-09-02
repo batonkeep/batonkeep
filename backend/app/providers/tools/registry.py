@@ -135,6 +135,34 @@ class CodeExecToolProvider(ToolProvider):
         )
 
 
+class BrowserToolProvider(ToolProvider):
+    """Headless browsing, gated by `browser_policy` ([[D-0073]] slice D1a).
+
+    Same shape as `CodeExecToolProvider` on purpose: listed here for one tool surface,
+    *offered* only when the policy permits, and the policy re-enforced on dispatch from
+    `context['browser_policy']`. This is the second capability that runs untrusted input,
+    so it reuses the first one's gating rather than inventing a parallel model.
+    """
+
+    def list_tools(self) -> list[McpTool]:
+        from app.providers.tools import browser
+
+        s = browser.TOOL_SCHEMA
+        return [McpTool(name=s["name"], description=s["description"], input_schema=s["parameters"])]
+
+    async def call_tool(
+        self, name: str, arguments: dict, *, workdir: str, context: dict | None = None
+    ) -> str:
+        from app.providers.tools import browser
+
+        ctx = context or {}
+        return await browser.run(
+            policy=ctx.get("browser_policy"),
+            approve=ctx.get("approve"), checkpoint=ctx.get("_checkpoint"),
+            pre_approved=bool(ctx.get("_pre_approved")), **arguments,
+        )
+
+
 class ImageGenToolProvider(ToolProvider):
     """Capability-gated image generation (P-0046 slice 6 / P-0037).
 
@@ -328,6 +356,7 @@ def get_tool_registry() -> ToolRegistry:
         _MCP_PROVIDERS.append(fetch)
         _REGISTRY = ToolRegistry(
             [BuiltinToolProvider(), FilesystemToolProvider(), CodeExecToolProvider(),
+             BrowserToolProvider(),
              ImageGenToolProvider(), PlannerToolProvider(), fetch]
         )
     return _REGISTRY

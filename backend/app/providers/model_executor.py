@@ -47,12 +47,15 @@ TOOL_SCHEMAS = get_tool_registry().function_schemas()
 # base set excludes both; `_active_tool_schemas` re-adds each per-run.
 _CODE_EXEC_NAME = "code_exec"
 _IMAGE_GEN_NAME = "image_generate"
+# `browser_open` (D-0073 D1a) is gated the same way, on `browser_policy`.
+_BROWSER_NAME = "browser_open"
 # Planning tools (P-0078) are dispatchable through the registry but offered ONLY on
 # a planning turn — they never appear in a build/research/task run's toolset.
-_GATED_TOOL_NAMES = {_CODE_EXEC_NAME, _IMAGE_GEN_NAME, *PLANNER_TOOL_NAMES}
+_GATED_TOOL_NAMES = {_CODE_EXEC_NAME, _IMAGE_GEN_NAME, _BROWSER_NAME, *PLANNER_TOOL_NAMES}
 _BASE_TOOL_SCHEMAS = [s for s in TOOL_SCHEMAS if s["name"] not in _GATED_TOOL_NAMES]
 _CODE_EXEC_SCHEMA = next((s for s in TOOL_SCHEMAS if s["name"] == _CODE_EXEC_NAME), None)
 _IMAGE_GEN_SCHEMA = next((s for s in TOOL_SCHEMAS if s["name"] == _IMAGE_GEN_NAME), None)
+_BROWSER_SCHEMA = next((s for s in TOOL_SCHEMAS if s["name"] == _BROWSER_NAME), None)
 _PLANNER_ITEM_SCHEMAS = [s for s in TOOL_SCHEMAS if s["name"] in PLANNER_ITEM_TOOL_NAMES]
 _PLANNER_PROJECT_SCHEMAS = [s for s in TOOL_SCHEMAS if s["name"] in PLANNER_PROJECT_TOOL_NAMES]
 
@@ -66,6 +69,7 @@ def _active_tool_schemas(extra: dict | None) -> list[dict]:
     wastes a round and invites the model to keep retrying it. Otherwise: the base set
     plus `code_exec` when the run's execution policy permits (P-0046), plus
     `image_generate` when the active provider is image-capable (slice 6 / P-0037)."""
+    from app.providers.tools.browser import policy_offers_tool as browser_offers_tool
     from app.providers.tools.code_exec import policy_offers_tool
 
     extra = extra or {}
@@ -80,6 +84,13 @@ def _active_tool_schemas(extra: dict | None) -> list[dict]:
         extra.get("exec_policy"), callable(extra.get("approve"))
     ):
         schemas.append(_CODE_EXEC_SCHEMA)
+    # [[D-0073]] D1a. Same gate, same reason: an approver is an approver, so an
+    # unattended run that can park qualifies. Default `off` — an image rebuild is not
+    # consent to acquire our largest untrusted-content surface.
+    if _BROWSER_SCHEMA and browser_offers_tool(
+        extra.get("browser_policy"), callable(extra.get("approve"))
+    ):
+        schemas.append(_BROWSER_SCHEMA)
     if _IMAGE_GEN_SCHEMA and extra.get("image_gen"):
         schemas.append(_IMAGE_GEN_SCHEMA)
     return schemas

@@ -250,6 +250,26 @@ class Settings(BaseSettings):
     # (the P-0046 non-sandbox bug). Left False in local dev / tests, where no
     # spawner exists and a direct spawn is the intended fallback.
     require_sandbox: bool = False
+    # ── Headless browser ([[D-0073]], slice D1a) ──────────────────────────────
+    # `off` (default) · `confirmation` · `auto`. Same vocabulary as `exec_policy`
+    # and the same meaning, deliberately: this is the second capability that runs
+    # untrusted input, so it should not invent a second mental model.
+    #
+    # **Default off, and it stays off until an operator turns it on.** D-0073
+    # adopted the browser as a capability gate, not as something every instance
+    # should acquire on upgrade — it is our largest untrusted-content surface, and
+    # an image rebuild is not consent.
+    #
+    # A *global* setting rather than a per-task column for this slice: D1a is
+    # read-only with no credentials, so there is nothing yet worth varying per task.
+    # The per-task policy arrives with D1b (interaction), where it starts to matter.
+    browser_policy: str = "off"
+    # Wall-clock ceiling for one navigation, including render. A page that hangs must
+    # not hold an approval-parked run's slot or an interactive turn.
+    browser_timeout_seconds: float = 30.0
+    # Where playwright's browsers live in the image. World-readable so the low-priv
+    # `sandbox` user can execute them (same reasoning as /opt/exec-env).
+    playwright_browsers_path: str = "/opt/ms-playwright"
     # P-0072 workspace jail: `require` · `warn` (default) · `off`. Every session's
     # agent runs as the SAME uid and workspaces are group-co-writable, so the
     # privilege drop alone does not separate one session from another — a Landlock

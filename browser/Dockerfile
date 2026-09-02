@@ -18,10 +18,19 @@ WORKDIR /app
 
 # Pinned, and deliberately tiny: this service has one endpoint. Every dependency here is
 # reachable by whatever the browser renders, so the list stays as short as it can be.
+#
+# `playwright` is installed explicitly and **must match the image tag**. The upstream
+# image carries the browser builds at /ms-playwright but not the python client — a live
+# drill found the service starting cleanly, answering /health, and then failing every
+# render with `No module named 'playwright'`. The version pin is what keeps the client
+# and the pre-installed browsers in step; they are versioned together and a mismatch
+# fails at launch, not at build.
 RUN pip install --no-cache-dir \
+      "playwright==1.57.0" \
       "fastapi==0.140.0" \
       "uvicorn==0.51.0" \
-      "pydantic==2.13.4"
+      "pydantic==2.13.4" \
+ && python -c "import playwright; print('playwright client present')"
 
 COPY server.py /app/server.py
 

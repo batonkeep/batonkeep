@@ -32,6 +32,11 @@ jobs:
             context: backend
           - component: frontend
             context: frontend
+          # D-0073: the optional headless-browser sidecar. Built and published like the
+          # others, but nothing pulls it unless an operator runs `--profile browser` —
+          # which is the point: the ~2 GB of Chromium is not in anybody's base install.
+          - component: browser
+            context: browser
     steps:
       - uses: actions/checkout@v7
 

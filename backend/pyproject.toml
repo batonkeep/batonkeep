@@ -23,10 +23,6 @@ dependencies = [
     "aiofiles==24.1.0",
     "greenlet==3.5.4",
     "pyte>=0.8.2",
-    # D-0073 D1a — headless browsing. The python package is small; the browser binary
-    # is installed separately in the Dockerfile (`playwright install chromium`) so the
-    # ~170 MB download is one image layer rather than a runtime surprise on first use.
-    "playwright==1.57.0",
     # S0 substrate: the project context manifest (batonkeep.yaml) parser.
     # Previously only a transitive dep; pinned now that app code imports it.
     "pyyaml==6.0.3",
@@ -57,6 +53,13 @@ dev = [
     "anyio==4.14.2",
     "ruff==0.16.0",
     "mypy==1.14.0",
+]
+# D-0073: local-dev only. The shipped backend image has no browser and does not import
+# playwright — it talks HTTP to the sidecar image. This exists so a contributor can run
+# `uv sync --extra browser && playwright install chromium` and exercise the in-process
+# path without running the sidecar. Not installed in CI or in the image.
+browser = [
+    "playwright==1.57.0",
 ]
 
 [dependency-groups]

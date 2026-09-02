@@ -27,24 +27,58 @@ import asyncio
 import logging
 from urllib.parse import urlsplit
 
+from app.config import get_settings
 from app.providers.tools._ssrf import SSRFError, assert_url_allowed
 
 logger = logging.getLogger(__name__)
 
 _server: asyncio.AbstractServer | None = None
 _url: str | None = None
+#: (host, port) actually bound — `sidecar_url()` needs the port with a routable host.
+_bind: tuple[str, int] | None = None
 
 
 async def ensure_started() -> str:
-    """Start the proxy once (idempotent) and return its URL (http://127.0.0.1:PORT)."""
+    """Start the proxy once (idempotent) and return its URL.
+
+    Loopback-only by default. It binds wider **only** when the browser sidecar is
+    configured ([[D-0073]]), because that browser runs in a different container and
+    `127.0.0.1` there is its own loopback, not ours — a fence it cannot reach is not a
+    fence. The trade is stated rather than buried: on the compose network the proxy is
+    then reachable by our other services, so a compromised sibling could use it to make
+    outbound requests. It cannot use it to reach anything *internal* — refusing
+    non-public addresses is the proxy's entire job — so what it gains is a relay to the
+    public internet it could largely reach anyway, not a pivot inwards.
+    """
     global _server, _url
     if _server is None:
-        server = await asyncio.start_server(_handle, "127.0.0.1", 0)
+        host = "0.0.0.0" if get_settings().browser_url else "127.0.0.1"  # noqa: S104
+        server = await asyncio.start_server(_handle, host, 0)
         port = server.sockets[0].getsockname()[1]
         _server = server
+        # The advertised URL stays loopback for in-process callers; `sidecar_url()` is
+        # what a different container must use.
         _url = f"http://127.0.0.1:{port}"
-        logger.info("[ssrf-proxy] SSRF egress fence listening on %s", _url)
+        _bind = (host, port)
+        globals()["_bind"] = _bind
+        logger.info(
+            "[ssrf-proxy] SSRF egress fence listening on %s:%d (advertised %s)",
+            host, port, _url,
+        )
     return _url  # type: ignore[return-value]
+
+
+def sidecar_url(hostname: str) -> str | None:
+    """The proxy URL as reachable from another container, or None if not started.
+
+    `hostname` is how that container addresses *us* on the compose network — taken from
+    `BROWSER_PROXY_HOST` so a non-compose deployment can correct it rather than being
+    silently wrong.
+    """
+    bind = globals().get("_bind")
+    if not bind:
+        return None
+    return f"http://{hostname}:{bind[1]}"
 
 
 def current_url() -> str | None:

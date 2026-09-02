@@ -128,10 +128,16 @@ class TestRedirectFence:
     covers the literal case and nothing was exercising a redirect through a real browser.
     """
 
-    def test_the_launch_forces_every_request_through_the_proxy(self):
+    def test_both_launch_paths_force_every_request_through_the_proxy(self):
+        """The flag now lives in two places — the sidecar and the local-dev path — and
+        it must be in both. A browser that silently bypasses the fence on one of them is
+        the same hole, found on whichever path nobody drilled."""
         import inspect
-        src = inspect.getsource(browser._render)
-        assert "--proxy-bypass-list=<-loopback>" in src, (
+        import pathlib
+
+        assert "--proxy-bypass-list=<-loopback>" in inspect.getsource(browser._render_local)
+        sidecar = pathlib.Path(__file__).resolve().parents[2] / "browser" / "server.py"
+        assert "--proxy-bypass-list=<-loopback>" in sidecar.read_text(), (
             "without this Chromium bypasses the proxy for exactly the addresses the "
             "fence exists to protect"
         )
@@ -157,6 +163,72 @@ class TestRedirectFence:
         out = await browser.run("https://ok.example.com/r", policy="auto")
         assert "error" in out and "disallowed address" in out
         assert "169.254.169.254" in out, "name where it actually went"
+
+
+class TestSidecar:
+    """The browser lives in its own optional image; the backend talks HTTP to it."""
+
+    def test_the_backend_image_does_not_ship_a_browser(self):
+        """The whole point of the sidecar. Shipping Chromium in the backend grew it
+        3.41 -> 5.49 GB, and every self-hoster paid that for a capability defaulting
+        to off."""
+        import pathlib
+        root = pathlib.Path(__file__).resolve().parents[2]
+        dockerfile = (root / "backend" / "Dockerfile").read_text()
+        assert "playwright install" not in dockerfile
+        pyproject = (root / "backend" / "pyproject.toml").read_text()
+        deps = pyproject.split("[project.optional-dependencies]")[0]
+        assert "playwright" not in deps, "playwright must not be a base dependency"
+
+    def test_the_sidecar_is_off_unless_configured(self):
+        from app.config import Settings
+        assert Settings().browser_url == ""
+
+    async def test_it_refuses_to_render_without_the_fence(self, monkeypatch, allow_urls):
+        """A browser reaching the network without the SSRF proxy is precisely the
+        configuration this tool must not have — so an unstarted fence fails the call
+        rather than quietly rendering unfenced."""
+        from app.providers.tools import ssrf_proxy
+
+        monkeypatch.setattr(browser, "get_settings",
+                            lambda: _settings_with(browser_url="http://browser:3000"))
+
+        async def _started():
+            return "http://127.0.0.1:1"
+
+        monkeypatch.setattr(ssrf_proxy, "ensure_started", _started)
+        monkeypatch.setattr(ssrf_proxy, "sidecar_url", lambda host: None)
+        out = await browser.run("https://example.com", policy="auto")
+        assert "error" in out and "fence is not running" in out
+
+    async def test_an_unreachable_sidecar_is_reported_plainly(self, monkeypatch, allow_urls):
+        from app.providers.tools import ssrf_proxy
+
+        monkeypatch.setattr(browser, "get_settings",
+                            lambda: _settings_with(browser_url="http://127.0.0.1:9"))
+
+        async def _started():
+            return "http://127.0.0.1:1"
+
+        monkeypatch.setattr(ssrf_proxy, "ensure_started", _started)
+        monkeypatch.setattr(ssrf_proxy, "sidecar_url", lambda host: "http://backend:1")
+        out = await browser.run("https://example.com", policy="auto")
+        assert "sidecar is unreachable" in out
+
+    def test_the_proxy_binds_loopback_only_without_a_sidecar(self):
+        """Widening the bind is the sidecar's cost; an instance without one must not
+        pay it."""
+        import inspect
+        from app.providers.tools import ssrf_proxy
+        src = inspect.getsource(ssrf_proxy.ensure_started)
+        assert 'get_settings().browser_url else "127.0.0.1"' in src
+
+
+def _settings_with(**over):
+    """A copy of the live settings with fields overridden — `model_copy`, not a
+    hand-rolled namespace, so it stays a real Settings and cannot drift from one."""
+    from app.config import get_settings
+    return get_settings().model_copy(update=over)
 
 
 class TestResumeAndFraming:
@@ -198,14 +270,16 @@ class TestResumeAndFraming:
         assert "truncated" in out
         assert len(out) < 5000
 
-    async def test_a_missing_browser_reports_itself(self, monkeypatch, allow_urls):
-        """A self-hoster on an older image gets a sentence, not a stack trace."""
+    async def test_a_missing_browser_says_how_to_get_one(self, monkeypatch, allow_urls):
+        """The backend image ships without a browser by design, so this message is the
+        normal path for anyone who enables the policy and nothing else. It has to name
+        the fix, not just the fault."""
         async def _render(url, timeout_s):
             raise ImportError("no playwright")
 
         monkeypatch.setattr(browser, "_render", _render)
         out = await browser.run("https://example.com", policy="auto")
-        assert "not installed in this image" in out
+        assert "--profile browser" in out and "BROWSER_URL" in out
 
 
 class TestSchema:

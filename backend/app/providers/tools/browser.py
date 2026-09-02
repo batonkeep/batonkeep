@@ -118,17 +118,53 @@ def _frame(url: str, text: str, truncated: bool) -> str:
     )
 
 
-async def _render(url: str, timeout_s: float) -> tuple[str, str]:
-    """Open `url` in a throwaway browser context and return (final_url, visible text).
+async def _render_sidecar(url: str, timeout_s: float) -> tuple[str, str]:
+    """Render via the browser sidecar ([[D-0073]]).
 
-    **The browser is launched behind the SSRF proxy**, and that is the difference between
-    this being defensible and not. Checking the URL we were handed only covers the URL we
-    were handed — a browser then follows redirects, loads sub-resources, and runs page
+    **The browser runs behind the SSRF proxy**, and that is the difference between this
+    being defensible and not. Checking the URL we were handed only covers the URL we were
+    handed — a browser then follows redirects, loads sub-resources, and runs page
     JavaScript that can `fetch()` anything it likes. A one-shot check in front of all that
     is theatre. `ssrf_proxy` already applies `assert_url_allowed` to **every** target
-    (built for the third-party `fetch` MCP server, which likewise would not honour our
-    guard), so pointing Chromium at it fences the whole session rather than its first hop.
+    (it was built for the third-party `fetch` MCP server, which likewise would not honour
+    our guard), so routing the browser through it fences the whole session, not its first
+    hop.
+
+    The proxy URL is **passed in the request** rather than configured in the sidecar, so
+    the egress policy has exactly one implementation and it lives on this side. The
+    sidecar is a renderer; it does not get a vote on where the agent may go.
     """
+    import httpx
+
+    from app.providers.tools import ssrf_proxy
+
+    settings = get_settings()
+    await ssrf_proxy.ensure_started()
+    proxy = ssrf_proxy.sidecar_url(settings.browser_proxy_host)
+    if not proxy:
+        # Never render unfenced. A browser that reaches the network without the proxy is
+        # precisely the configuration this tool must not have.
+        raise BrowserUnavailable("the SSRF egress fence is not running")
+
+    async with httpx.AsyncClient(timeout=timeout_s + 20) as client:
+        try:
+            resp = await client.post(
+                settings.browser_url.rstrip("/") + "/render",
+                json={"url": url, "timeout_ms": int(timeout_s * 1000), "proxy": proxy},
+            )
+            resp.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise BrowserUnavailable(f"the browser sidecar is unreachable ({exc})") from exc
+    body = resp.json()
+    if "error" in body:
+        raise BrowserRenderError(body["error"])
+    return body.get("final_url") or url, body.get("text") or ""
+
+
+async def _render_local(url: str, timeout_s: float) -> tuple[str, str]:
+    """Render in-process. **Local development only** — the shipped backend image
+    contains no browser, by design. Kept so a contributor with `playwright install`
+    can exercise the tool without running the sidecar."""
     from playwright.async_api import async_playwright
 
     from app.providers.tools import ssrf_proxy
@@ -183,6 +219,21 @@ async def _render(url: str, timeout_s: float) -> tuple[str, str]:
     return final_url, text or ""
 
 
+class BrowserUnavailable(RuntimeError):
+    """No usable browser — misconfiguration, not a page failure."""
+
+
+class BrowserRenderError(RuntimeError):
+    """The browser ran and could not render the page."""
+
+
+async def _render(url: str, timeout_s: float) -> tuple[str, str]:
+    """Render `url`, via the sidecar when one is configured."""
+    if get_settings().browser_url:
+        return await _render_sidecar(url, timeout_s)
+    return await _render_local(url, timeout_s)
+
+
 async def run(
     url: str,
     max_chars: int = 8000,
@@ -230,10 +281,15 @@ async def run(
         )
     except TimeoutError:
         return f"[browser_open error] {url} did not finish loading in time"
+    except BrowserUnavailable as exc:
+        return f"[browser_open error] {exc}"
+    except BrowserRenderError as exc:
+        return f"[browser_open error] {exc}"
     except ImportError:
         return (
-            "[browser_open error] the browser is not installed in this image — "
-            "playwright/chromium is missing"
+            "[browser_open error] no browser is available. The backend image ships "
+            "without one by design; start the optional sidecar with "
+            "`docker compose --profile browser up -d` and set BROWSER_URL."
         )
     except Exception as exc:  # provider-shaped failure: report, do not raise
         return f"[browser_open error] could not open {url}: {exc}"

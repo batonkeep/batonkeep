@@ -48,6 +48,17 @@ class ProviderDef:
     # All non-"none" values go through the same resolve_api_key path; the distinction
     # is only needed to skip the check for unauthenticated local endpoints.
     auth_type: str = "required"
+    # Which request shape this endpoint speaks ([[D-0074]]): "chat" (/v1/chat/completions)
+    # or "responses" (/v1/responses). NOT a `kind`: kind selects the SDK and is branched
+    # on in a dozen places (health, model listing, planner gating, cost), and every
+    # OpenAI-shaped endpoint — Ollama, LM Studio, vLLM, OpenRouter, xAI — is genuinely
+    # `openai_compatible` regardless. Only the *request shape* differs, and only for
+    # OpenAI's own endpoint, so only the request shape is recorded here.
+    #
+    # Default "chat" is the safe direction: `/v1/responses` is OpenAI-proprietary and
+    # almost nothing else implements it, so a provider that has not opted in keeps
+    # working. Custom providers therefore inherit "chat" and always will.
+    api_shape: str = "chat"
     # Multimodal image generation (P-0046 slice 6 / P-0037). The API path only
     # *offers* the `image_generate` tool when the active provider declares support
     # here; gating keys on the model's capability, not the provider kind (Anthropic
@@ -128,6 +139,13 @@ _ALL_PROVIDERS: list[ProviderDef] = [
     ProviderDef(
         name="openai-api",
         kind="openai_compatible",
+        # D-0074: OpenAI's reasoning class (gpt-5.6-terra and after) **rejects function
+        # tools on /v1/chat/completions**, because the model's server-side default sets
+        # `reasoning_effort` and we never send it — found live on Runtime B. The cheap
+        # fixes were both capability losses: sending `reasoning_effort: "none"` silently
+        # downgrades a reasoning model (the quiet loss D-0049 retreated from), and an
+        # allowlist only makes the failure honest. Responses restores the capability.
+        api_shape="responses",
         tier="frontier",
         capability_tags=["coding", "synthesis", "frontier"],
         model="gpt-4o",

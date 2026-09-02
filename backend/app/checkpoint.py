@@ -35,6 +35,11 @@ CHECKPOINT_VERSION = 1
 _SDK_DIST = {
     "anthropic": "anthropic",
     "openai_compat": "openai",
+    # [[D-0074]]: `/v1/responses` is a fourth request shape and therefore a fourth
+    # checkpoint path — same SDK, but a different conversation representation, so a
+    # checkpoint written by one loop must never be replayed by the other. `_resume_state`
+    # keys on this value, so a mismatched path simply does not resume.
+    "openai_responses": "openai",
     "gemini": "google-genai",
 }
 

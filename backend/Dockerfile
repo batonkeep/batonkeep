@@ -121,6 +121,22 @@ RUN (export HOME=/usr/local; curl -fsSL https://chatgpt.com/codex/install.sh | s
 # built from exec-env.toml (the single source of truth). The code-exec server runs
 # against it; app/exec_env.verify() re-checks it at boot (drift-guard). World-
 # readable/executable so the low-priv `sandbox` user can run it.
+# ── Headless browser ([[D-0073]] slice D1a) ───────────────────────────────────
+# Chromium for `browser_open`. Installed to a world-readable path for the same reason
+# /opt/exec-env is: the low-priv `sandbox` user must be able to execute it.
+#
+# `--with-deps` pulls the system libraries a headless Chromium needs (nss, fonts, etc.);
+# without them the browser installs fine and then fails to launch at runtime with an
+# opaque loader error — the exact shape of failure that is invisible until a live drill.
+#
+# Note for anyone reading P-0104's "the dependency is partly present already": it is not.
+# The `ms-playwright-go` directory in agent_home is an empty 8 KB version marker the
+# Antigravity CLI creates; it contains no browser. Verified on Runtime B, 2026-09-02.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+RUN /app/.venv/bin/python -m playwright install --with-deps chromium \
+ && chmod -R a+rX /opt/ms-playwright \
+ && rm -rf /var/lib/apt/lists/*
+
 COPY exec-env.toml ./exec-env.toml
 COPY scripts/install_exec_env.py scripts/install_exec_env.py
 RUN python scripts/install_exec_env.py \

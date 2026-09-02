@@ -327,6 +327,12 @@ async def _do_execute(run_id: int, task: Task) -> None:
                             # code-exec runs only if the task carries allow-safe/auto.
                             extra={
                                 "task": True, "exec_policy": policy.exec_policy,
+                                # D-0073 D1a: instance-level for this slice (there is
+                                # nothing to vary per task while the browser is
+                                # read-only and carries no credentials). The per-task
+                                # policy arrives with D1b, where interaction makes the
+                                # distinction matter.
+                                "browser_policy": _settings.browser_policy,
                                 # P-0098: an unattended run is now an approver — it parks
                                 # on a durable approval instead of being denied the tool.
                                 "human_in_loop": False,
@@ -466,6 +472,12 @@ async def _do_execute(run_id: int, task: Task) -> None:
                                 max_rounds=10, budget_usd=1.0,
                                 extra={
                                     "task": True, "exec_policy": policy.exec_policy,
+                                # D-0073 D1a: instance-level for this slice (there is
+                                # nothing to vary per task while the browser is
+                                # read-only and carries no credentials). The per-task
+                                # policy arrives with D1b, where interaction makes the
+                                # distinction matter.
+                                "browser_policy": _settings.browser_policy,
                                     "human_in_loop": False,
                                     "approve": _make_run_approver(
                                         run_id, run.owner_id, provider_name

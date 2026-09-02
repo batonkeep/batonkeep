@@ -59,6 +59,26 @@ const WORK_STATE_TONE: Record<WorkItemState, Tone> = {
 
 const RISK_TONE: Record<string, Tone> = { low: "neutral", medium: "warn", high: "bad" };
 
+/** Did another project's agent ask for this? (D-0072 — the one agent-to-agent transport.)
+ *
+ * Read off the attribution envelope, not the free-form `signal`: `initiated_by` of kind
+ * `agent:` means an agent wanted this, and every same-project planner mint leaves it
+ * `human:` because the operator is who started that turn. That distinction is the whole
+ * reason the envelope is typed (D-0059 D3) instead of prose we would have to parse. */
+function isHandoff(w: WorkItem): boolean {
+  return !!w.initiated_by?.startsWith("agent:");
+}
+
+/** The sending project's name, denormalised into `signal` at mint time so it survives
+ *  that project being renamed or archived. Falls back to the id if it is missing. */
+function handoffFrom(w: WorkItem): string {
+  const sig = w.signal ?? {};
+  const name = sig.from_project_name;
+  if (typeof name === "string" && name.trim()) return name;
+  const id = sig.from_project_id;
+  return typeof id === "string" && id ? `project ${id.slice(0, 8)}` : "another project";
+}
+
 const PLANNER_RUN_TONE: Record<string, Tone> = {
   running: "live",
   succeeded: "ok",
@@ -1124,9 +1144,34 @@ export default function ProjectsPanel({ projects, onProjectsChanged }: Props) {
                 )}
               </div>
               {w.state === "proposed" && (
+                /* Who is asking is the operator's actual decision here. An item another
+                   project's agent handed over is a different call from one this
+                   project's own planner proposed — it commits *this* project to work
+                   someone else scoped — so say so before the accept/reject buttons mean
+                   anything (D-0072). The origin is read from `signal`, which is
+                   denormalised at mint time and survives the sender being renamed. */
                 <p className="mt-2 text-xs text-muted">
-                  Proposed by the planner{w.parent_id != null && <> · child of #{w.parent_id}</>}
+                  {isHandoff(w) ? (
+                    <>
+                      <span className="font-semibold text-brand">
+                        Handed off by the planner in {handoffFrom(w)}
+                      </span>
+                      {" "}— that project&rsquo;s agent is asking yours to take this on.
+                      Nothing there waits on your answer.
+                    </>
+                  ) : (
+                    <>
+                      Proposed by the planner
+                      {w.parent_id != null && <> · child of #{w.parent_id}</>}
+                    </>
+                  )}
                   {" "}— nothing runs against it until you accept it.
+                </p>
+              )}
+              {isHandoff(w) && typeof w.signal?.reason === "string" && (
+                <p className="mt-1 text-xs text-muted">
+                  <span className="font-mono text-[10px] uppercase tracking-wider">why us · </span>
+                  <span className="text-ink">{w.signal.reason as string}</span>
                 </p>
               )}
               {(w.objective || w.next_action) && (

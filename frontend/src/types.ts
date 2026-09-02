@@ -718,6 +718,15 @@ export interface WorkItem {
   // P-0069 B2: sub-task checklist = output contract + grounded progress.
   subtasks: { v: number; items: SubtaskItem[] } | null;
   subtask_progress: SubtaskProgress | null;
+  // Attribution envelope (D-0059 D3 / D-0072). For a `proposed` item the operator is
+  // deciding on, `initiated_by` starting `agent:` is the load-bearing bit: another
+  // agent is asking, which is a different decision from one this project's own planner
+  // proposed. NULL means the row predates the envelope — unknown, not human.
+  principal_id: string | null;
+  principal_kind: string | null;
+  initiated_by: string | null;
+  executed_by: string | null;
+  delegated_by: string | null;
   created_at: string;
   updated_at: string;
   closed_at: string | null;

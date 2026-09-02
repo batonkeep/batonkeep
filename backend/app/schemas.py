@@ -286,6 +286,16 @@ class WorkItemOut(BaseModel):
     # P-0069 B2: the sub-task checklist (raw) + its grounded progress roll-up.
     subtasks: dict[str, Any] | None = None
     subtask_progress: dict[str, int] | None = None
+    # Attribution envelope (D-0059 D3), extended to work items by [[D-0072]]. Exposed
+    # because a `proposed` item's most important property to the operator deciding on
+    # it is who is asking: `initiated_by` of kind `agent:` means another agent wants
+    # this, which is a different decision from one their own planner proposed. NULL on
+    # rows written before the envelope existed — read as unknown, never as human.
+    principal_id: str | None = None
+    principal_kind: str | None = None
+    initiated_by: str | None = None
+    executed_by: str | None = None
+    delegated_by: str | None = None
     created_at: datetime
     updated_at: datetime
     closed_at: datetime | None

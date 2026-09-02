@@ -144,6 +144,21 @@ class WorkItem(Base):
     # matches the committed tree; asserted items stay unverified. Agent-proposed,
     # operator-confirmed (see app/subtasks.py + [[P-0078]] planner).
     subtasks: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # ── Attribution envelope (D-0059 D3 / P-0103), extended here by [[D-0072]] ──
+    # A work item is the **one thing that crosses between agents**: A asks B by
+    # minting a `proposed` item in B's project. So the row must answer "which agent
+    # proposed this, and was it asking on someone else's behalf" by itself — the
+    # planner run that minted it belongs to a different project and may be long gone.
+    #
+    # On a hand-off, `initiated_by` is the *sending* agent (an agent wanted this, not
+    # a human) and `delegated_by` names who that agent was acting for. That is the
+    # literal D3 reading, and it makes "work an agent asked another agent for" a
+    # query — `initiated_by LIKE 'agent:%'` — rather than a guess from prose.
+    principal_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    principal_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    initiated_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    executed_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    delegated_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

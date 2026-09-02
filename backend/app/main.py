@@ -613,6 +613,10 @@ async def create_work_item(
         risk=body.risk,
         parent_id=body.parent_id,
         signal=body.signal,
+        # The operator made this one themselves. Stamping it keeps the envelope's
+        # NULL meaning exact — "written before attribution existed", never "we did
+        # not bother" — which is what makes an agent-initiated item stand out.
+        **attribution.by_human(owner_id).as_columns(),
     )
     db.add(work_item)
     await db.commit()

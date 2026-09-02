@@ -50,6 +50,10 @@ services:
     # No host port: the backend is reachable only on the internal compose network.
     expose:
       - "8000"
+    # Both segments: the default one for searxng/frontend, and browsernet so the
+    # optional browser sidecar can reach the SSRF egress fence. Joining a network costs
+    # nothing when the browser profile is not running.
+    networks: [default, browsernet]
     restart: unless-stopped
     mem_limit: 768m
     healthcheck:
@@ -93,6 +97,31 @@ services:
     restart: unless-stopped
     mem_limit: 256m
 
+  # Optional headless browser ([[D-0073]]) — activate with:
+  #   docker compose --profile browser up -d      (and set BROWSER_URL in .env)
+  #
+  # A separate image because Chromium plus its system libraries is ~2 GB, and the
+  # `browser_open` tool defaults to **off** — nobody should pay that for a capability
+  # they have not enabled. Nothing is downloaded until this profile is used.
+  browser:
+    profiles: [browser]
+    image: ghcr.io/batonkeep/batonkeep-browser:${TAG:-latest}
+    # `browsernet` ONLY — deliberately not on the default network. This container runs
+    # attacker-authored JavaScript, so it must not be able to reach our other services
+    # (searxng, inference); it needs the backend (for the SSRF egress fence) and the
+    # internet, which is exactly what this gives it. The isolation is the network's
+    # job, not the browser's good behaviour.
+    networks: [browsernet]
+    expose:
+      - "3000"
+    restart: unless-stopped
+    # Chromium is memory-hungry and this container is the one running untrusted code;
+    # a page that balloons must not take the host down with it.
+    mem_limit: 1500m
+    # Chromium needs more than the default 64 MB /dev/shm even with
+    # --disable-dev-shm-usage as a backstop.
+    shm_size: 512m
+
   # Optional self-hosted open-weight inference — activate with: make selfhost
   # or: docker compose --profile selfhost up -d
   inference:
@@ -103,6 +132,14 @@ services:
     volumes:
       - ollama_data:/root/.ollama
     restart: unless-stopped
+
+networks:
+  # Compose's implicit network, named so the backend can sit on it *and* on browsernet.
+  default:
+  # The browser's own segment: backend + browser only. Not `internal`, because the
+  # browser must reach the public internet — what it must not reach is our other
+  # services.
+  browsernet:
 
 volumes:
   appdata:

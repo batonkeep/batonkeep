@@ -267,8 +267,18 @@ class Settings(BaseSettings):
     # Wall-clock ceiling for one navigation, including render. A page that hangs must
     # not hold an approval-parked run's slot or an interactive turn.
     browser_timeout_seconds: float = 30.0
-    # Where playwright's browsers live in the image. World-readable so the low-priv
-    # `sandbox` user can execute them (same reasoning as /opt/exec-env).
+    # The browser **sidecar** ([[D-0073]]) — e.g. "http://browser:3000". Empty means no
+    # sidecar, and then `browser_open` reports that it is unavailable.
+    #
+    # A separate image rather than browser-in-the-backend: shipping Chromium in the
+    # backend grew it 3.41 -> 5.49 GB, and every self-hoster paid that for a capability
+    # that defaults to `off`. Started only under the `browser` compose profile.
+    browser_url: str = ""
+    # How the sidecar addresses *us* to reach the SSRF proxy. The default is the compose
+    # service name; a non-compose deployment sets it rather than being silently wrong.
+    browser_proxy_host: str = "backend"
+    # Where playwright's browsers live when running the browser in-process (local dev
+    # only — the shipped backend image contains no browser).
     playwright_browsers_path: str = "/opt/ms-playwright"
     # P-0072 workspace jail: `require` · `warn` (default) · `off`. Every session's
     # agent runs as the SAME uid and workspaces are group-co-writable, so the

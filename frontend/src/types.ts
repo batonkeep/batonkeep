@@ -4,6 +4,11 @@ export type RunStatus =
   | "queued"
   | "planning"
   | "running"
+  // Gate B / P-0106: waiting on a human decision, with its conversation checkpointed.
+  // Not terminal and not running — the process was deliberately freed so the run could
+  // outlive it. The union had never learned this status, so every `Record<RunStatus, …>`
+  // silently had no entry for it and parked runs fell through to a default (P-0110).
+  | "parked"
   | "succeeded"
   | "failed"
   | "deferred"

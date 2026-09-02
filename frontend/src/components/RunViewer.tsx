@@ -88,6 +88,11 @@ export default function RunViewer({ run, taskName, now, onRequeue, onCancel, onC
 
   const meta = STATUS_META[run.status];
   const active = ["queued", "planning", "running"].includes(run.status);
+  // A parked run is not *streaming*, but it is very much still going somewhere — and
+  // "stop this agent" is a different intention from "deny this one action" (P-0110).
+  // Denying refuses the proposed step and lets the run carry on to propose the next;
+  // an operator who wants it to stop had no control at all until now.
+  const cancellable = active || run.status === "parked";
 
   useEffect(() => {
     api.getRunEvents(run.id).then(seedEvents).catch(() => { });
@@ -182,9 +187,12 @@ export default function RunViewer({ run, taskName, now, onRequeue, onCancel, onC
           </div>
         </div>
         <div className="flex items-center gap-1">
-          {active && (
+          {cancellable && (
             <Button variant="ghost" size="sm" icon={<Ban size={13} />} onClick={() => onCancel(run)}
-              className="text-muted hover:text-bad">
+              className="text-muted hover:text-bad"
+              title={run.status === "parked"
+                ? "Stop this run. Its pending approval is closed out — different from denying the action, which lets the run continue."
+                : "Stop this run"}>
               Cancel
             </Button>
           )}

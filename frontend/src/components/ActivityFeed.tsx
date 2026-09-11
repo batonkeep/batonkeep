@@ -17,7 +17,17 @@ import type { ActivityItem } from "../types";
  *  deliberate non-result, and the two are shown differently on purpose. */
 const CLEAN = new Set(["succeeded"]);
 /** Outcomes that are *not* failures: nothing broke, there was simply nothing to do.
- *  Grading these as failures is how a feed starts lying in the other direction. */
+ *  Grading these as failures is how a feed starts lying in the other direction.
+ *
+ *  `deferred` stays here, and P-0112 is what makes that honest rather than lucky. It
+ *  used to cover two states — "waiting for a cooldown" and "stranded forever with a
+ *  null `deferred_until`" — and calling the second benign is how an instance that had
+ *  done no work for ten days read as fine. A deferral now always carries the time it
+ *  resumes; a cause that time cannot fix fails instead. P-0113 deliberately did NOT
+ *  reclassify `deferred` as a failure (option (a)): a 20-minute rate-limit cooldown is
+ *  not a failure, and pretending otherwise re-introduces the transport-vs-work
+ *  dishonesty P-0070 removed, just pointing the other way. The gap this surface had is
+ *  answered on the Agents card instead — "is this agent still delivering?". */
 const BENIGN = new Set(["no_proposals", "cancelled", "deferred", "parked"]);
 
 function tone(outcome: string): { cls: string; icon: typeof Check } {

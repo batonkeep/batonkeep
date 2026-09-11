@@ -37,7 +37,7 @@ from app.providers.base import EventKind, ExecEvent, ExecResult, Usage
 from app.providers.registry import get_executor
 from app.quota import quota_tracker
 from app.redact import redact_json, redact_text
-from app.router import DeferredResult, resolve
+from app.router import DeferredResult, UnroutableResult, resolve
 from app.runtime import RUNTIME_EPOCH
 from app.schemas import RunOut
 from app.ws import ws_manager
@@ -175,29 +175,29 @@ async def _do_execute(run_id: int, task: Task) -> None:
         # — telemetry must never break a run, so a failure here is logged and swallowed.
         await _record_routing_decision(db, run, route_result.trace)
 
+        # [[P-0112]] option (a): a cause that time cannot fix fails honestly. Previously
+        # this path deferred with a null `deferred_until`, which the 60s sweep selects
+        # on (`deferred_until <= now`) and therefore can never see — so the run waited
+        # forever in a status the whole product renders as temporary.
+        if isinstance(route_result, UnroutableResult):
+            await _emit_event(db, run, EventKind.route, "unroutable",
+                              data={"reason": route_result.reason})
+            await _fail(db, run, f"unroutable: {route_result.reason}")
+            logger.warning("[orchestrator] run %d unroutable — %s", run_id, route_result.reason)
+            return
+
         if isinstance(route_result, DeferredResult):
-            run.status = "deferred"
-            run.deferred_until = route_result.deferred_until
             if route_result.cooling_providers:
-                run.error = f"All candidates cooling: {route_result.cooling_providers}"
-            elif degrade:
-                run.error = (
+                reason = f"All candidates cooling: {route_result.cooling_providers}"
+            else:
+                reason = (
                     f"Over daily budget (${_settings.daily_budget_usd:.2f}) and no "
                     f"zero-cost provider (plan-CLI/local) available — deferred."
                 )
-            else:
-                routing_candidates = routing.get("candidates", _settings.candidates_list)
-                run.error = (
-                    f"No candidates matched routing policy "
-                    f"(candidates={routing_candidates}, "
-                    f"tags={routing.get('capability_tags', [])})"
-                )
-            await db.commit()
-            await _broadcast_run(run)
-            deferred_until = run.deferred_until.isoformat() if run.deferred_until else None
+            await _mark_deferred(db, run, route_result.deferred_until, reason)
             await _emit_event(db, run, EventKind.route, "deferred",
                               data={"cooling": route_result.cooling_providers,
-                                    "deferred_until": deferred_until})
+                                    "deferred_until": run.deferred_until.isoformat()})
             logger.info("[orchestrator] run %d deferred until %s", run_id, run.deferred_until)
             return
 
@@ -563,12 +563,23 @@ async def _do_execute(run_id: int, task: Task) -> None:
                         return
 
                     if outcome == "cooling":
-                        run.status = "deferred"
-                        run.deferred_until = quota_tracker.earliest_reset(candidates)
+                        # The third instance of the [[P-0112]] defect, and the one that
+                        # makes the case for the invariant rather than three patches:
+                        # `earliest_reset()` returns None when no candidate has a
+                        # recorded `cooldown_until`, so this branch could strand a run
+                        # too — inside the very function whose retries-exhausted branch
+                        # was fixed for exactly this, with a comment saying so.
+                        until = quota_tracker.earliest_reset(candidates)
                         record_attempts(run, attempts)
-                        await db.commit()
+                        if until is None:
+                            await _fail(
+                                db, run,
+                                "all candidates cooling with no known reset time "
+                                f"({candidates}) — failing rather than deferring forever",
+                            )
+                            return
+                        await _mark_deferred(db, run, until)
                         await _record_routing_outcome(db, run)  # P-0053 slice 2
-                        await _broadcast_run(run)
                         return
 
                     # outcome == "error" → transient; retry if budget remains.
@@ -1376,6 +1387,22 @@ def _get_tier(instance_id: str) -> str:
     template = inst.template if inst else instance_id
     pdef = get_provider_def(template)
     return pdef.tier if pdef else "unknown"
+
+
+async def _mark_deferred(db, run: Run, until: datetime, error: str | None = None) -> None:
+    """The one place a run becomes `deferred` ([[P-0112]]).
+
+    `until` is required by signature, so the "defer with nothing to wake on" shape
+    cannot be written here at all. The `before_flush` guard in `db.py` is the backstop
+    for anything that bypasses this function — belt and braces, because the defect this
+    fixes survived in a sibling branch precisely by not going through the fixed path.
+    """
+    run.status = "deferred"
+    run.deferred_until = until
+    if error is not None:
+        run.error = error
+    await db.commit()
+    await _broadcast_run(run)
 
 
 async def _fail(db, run: Run, error: str) -> None:

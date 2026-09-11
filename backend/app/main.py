@@ -1407,6 +1407,22 @@ async def list_agents(
             if classify_turn_outcome(r.status, r.output_flags)
             not in ("succeeded", "running", "queued", "planning", "parked", "deferred")
         )
+        # When it last *delivered* ([[P-0113]]). Bounded and correct: a work-succeeded
+        # run is always a status-succeeded run (`classify_turn_outcome` only ever
+        # downgrades `succeeded`), so the newest few status-successes are the only
+        # candidates — and unlike the 20-run recency window above, this does not go
+        # blind on an agent that has been failing for longer than that.
+        delivered_at = None
+        for r in (await db.execute(
+            select(Run)
+            .where(Run.task_id == t.id, Run.status == "succeeded")
+            .order_by(Run.created_at.desc())
+            .limit(5)
+        )).scalars().all():
+            if classify_turn_outcome(r.status, r.output_flags) == "succeeded":
+                delivered_at = r.created_at
+                break
+
         run_ids = {r.id for r in runs}
         awaiting = sum(1 for a in pending if a.run_id in run_ids)
         routing = t.routing or {}
@@ -1422,6 +1438,7 @@ async def list_agents(
             last_outcome=(
                 classify_turn_outcome(last.status, last.output_flags) if last else None
             ),
+            last_delivered_at=delivered_at,
             runs_total=total, recent_failures=failures, awaiting=awaiting,
         ))
     return out

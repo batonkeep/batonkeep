@@ -452,6 +452,22 @@ class AgentSummary(BaseModel):
     # Last activity, as the work outcome — never the transport status (P-0070).
     last_run_at: datetime | None = None
     last_outcome: str | None = None
+    # ── "Is this agent still doing work?" ([[P-0113]] option (c)) ─────────────
+    #
+    # When it last actually *delivered* — the newest run whose **work** outcome was
+    # `succeeded`, which is not the same as its newest run, and emphatically not the
+    # same as its newest run's status.
+    #
+    # This exists because every per-status judgement the surfaces made was individually
+    # defensible and collectively wrong: an instance that had executed nothing for ten
+    # days showed zero failures, a benign feed and a plausible `Deferred: 47` tile.
+    # None of them answered the only question an always-on operator has. This one does,
+    # and it degrades well — it stays right when the cause is something nobody has
+    # thought of yet, because it asserts nothing about *why*.
+    #
+    # `None` means "has never delivered", which is different from "idle" and is shown
+    # differently.
+    last_delivered_at: datetime | None = None
     runs_total: int = 0
     # How many of its recent runs did *not* deliver. The number an operator actually
     # wants when deciding whether to trust an agent that has been running unattended.

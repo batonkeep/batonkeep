@@ -206,7 +206,16 @@ export default function RunViewer({ run, taskName, now, onRequeue, onCancel, onC
         <div className="flex items-center justify-between gap-2 border-b border-defer/30 bg-defer/10 px-4 py-2.5">
           <div className="text-xs text-defer">
             {run.error || "All candidates were cooling down."}
-            {run.deferred_until && <span> · resumes {asUTC(run.deferred_until).toLocaleString()}</span>}
+            {/* P-0113(d). A deferral with no resume time is stranded, not waiting:
+                the sweep selects `deferred_until <= now` and can never see it.
+                Rendering nothing there let 47 runs look like they were queued. */}
+            {run.deferred_until ? (
+              <span> · resumes {asUTC(run.deferred_until).toLocaleString()}</span>
+            ) : (
+              <span className="font-semibold text-amber-500">
+                {" "}· won&rsquo;t resume on its own — use Run now
+              </span>
+            )}
           </div>
           <Button variant="outline" size="sm" icon={<RotateCw size={13} />}
             onClick={() => onRequeue(run)}

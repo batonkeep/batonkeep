@@ -14,9 +14,12 @@ import asyncio
 import logging
 import os
 from collections.abc import AsyncGenerator
+from datetime import UTC, datetime
 
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.orm import Session as SyncSession
 
 from app.config import get_settings
 
@@ -86,8 +89,6 @@ def _make_engine():
         connect_args={"check_same_thread": False} if "sqlite" in url else {},
     )
     if url.startswith("sqlite"):
-        from sqlalchemy import event
-
         db_path = url.split("///")[-1]
         journal_mode = _sqlite_journal_mode(db_path)
 
@@ -108,6 +109,48 @@ def _make_engine():
 
 engine = _make_engine()
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
+
+
+# ── The deferral invariant (P-0112 option (d)) ───────────────────────────────
+#
+# A run may not be persisted as `deferred` without a `deferred_until`. The sweep
+# selects `deferred_until <= now`, so a NULL is invisible to it forever — the run
+# waits in a status the product renders as temporary and an operator reads as benign.
+#
+# This lives at the *write boundary* rather than at each call site deliberately. The
+# same defect was found and fixed once in `orchestrator._run`'s retries-exhausted
+# branch, whose comment names it exactly — and survived in two sibling branches of the
+# same file, because a fix applied where you happen to be looking does not cover where
+# you are not. A flush hook covers every branch that exists and every one that does
+# not exist yet.
+#
+# It **coerces rather than raises**: a 500 on an unrelated request is a worse outcome
+# than an honestly-failed run, and an invariant that takes the site down gets removed.
+# The ERROR log is the part that must not be missed — reaching here at all is a code
+# defect, not an operating condition.
+@event.listens_for(SyncSession, "before_flush")
+def _enforce_deferral_has_a_wake_time(session, _flush_context, _instances) -> None:
+    from app.models import Run
+
+    for obj in (*session.new, *session.dirty):
+        if not isinstance(obj, Run) or obj.status != "deferred":
+            continue
+        if obj.deferred_until is not None:
+            continue
+        logger.error(
+            "[db] INVARIANT: run %s written as deferred with no deferred_until — "
+            "coercing to failed (P-0112). This is a code defect; the sweep could "
+            "never have picked this run up.",
+            obj.id,
+            stack_info=True,
+        )
+        obj.status = "failed"
+        obj.error = (
+            "deferred with no resolution time — failed instead of waiting forever "
+            "(P-0112 invariant)"
+        )
+        if obj.finished_at is None:
+            obj.finished_at = datetime.now(UTC)
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:

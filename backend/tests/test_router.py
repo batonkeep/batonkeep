@@ -17,7 +17,7 @@ from unittest.mock import patch
 import pytest
 
 from app.quota import QuotaTracker
-from app.router import CandidatePlan, DeferredResult, resolve
+from app.router import CandidatePlan, DeferredResult, UnroutableResult, resolve
 
 
 def fresh_quota() -> QuotaTracker:
@@ -82,15 +82,21 @@ class TestCapabilityStrategy:
         assert "open-default" in result.candidates
 
     def test_tag_filter_excludes_non_matching(self):
-        """Tags that don't match mock's tags should exclude it."""
+        """Tags that don't match are UNROUTABLE, not deferred (P-0112).
+
+        This is the exact shape that stranded 47 runs on the testbed: `mock` carries
+        ["mock", "any"] and "any" is not a wildcard, so a task asking for "realtime"
+        matches nothing. Nothing is cooling and no wait helps, so the run must fail
+        honestly rather than sit in a status the product renders as temporary.
+
+        This test previously asserted `DeferredResult` — it encoded the defect as the
+        expected behaviour, which is why the suite stayed green for ten days while the
+        instance did no work at all.
+        """
         q = fresh_quota()
         result = resolve(_routing(candidates=["mock"], tags=["realtime", "markets"]), q)
-        # mock has tags ["mock", "any"] — "any" is not in required tags but let's check
-        # Actually mock has "any" tag — does it match "realtime"? No. Should be excluded.
-        # mock tags: ["mock", "any"], required: ["realtime", "markets"]
-        # No intersection → excluded → deferred (no candidates)
-        # Wait — "any" is not "realtime", so no intersection → excluded
-        assert isinstance(result, DeferredResult)
+        assert isinstance(result, UnroutableResult)
+        assert "capability tags" in result.reason
 
     def test_tag_filter_passes_with_matching_tag(self):
         """mock has "any" tag — routing with tag="any" should include it."""
@@ -115,7 +121,9 @@ class TestCapabilityStrategy:
         try:
             registry.set_provider_enabled("mock", False)
             result = resolve(_routing(candidates=["mock"]), q)
-            assert isinstance(result, DeferredResult)  # no available providers
+            # Unroutable, not deferred: a suspended provider does not un-suspend
+            # itself on a timer (P-0112).
+            assert isinstance(result, UnroutableResult)
             registry.set_provider_enabled("mock", True)
             result = resolve(_routing(candidates=["mock"]), q)
             assert isinstance(result, CandidatePlan)
@@ -302,15 +310,19 @@ class TestManagedMode:
         assert "claude" not in result.candidates
         assert "mock" in result.candidates
 
-    def test_managed_mode_all_cli_defers(self):
-        """If all candidates are plan-CLI in managed mode → empty → deferred."""
+    def test_managed_mode_all_cli_is_unroutable(self):
+        """All candidates plan-CLI in managed mode → unroutable, not deferred.
+
+        Deployment mode is a deployment fact. Waiting will not make managed mode
+        start allowing plan-CLI providers, so this fails honestly (P-0112).
+        """
         q = fresh_quota()
         result = resolve(
             _routing(candidates=["claude", "grok", "agy"], tags=[]),
             q,
             deployment_mode="managed",
         )
-        assert isinstance(result, DeferredResult)
+        assert isinstance(result, UnroutableResult)
 
     def test_personal_mode_allows_cli(self):
         """personal mode should allow plan-CLI candidates."""
@@ -372,7 +384,8 @@ class TestProviderInstances:
         """A 'template:slug' id not in config is refused (no silent auth collision)."""
         q = fresh_quota()
         result = resolve(_routing(candidates=["open-default:ghost"], tags=[]), q)
-        assert isinstance(result, DeferredResult)
+        # An instance that does not exist will not come into existence on a timer.
+        assert isinstance(result, UnroutableResult)
 
     def test_bare_name_is_default_instance(self):
         """Bare template names still work (default instance, back-compat)."""

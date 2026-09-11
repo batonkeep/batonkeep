@@ -41,6 +41,17 @@ def _start_of_today() -> datetime:
     return datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
 
 
+def next_budget_reset() -> datetime:
+    """When the daily cap next resets — the moment an over-budget run becomes
+    runnable again.
+
+    Pure (no DB), so the router can call it and stay DB-free. Exists because
+    [[P-0112]] requires every deferral to name the time it resolves: being over
+    budget genuinely *is* temporal, so it defers, but it must say until when.
+    """
+    return _start_of_today() + timedelta(days=1)
+
+
 async def spend_since(db: AsyncSession, owner_id: str, since: datetime) -> float:
     """Total metered USD spend for an owner since `since` (inclusive).
 

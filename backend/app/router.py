@@ -57,6 +57,9 @@ class RoutingTrace:
     degraded: bool = False
     deployment_mode: str | None = None
     deferred: bool = False
+    # [[P-0112]]: the decision was "no candidate can serve this, and waiting will not
+    # help". Distinct from `deferred`, which now always carries a real reset time.
+    unroutable: bool = False
     deciding_reason: str = ""
     requested_candidates: list[str] = field(default_factory=list)
     # per-candidate features at decision time:
@@ -94,9 +97,36 @@ class CandidatePlan:
 
 @dataclass
 class DeferredResult:
-    """All candidates are cooling down; the run should be deferred."""
-    deferred_until: datetime | None
+    """The run cannot go now but *will* be able to later — cooling, or a budget
+    window that resets.
+
+    `deferred_until` is **required and non-null** ([[P-0112]]). A deferral without a
+    time is not a deferral: `_sweep_deferred_runs` selects `deferred_until <= now`, so
+    a NULL is invisible to it and the run waits forever in a status the whole product
+    renders as temporary. If a cause has no known resolution time it is not temporal —
+    it is `UnroutableResult`.
+    """
+    deferred_until: datetime
     cooling_providers: list[str]
+    trace: RoutingTrace | None = None
+
+
+@dataclass
+class UnroutableResult:
+    """No candidate can serve this policy, and waiting will not change that
+    ([[P-0112]] option (a)).
+
+    A misconfiguration is not a capacity condition. The run **fails honestly** with the
+    reason rather than deferring, because "deferred" promises a retry that can never
+    happen and hides the run in a status operators read as benign. This mirrors what the
+    failover path already concluded for a non-cooling exhaustion (`orchestrator.py`) —
+    the routing path simply never learned it.
+
+    Deliberately **not** a new run status (option (b), rejected): the run ends `failed`,
+    carrying `reason`, so no migration, status map, analytics class or checkpoint fence
+    has to learn a new word.
+    """
+    reason: str
     trace: RoutingTrace | None = None
 
 
@@ -106,7 +136,7 @@ def resolve(
     *,
     deployment_mode: str | None = None,
     degrade_to_free: bool = False,
-) -> CandidatePlan | DeferredResult:
+) -> CandidatePlan | DeferredResult | UnroutableResult:
     """
     Resolve a routing policy dict into an ordered candidate plan.
 
@@ -120,7 +150,10 @@ def resolve(
             none are available — graceful degradation, never a silent over-spend.
 
     Returns:
-        CandidatePlan or DeferredResult.
+        `CandidatePlan` when a candidate can run now; `DeferredResult` when none can
+        *yet* but one demonstrably will, carrying the time ([[P-0112]] guarantees this
+        is never null); `UnroutableResult` when no candidate can serve the policy and
+        waiting will not change that — the caller fails the run honestly.
     """
     strategy = routing.get("strategy", "capability")
     raw_candidates: list[str] = list(routing.get("candidates", _settings.candidates_list))
@@ -169,8 +202,26 @@ def resolve(
             rows.append({**_features(iid, pdef), "status": status})
         return rows
 
+    def _unroutable(reason: str) -> UnroutableResult:
+        """No candidate can serve this policy and time will not help ([[P-0112]])."""
+        trace.deferred = False
+        trace.unroutable = True
+        trace.deciding_reason = reason
+        trace.evaluated = _eval_list([])
+        return UnroutableResult(reason=reason, trace=trace)
+
     def _defer(reason: str, *, until: datetime | None = None,
-               cooling: list[str] | None = None) -> DeferredResult:
+               cooling: list[str] | None = None) -> DeferredResult | UnroutableResult:
+        """Defer until a known time — or, if there is no known time, don't defer.
+
+        This is the [[P-0112]] invariant at the router layer: the fallback lives *here*
+        rather than at each call site, so a future caller that forgets to supply a reset
+        gets an honest failure instead of a permanently stranded run. `earliest_reset()`
+        returning None is precisely that case — a provider marked cooling with no
+        recorded `cooldown_until` is not going to become available on a schedule.
+        """
+        if until is None:
+            return _unroutable(f"{reason} (no known reset time)")
         trace.deferred = True
         trace.deciding_reason = reason
         # nothing chosen — annotate whatever was evaluated (cooling/healthy/excluded)
@@ -196,8 +247,9 @@ def resolve(
         overflow_to = None
         logger.info("[router] confidential — local providers only: %s", raw_candidates)
         if not raw_candidates:
-            logger.warning("[router] confidential task, no local provider available — deferring")
-            return _defer("confidential: no local provider available")
+            # Not temporal: no amount of waiting conjures a local provider ([[P-0112]]).
+            logger.warning("[router] confidential task, no local provider available — unroutable")
+            return _unroutable("confidential: no local provider available")
 
     # Budget boundary (P-0009 #2): when the owner is over the daily cap, degrade to
     # zero-marginal-cost providers only — subscription plan-CLIs + local models —
@@ -209,8 +261,15 @@ def resolve(
         overflow_to = None
         logger.info("[router] over budget — degrading to free providers only: %s", free)
         if not free:
+            # Genuinely temporal — the daily cap resets, so this one *is* a deferral
+            # and now carries the time it becomes true again ([[P-0112]]).
+            # Local import keeps the router DB-free at module scope; the helper
+            # itself is pure (cost.py is simply where "the daily cap" lives).
+            from app.cost import next_budget_reset
+
             logger.warning("[router] over budget, no free provider available — deferring")
-            return _defer("over budget: no zero-cost provider available")
+            return _defer("over budget: no zero-cost provider available",
+                          until=next_budget_reset())
         raw_candidates = free
 
     plan_cli_allowed = mode != "managed"
@@ -241,8 +300,10 @@ def resolve(
         available.append((inst.id, pdef))
 
     if not available:
-        logger.warning("[router] no available providers after filtering")
-        return _defer("no available providers after filtering")
+        # The [[P-0114]] shape: candidates that do not exist, are disabled, or are
+        # forbidden by deployment mode. A configuration fact, not a capacity one.
+        logger.warning("[router] no available providers after filtering — unroutable")
+        return _unroutable("no available providers after filtering")
 
     # 2. Apply strategy to produce an ordered list of instance ids
     if strategy == "fixed":
@@ -277,7 +338,15 @@ def resolve(
         # capability (default): ordered preference, filter by capability_tags + health
         ordered, cooling_providers = _resolve_capability(available, cap_tags, quota)
 
-    # 3. If ordered is empty, all tag-matching candidates are cooling
+    # 3. Nothing ordered. Two very different causes hide here and [[P-0112]] is
+    #    largely about telling them apart:
+    #      • candidates matched the tags but are all cooling  → temporal, defer
+    #      • nothing matched the tags at all                  → configuration, unroutable
+    #    The old code called both "all tag-matched candidates cooling" and deferred,
+    #    which is how a task asking `mock` for `synthesis` sat in a benign-looking
+    #    status for ten days. The orchestrator even rewrote the message to
+    #    "No candidates matched routing policy" — the two layers disagreed, and the
+    #    honest one was not the one that set the status.
     if not ordered:
         # Use the cooling list from _resolve_capability for capability strategy,
         # otherwise fall back to all available ids.
@@ -285,6 +354,11 @@ def resolve(
             c_names = cooling_providers  # type: ignore[possibly-undefined]
         else:
             c_names = [iid for iid, _ in available]
+        if not c_names:
+            return _unroutable(
+                f"no candidate matches the required capability tags {cap_tags} "
+                f"(candidates={[iid for iid, _ in available]})"
+            )
         return _defer("all tag-matched candidates cooling",
                       until=quota.earliest_reset(c_names), cooling=c_names)
 

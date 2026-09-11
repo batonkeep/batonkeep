@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -32,7 +33,11 @@ async def db_with_runs(tmp_path):
             Run(id=1, owner_id="local", task_id=1, status="running"),
             Run(id=2, owner_id="local", task_id=1, status="queued"),
             Run(id=3, owner_id="local", task_id=1, status="succeeded"),
-            Run(id=4, owner_id="local", task_id=1, status="deferred"),
+            # `deferred` now requires the time it resumes — a deferral with nothing to
+            # wake on is coerced to `failed` by the P-0112 invariant, so seeding one
+            # here would be seeding a state the product can no longer hold.
+            Run(id=4, owner_id="local", task_id=1, status="deferred",
+                deferred_until=datetime.now(UTC) + timedelta(hours=1)),
         ])
         await db.commit()
     yield Maker

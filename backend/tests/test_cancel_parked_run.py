@@ -15,6 +15,7 @@ action and lets the run carry on to propose the next; cancel stops the run.
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -55,6 +56,11 @@ async def _seed(Maker, status: str):
         db.add(task)
         await db.commit()
         run = Run(owner_id="local", task_id=task.id, status=status, provider="mock")
+        # A `deferred` run must carry the time it resumes — the P-0112 invariant
+        # coerces one that does not to `failed`, so seeding without this would be
+        # seeding a state the product can no longer hold.
+        if status == "deferred":
+            run.deferred_until = datetime.now(UTC) + timedelta(hours=1)
         db.add(run)
         await db.commit()
         return run.id

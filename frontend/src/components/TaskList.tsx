@@ -227,9 +227,15 @@ export default function TaskList({
                   {meta ? (
                     <span className={`font-mono ${meta.text}`}>
                       {meta.label}
-                      {deferred && run?.deferred_until && (
+                      {/* P-0113(d): the countdown used to render only when there
+                          WAS a resume time, so the one case that never resumes —
+                          a legacy null — showed nothing at all. Absence read as
+                          "fine", which is the opposite of true. Say "never". */}
+                      {deferred && (run?.deferred_until ? (
                         <span className="ml-1 text-defer">· resumes {countdown(run.deferred_until, now)}</span>
-                      )}
+                      ) : (
+                        <span className="ml-1 text-amber-500">· won&rsquo;t resume on its own</span>
+                      ))}
                     </span>
                   ) : (
                     <span className="text-muted">never</span>

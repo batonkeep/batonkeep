@@ -1001,6 +1001,10 @@ export interface AgentSummary {
   provider: string | null;
   last_run_at: string | null;
   last_outcome: string | null;
+  // When it last actually DELIVERED — not when it last ran, and not what its last
+  // run's status was. The one number that answers "is this agent still doing work?"
+  // without having to be right about why it isn't (P-0113). null = never delivered.
+  last_delivered_at: string | null;
   runs_total: number;
   // Counts runs that did not DELIVER, not runs that reported failure (P-0070).
   recent_failures: number;

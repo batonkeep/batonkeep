@@ -9,17 +9,48 @@
 // The number that matters is `recent_failures`, and it counts **delivery**, not transport
 // status: an agent reporting success while producing nothing is not healthy (P-0070).
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, Bot, Clock, Hand, Pause } from "lucide-react";
+import { AlertTriangle, Bot, CheckCircle2, Clock, Hand, Pause } from "lucide-react";
 import { api } from "../api";
 import type { AgentSummary } from "../types";
 
-function when(iso: string | null): string {
-  if (!iso) return "never run";
-  const secs = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+function ago(iso: string): number {
+  return Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+}
+
+function since(secs: number): string {
   if (secs < 60) return "just now";
   if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
   if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
   return `${Math.floor(secs / 86400)}d ago`;
+}
+
+function when(iso: string | null): string {
+  if (!iso) return "never run";
+  return since(ago(iso));
+}
+
+/** How long an agent may go without delivering before that is worth saying out loud.
+ *
+ * A threshold is a number someone has to defend, which is exactly why P-0113 did not
+ * make one the discriminator on its own (option (b)). It is fine *here* because it only
+ * changes emphasis: the date is shown either way and nothing is hidden when the guess
+ * is wrong. 36h clears a daily agent's normal gap plus a missed run. */
+const STALE_SECONDS = 36 * 3600;
+
+/** The answer to "is this agent still doing work?" — stated plainly, and deliberately
+ *  not derived from any run's status.
+ *
+ *  An instance that had executed nothing for ten days rendered as healthy on every
+ *  surface here, because each one classified statuses and none of them asked this. */
+function delivery(a: AgentSummary): { text: string; stale: boolean } {
+  if (!a.last_delivered_at) {
+    return {
+      text: a.runs_total > 0 ? "has never delivered" : "nothing delivered yet",
+      stale: a.runs_total > 0,
+    };
+  }
+  const secs = ago(a.last_delivered_at);
+  return { text: `delivered ${since(secs)}`, stale: secs > STALE_SECONDS };
 }
 
 /** Say what happened, not what the enum is called. */
@@ -90,11 +121,28 @@ export default function AgentsPanel() {
             {a.provider ? ` · ${a.provider}` : ""}
           </div>
 
-          <div className="mt-3 flex items-center gap-1.5 text-[12px]">
-            <Clock size={12} className="text-muted" />
-            <span className="text-muted">{when(a.last_run_at)}</span>
+          {/* The headline is DELIVERY, not the last run's status. An agent whose
+              every run is sitting in a benign-looking status is not working, and
+              until P-0113 nothing on this card said so. */}
+          {(() => {
+            const d = delivery(a);
+            return (
+              <div
+                className={`mt-3 flex items-center gap-1.5 text-[12px] font-medium ${
+                  d.stale ? "text-amber-500" : "text-ink"
+                }`}
+              >
+                {d.stale ? <AlertTriangle size={12} /> : <CheckCircle2 size={12} />}
+                <span>{d.text}</span>
+              </div>
+            );
+          })()}
+
+          <div className="mt-1 flex items-center gap-1.5 text-[11px]">
+            <Clock size={11} className="text-muted" />
+            <span className="text-muted">last run {when(a.last_run_at)}</span>
             {a.last_outcome && (
-              <span className="text-ink">
+              <span className="text-muted">
                 · {OUTCOME[a.last_outcome] ?? a.last_outcome}
               </span>
             )}

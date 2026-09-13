@@ -1983,6 +1983,7 @@ async def create_task(
         enabled=body.enabled,
         routing=body.routing.model_dump() if body.routing else None,
         exec_policy=body.exec_policy,
+        browser_policy=body.browser_policy,
         image_model_id=body.image_model_id,
         timeout_seconds=body.timeout_seconds,
         recovery_policy=body.recovery_policy,
@@ -2032,6 +2033,10 @@ async def update_task(
     # "" sentinel clears the image-gen override back to the provider default.
     if task.image_model_id == "":
         task.image_model_id = None
+    # Same sentinel for the browser gate: "" hands the task back to the deployment
+    # default ([[D-0073]] D1b), which is not the same as setting it to "off".
+    if task.browser_policy == "":
+        task.browser_policy = None
     # -1 sentinel clears a retention cap back to unlimited (P-0050).
     if task.asset_max_count == -1:
         task.asset_max_count = None

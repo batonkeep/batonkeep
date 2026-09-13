@@ -1,5 +1,5 @@
 """
-browser/server.py — the Batonkeep browser sidecar ([[D-0073]] slice D1a).
+browser/server.py — the Batonkeep browser sidecar ([[D-0073]] slices D1a + D1b).
 
 **Why this exists as a separate image.** Slice D1a first shipped the browser *inside* the
 backend image, which grew it from 3.41 GB to 5.49 GB — and every self-hoster paid that for
@@ -24,6 +24,13 @@ fence stays in one place.
 
 Consequently **this service must not be reachable by anything but the backend** — see the
 `browsernet` network in `docker-compose.yml`, which is what actually enforces that.
+
+**D1b keeps the one-verb property**, which is the point of the slice being shaped this way.
+The endpoint is still "give me a URL, get that page's visible text" — now optionally after
+following **one same-origin link**, resolved from an `<a href>` and navigated to as a plain
+GET. It does not click, type, or submit, so reaching this port still buys a page fetch
+rather than browser control. Nothing is held between requests: a whole browser per call,
+discarded, exactly as in D1a.
 """
 from __future__ import annotations
 
@@ -59,16 +66,97 @@ class RenderRequest(BaseModel):
     #: The forward proxy every request must go through. The caller owns the egress
     #: policy (see the module docstring); we only point the browser at it.
     proxy: str | None = None
+    #: D1b ([[D-0073]] slice D1b, navigation-only): the visible text of a **same-origin
+    #: link** on the rendered page to follow. Exactly one hop; `_pick_link` resolves the
+    #: label and `_render` navigates to the resolved `href` rather than clicking anything
+    #: (the comment there is the argument for why that distinction is the whole slice).
+    follow: str | None = None
+    max_links: int = Field(default=50, ge=0, le=200)
 
 
 class RenderResult(BaseModel):
     final_url: str
     text: str
+    #: Same-origin links found on the page, in document order: `{"text": …, "url": …}`.
+    #: D1a returned visible text only, which meant the page's links were **invisible to
+    #: the agent** — it could read "Next page" but had no way to name where that went.
+    #: That, not clicking, is the real capability gap ([[P-0116]]).
+    links: list[dict] = Field(default_factory=list)
+    #: Set when `follow` was requested: the link that was actually followed.
+    followed: dict | None = None
 
 
 @app.get("/health")
 async def health() -> dict:
     return {"ok": True, "version": VERSION, "service": "batonkeep-browser"}
+
+
+#: Extract same-origin anchors as (visible text, absolute href). Runs in the page, so
+#: `a.href` is already resolved against the document's base URL by the browser itself —
+#: no URL joining of our own to get subtly wrong.
+_LINKS_JS = """
+(max) => {
+  const out = [];
+  const seen = new Set();
+  for (const a of document.querySelectorAll('a[href]')) {
+    let u;
+    try { u = new URL(a.href, document.baseURI); } catch { continue; }
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') continue;
+    if (u.origin !== location.origin) continue;          // same-origin only
+    const text = (a.innerText || a.textContent || '').trim().replace(/\\s+/g, ' ');
+    if (!text) continue;
+    const href = u.href;
+    const key = text + '\\u0000' + href;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ text: text.slice(0, 120), url: href });
+    if (out.length >= max) break;
+  }
+  return out;
+}
+"""
+
+
+class FollowError(RuntimeError):
+    """The requested link could not be followed — reported to the agent as data."""
+
+
+def _pick_link(links: list[dict], wanted: str) -> dict:
+    """Resolve the operator-visible label to exactly one same-origin link.
+
+    Exact match first, then unique case-insensitive substring. An **ambiguous** label is
+    refused rather than guessed: picking one of several "Next" links on the agent's behalf
+    would make the thing that ran differ from the thing that was approved, which is the
+    whole property this slice is built to preserve.
+    """
+    wanted = (wanted or "").strip()
+    if not wanted:
+        raise FollowError("no link text given")
+    exact = [x for x in links if x["text"] == wanted]
+    if len(exact) == 1:
+        return exact[0]
+    if len(exact) > 1:
+        # Identical label, identical destination is not ambiguous — dedupe handled that;
+        # identical label to different places is.
+        if len({x["url"] for x in exact}) == 1:
+            return exact[0]
+        raise FollowError(
+            f"{len(exact)} same-origin links are labelled {wanted!r} and they lead to "
+            "different pages — name it more precisely"
+        )
+    low = wanted.lower()
+    part = [x for x in links if low in x["text"].lower()]
+    if len(part) == 1:
+        return part[0]
+    if not part:
+        raise FollowError(
+            f"no same-origin link labelled {wanted!r} on that page. Only links on the "
+            "same site can be followed, and only links — not buttons or forms."
+        )
+    raise FollowError(
+        f"{len(part)} same-origin links match {wanted!r} "
+        f"({', '.join(repr(x['text']) for x in part[:4])}…) — name it more precisely"
+    )
 
 
 async def _render(req: RenderRequest) -> RenderResult:
@@ -108,6 +196,26 @@ async def _render(req: RenderRequest) -> RenderResult:
                     await page.wait_for_load_state("networkidle", timeout=5000)
                 except Exception:  # noqa: S110 - a polling page is still readable
                     pass
+                links = await page.evaluate(_LINKS_JS, req.max_links)
+                followed = None
+                if req.follow:
+                    # **Resolve and navigate — do not click.** This is the mechanism that
+                    # makes "navigation-only" an enforced property rather than a hope.
+                    # Clicking runs the element's JavaScript, so a `click` can submit a
+                    # form, fire an `onclick` that POSTs, or do anything else the page
+                    # chose; "it was only a click" would be a promise we cannot keep.
+                    # Navigating to an `<a href>` we already resolved is a plain GET to a
+                    # known same-origin URL — checkable *before* it happens, which is what
+                    # lets the approval name the destination, and idempotent, which is
+                    # what lets the stateless replay design work at all ([[P-0116]]).
+                    followed = _pick_link(links, req.follow)
+                    await page.goto(followed["url"], timeout=req.timeout_ms,
+                                    wait_until="domcontentloaded")
+                    try:
+                        await page.wait_for_load_state("networkidle", timeout=5000)
+                    except Exception:  # noqa: S110 - a polling page is still readable
+                        pass
+                    links = await page.evaluate(_LINKS_JS, req.max_links)
                 final_url = page.url
                 text = await page.evaluate(
                     "() => document.body ? document.body.innerText : ''"
@@ -116,7 +224,8 @@ async def _render(req: RenderRequest) -> RenderResult:
                 await context.close()
         finally:
             await browser.close()
-    return RenderResult(final_url=final_url, text=text or "")
+    return RenderResult(final_url=final_url, text=text or "", links=links,
+                        followed=followed)
 
 
 @app.post("/render")
@@ -133,6 +242,10 @@ async def render(req: RenderRequest) -> dict:
         result = await asyncio.wait_for(_render(req), timeout=req.timeout_ms / 1000 + 15)
     except TimeoutError:
         return {"error": f"{req.url} did not finish loading in time"}
+    except FollowError as exc:
+        # A named link that is missing or ambiguous is an ordinary outcome the agent
+        # should read and retry differently, not a fault in this service.
+        return {"error": str(exc)}
     except Exception as exc:
         logger.warning("render failed for %s: %s", req.url, exc)
         return {"error": f"could not open {req.url}: {exc}"}

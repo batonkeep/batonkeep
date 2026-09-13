@@ -327,12 +327,9 @@ async def _do_execute(run_id: int, task: Task) -> None:
                             # code-exec runs only if the task carries allow-safe/auto.
                             extra={
                                 "task": True, "exec_policy": policy.exec_policy,
-                                # D-0073 D1a: instance-level for this slice (there is
-                                # nothing to vary per task while the browser is
-                                # read-only and carries no credentials). The per-task
-                                # policy arrives with D1b, where interaction makes the
-                                # distinction matter.
-                                "browser_policy": _settings.browser_policy,
+                                # D-0073 D1b: per task now that the browser navigates.
+                                # NULL on the task inherits the deployment default.
+                                "browser_policy": policy.browser_policy,
                                 # P-0098: an unattended run is now an approver — it parks
                                 # on a durable approval instead of being denied the tool.
                                 "human_in_loop": False,
@@ -472,12 +469,8 @@ async def _do_execute(run_id: int, task: Task) -> None:
                                 max_rounds=10, budget_usd=1.0,
                                 extra={
                                     "task": True, "exec_policy": policy.exec_policy,
-                                # D-0073 D1a: instance-level for this slice (there is
-                                # nothing to vary per task while the browser is
-                                # read-only and carries no credentials). The per-task
-                                # policy arrives with D1b, where interaction makes the
-                                # distinction matter.
-                                "browser_policy": _settings.browser_policy,
+                                    # D-0073 D1b: per task now that the browser navigates.
+                                    "browser_policy": policy.browser_policy,
                                     "human_in_loop": False,
                                     "approve": _make_run_approver(
                                         run_id, run.owner_id, provider_name
@@ -817,8 +810,15 @@ def _make_run_approver(run_id: int, owner_id: str, provider_name: str):
             async with AsyncSessionLocal() as adb:
                 await approvals.record_request(
                     adb, owner_id=owner_id, request_id=request_id, kind="code_exec",
+                    # `tool` names what is actually being asked for. The row's `kind`
+                    # stays "code_exec" because it identifies the *approval lane* — the
+                    # one the cancel-settle path and the unattended-run branch key on —
+                    # and re-pointing that is Gate B machinery, out of D1b's scope. But
+                    # without this the operator's inbox renders a page navigation as
+                    # "Run code" with a URL in the code block, which is not what the
+                    # agent asked to do ([[D-0073]] D1b).
                     payload={"v": 1, "code": redact_text(code), "label": label,
-                             "unattended": True},
+                             "tool": label or "code_exec", "unattended": True},
                     producer=provider_name, run_id=run_id,
                 )
                 await adb.commit()

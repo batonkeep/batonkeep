@@ -651,6 +651,8 @@ class TaskCreate(BaseModel):
     # P-0046 code-exec execution policy: off | confirmation | allow-safe | auto.
     # Unattended tasks must set allow-safe/auto explicitly to use code-exec.
     exec_policy: str = "confirmation"
+    # [[D-0073]] D1b. None = inherit the deployment default (`BROWSER_POLICY`).
+    browser_policy: str | None = None
     # P-0046 slice 6 follow-up: image-gen model override (catalog id; cross-provider
     # allowed). None = inherit the text provider's default image model.
     image_model_id: str | None = None
@@ -662,6 +664,25 @@ class TaskCreate(BaseModel):
     timeout_seconds: int | None = None
     # D-0068: recovery for a run stranded by a restart *before* it was dispatched.
     recovery_policy: str = "next_occurrence"
+
+    @field_validator("browser_policy")
+    @classmethod
+    def _valid_browser_policy(cls, v: str | None) -> str | None:
+        """None (or "") means inherit the deployment default — not a policy value.
+
+        Validated rather than trusted because an unrecognised string would fail *open*
+        in `policy_offers_tool`: anything that is not a runnable policy falls through to
+        the `confirmation` branch, so a typo would quietly make the tool unofferable
+        instead of raising. A capability silently disappearing is the class of defect
+        this codebase keeps paying for.
+        """
+        if v is None or v == "":
+            return None
+        from app.providers.tools.browser import POLICIES
+
+        if v not in POLICIES:
+            raise ValueError(f"browser_policy must be one of {sorted(POLICIES)} or null")
+        return v
 
     @field_validator("exec_policy")
     @classmethod
@@ -709,6 +730,8 @@ class TaskUpdate(BaseModel):
     enabled: bool | None = None
     routing: RoutingPolicy | None = None
     exec_policy: str | None = None  # P-0046; validated below
+    # [[D-0073]] D1b. None means "unchanged"; "" clears back to the deployment default.
+    browser_policy: str | None = None
     # P-0046 slice 6 follow-up: image-gen model override. "" clears to default.
     image_model_id: str | None = None
     # P-0050 retention caps. -1 clears back to unlimited (None means "unchanged").
@@ -719,6 +742,25 @@ class TaskUpdate(BaseModel):
     timeout_seconds: int | None = None
     # D-0068 recovery policy; None means "unchanged".
     recovery_policy: str | None = None
+
+    @field_validator("browser_policy")
+    @classmethod
+    def _valid_browser_policy(cls, v: str | None) -> str | None:
+        """None (or "") means inherit the deployment default — not a policy value.
+
+        Validated rather than trusted because an unrecognised string would fail *open*
+        in `policy_offers_tool`: anything that is not a runnable policy falls through to
+        the `confirmation` branch, so a typo would quietly make the tool unofferable
+        instead of raising. A capability silently disappearing is the class of defect
+        this codebase keeps paying for.
+        """
+        if v is None or v == "":
+            return None
+        from app.providers.tools.browser import POLICIES
+
+        if v not in POLICIES:
+            raise ValueError(f"browser_policy must be one of {sorted(POLICIES)} or null")
+        return v
 
     @field_validator("exec_policy")
     @classmethod
@@ -776,6 +818,8 @@ class TaskOut(BaseModel):
     enabled: bool
     routing: dict[str, Any] | None
     exec_policy: str = "confirmation"  # P-0046 code-exec execution policy
+    # [[D-0073]] D1b. NULL = inherit the deployment default rather than a frozen copy.
+    browser_policy: str | None = None
     recovery_policy: str = "next_occurrence"  # D-0068 stranded-run recovery
     image_model_id: str | None = None  # P-0046 slice 6: image-gen model override
     asset_max_count: int | None = None  # P-0050 retention cap; None = unlimited

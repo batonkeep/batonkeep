@@ -40,6 +40,9 @@ class EffectivePolicy:
     """
 
     exec_policy: str          # code-exec gate: off | confirmation | allow-safe | auto
+    #: Browser gate ([[D-0073]] D1b): off | confirmation | auto. Resolved here so the
+    #: "task declares, else deployment default" rule has one implementation.
+    browser_policy: str
     confidential: bool        # sovereignty (P-0009 #1): local-only routing when True
     budget_cap_usd: float | None  # declared spend cap (None = lane default applies)
     timeout_seconds: int      # wall-clock bound for the run/turn drive
@@ -63,6 +66,9 @@ def resolve_effective_policy(
         routing: dict[str, Any] = task.routing or {}
         return EffectivePolicy(
             exec_policy=task.exec_policy,
+            # NULL on the task means "inherit the deployment default" — see the column
+            # comment for why it is not backfilled.
+            browser_policy=task.browser_policy or settings.browser_policy,
             confidential=bool(routing.get("confidential")),
             budget_cap_usd=None,  # task lane: per-run budget is a lane default today
             timeout_seconds=task.timeout_seconds or settings.run_timeout_seconds,
@@ -71,6 +77,10 @@ def resolve_effective_policy(
     if session is not None:
         return EffectivePolicy(
             exec_policy=session.exec_policy,
+            # Sessions have a human present by construction, so the browser gate stays
+            # the deployment default there; a per-session override is not a thing D1b
+            # needs and inventing one would be scope this decision did not authorise.
+            browser_policy=settings.browser_policy,
             confidential=bool(session.confidential),
             budget_cap_usd=session.budget_usd,
             timeout_seconds=settings.run_timeout_seconds,
@@ -78,6 +88,7 @@ def resolve_effective_policy(
 
     return EffectivePolicy(
         exec_policy="confirmation",
+        browser_policy=settings.browser_policy,
         confidential=False,
         budget_cap_usd=None,
         timeout_seconds=settings.run_timeout_seconds,

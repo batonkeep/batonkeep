@@ -30,11 +30,16 @@ function describe(a: Approval): { title: string; where: string; body?: string } 
   if (a.kind === "code_exec") {
     const code = typeof a.payload?.code === "string" ? (a.payload.code as string) : undefined;
     const label = typeof a.payload?.label === "string" ? (a.payload.label as string) : undefined;
-    return {
-      title: label || "Run code",
-      where: a.run_id !== null ? `run #${a.run_id}` : `session ${a.session_id ?? "?"}`,
-      body: code,
-    };
+    const where = a.run_id !== null ? `run #${a.run_id}` : `session ${a.session_id ?? "?"}`;
+    // A browser navigation rides the same approval lane as code execution (the row's
+    // `kind` identifies the lane, not the tool), so without this branch the operator is
+    // shown "Run code" with a URL in the code block — a description of the wrong act.
+    // D1b's entire case rests on the operator being able to read what they are
+    // authorising, so rendering it as something else would undo the argument.
+    if (a.payload?.tool === "browser_open" || label === "browser_open") {
+      return { title: "Open a page", where, body: code };
+    }
+    return { title: label || "Run code", where, body: code };
   }
   if (a.kind === "canonical_write") {
     const rel = typeof a.payload?.rel_path === "string" ? (a.payload.rel_path as string) : undefined;

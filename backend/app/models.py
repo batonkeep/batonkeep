@@ -476,6 +476,16 @@ class Task(Base):
     # Unattended tasks have no human to confirm, so a task must explicitly carry
     # allow-safe/auto to use code-exec; the conservative default is confirmation.
     exec_policy: Mapped[str] = mapped_column(String(16), nullable=False, default="confirmation")
+    # Browser policy ([[D-0073]] D1b): off | confirmation | auto. **NULL means "use the
+    # deployment default"** (`BROWSER_POLICY`), which is how every existing task behaves
+    # and why this is nullable rather than defaulted — a migration that stamped a value
+    # on every row would silently convert a deployment-wide setting into hundreds of
+    # frozen per-task copies that no longer track it.
+    #
+    # It moved off the settings object because D1b acts: the natural grant is "this one
+    # agent, on this one site", and a deployment-wide switch cannot express it. Under D1a
+    # the browser only read, so there was nothing to vary.
+    browser_policy: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # Image-generation model override (P-0046 slice 6 follow-up), same semantics as
     # Session.image_model_id: NULL = inherit the text provider's catalog default;
     # otherwise a catalog id (possibly cross-provider) from image_models.py.

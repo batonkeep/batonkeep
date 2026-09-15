@@ -96,7 +96,7 @@ def test_every_approval_is_written_with_an_envelope(maker):
         async with maker() as db:
             await approvals_mod.record_request(
                 db, owner_id="local", request_id="a1", kind="code_exec",
-                producer="claude-api", run_id=None,
+                producer="claude-api", run_id=7, task_id=3,
             )
             await approvals_mod.record_request(
                 db, owner_id="local", request_id="a2", kind="canonical_write",
@@ -111,7 +111,16 @@ def test_every_approval_is_written_with_an_envelope(maker):
 
     agent_row = rows["a1"]
     assert agent_row.principal_kind == "agent"
-    assert agent_row.executed_by == "agent:run/claude-api"
+    # **The agent is the task; the activity is the run** ([[D-0080]]). This previously
+    # asserted `agent:run/claude-api` — the provider instance id, which `attribution
+    # .agent()` and `_envelope_for`'s own docstring both warn against, because which
+    # model answered changes mid-task by design (D-0008) and keying identity on it
+    # records the backend rather than the actor. The test encoded the defect.
+    assert agent_row.principal_id == "agent:task/3", (
+        "the principal must be the string the agents view uses, or the join P-0103 "
+        "existed for is still impossible"
+    )
+    assert agent_row.executed_by == "agent:run/7", "the episode, not the backend"
     assert agent_row.initiated_by == "human:local", "agent work traces back to a human"
 
     human_row = rows["a2"]

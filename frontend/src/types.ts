@@ -904,9 +904,20 @@ export interface Approval {
   id: number;
   owner_id: string;
   request_id: string;
-  // canonical_write | code_exec. Both are decidable through /approvals/{id}/decide
-  // EXCEPT a session's code_exec (run_id === null), which its session route owns.
+  // What was ASKED FOR: code_exec | browser_open | canonical_write | schedule_proposal.
   kind: string;
+  // What it GATES (D-0080): "tool" (a live run/turn's tool call, whose waiter dies on
+  // restart unless checkpointed) or "proposal" (durable, stays decidable). Discriminate
+  // on this, never on a hardcoded kind — `kind === "code_exec"` used to mean "an
+  // unattended run's tool request" and stopped being true when a second tool arrived.
+  lane: string;
+  // The D-0059 D3 envelope. `principal_id` is the same string the Agents view uses
+  // (`agent:task/<id>`), so an approval can be joined to the agent that produced it.
+  principal_id: string | null;
+  principal_kind: string | null;
+  initiated_by: string | null;
+  executed_by: string | null;
+  delegated_by: string | null;
   status: ApprovalStatus;
   project_id: string | null;
   work_item_id: number | null;

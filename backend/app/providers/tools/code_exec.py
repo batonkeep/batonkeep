@@ -162,7 +162,8 @@ async def run(
             # park forever with nobody expecting a prompt.
             approved = True
         else:
-            approved = await approve(code, label, checkpoint=checkpoint)
+            approved = await approve(code, label, tool="code_exec",
+                                     checkpoint=checkpoint)
         if not approved:
             return "[code_exec] execution denied by operator"
         # Approved → fall through and execute this one snippet.

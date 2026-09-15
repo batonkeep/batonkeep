@@ -1642,7 +1642,9 @@ async def decide_approval(
     row = await db.get(Approval, approval_id)
     if row is None or row.owner_id != owner_id:
         raise HTTPException(status_code=404, detail="Approval not found")
-    is_unattended_run = row.kind == "code_exec" and row.run_id is not None
+    # The lane, not a kind by name ([[D-0080]]) — `browser_open` is an unattended run's
+    # tool request too, and naming one kind is exactly the bug this column removes.
+    is_unattended_run = row.lane == "tool" and row.run_id is not None
     is_schedule = row.kind == "schedule_proposal"
     if row.kind != "canonical_write" and not is_unattended_run and not is_schedule:
         raise HTTPException(

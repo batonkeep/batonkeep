@@ -445,7 +445,15 @@ async def run(
             f"{url}\n  → then follow the link labelled {follow_link!r} "
             f"(same site only: {_origin(url)})"
         )
-        approved = await approve(ask, "browser_open", checkpoint=checkpoint)
+        # `label` is what a person reads; `tool` is what the record files it as.
+        # Passing the tool name as the label conflated the two, which is how a
+        # browser navigation came to be recorded as a code-exec request.
+        approved = await approve(
+            ask,
+            "Open a page" if not follow_link else "Open a page and follow a link",
+            tool="browser_open",
+            checkpoint=checkpoint,
+        )
         if not approved:
             return "[browser_open] navigation denied by operator"
 

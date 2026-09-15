@@ -497,7 +497,8 @@ async def run_turn_background(
     # whatever the agent produced before it was stopped.
     partial_chunks: list[str] = []
 
-    async def _approve(code: str, label: str | None, *, checkpoint=None) -> bool:
+    async def _approve(code: str, label: str | None, *,
+                       tool: str = "code_exec", checkpoint=None) -> bool:
         """P-0046 slice 3b: drive the code-exec `confirmation` round-trip — emit an
         approval-request event to the live view, then await the operator's decision
         (POST /api/sessions/{id}/approvals/{rid}; timeout → denied).
@@ -514,8 +515,9 @@ async def run_turn_background(
         try:
             async with AsyncSessionLocal() as adb:
                 await approvals.record_request(
-                    adb, owner_id=owner_id, request_id=request_id, kind="code_exec",
-                    payload={"v": 1, "code": redact_text(code), "label": label},
+                    adb, owner_id=owner_id, request_id=request_id, kind=tool,
+                    payload={"v": 1, "code": redact_text(code), "label": label,
+                             "tool": tool},
                     producer=chosen, session_id=session_id,
                 )
                 await adb.commit()

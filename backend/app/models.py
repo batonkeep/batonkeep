@@ -380,7 +380,24 @@ class Approval(Base):
     )
     # Bridges the in-process Future registry (approvals.request) and the WS event.
     request_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    #: **What was asked for** — `code_exec` | `browser_open` | `canonical_write` |
+    #: `schedule_proposal`. Names the *act*, which is what an audit reader filters on.
     kind: Mapped[str] = mapped_column(String(32), nullable=False, default="code_exec")
+    #: **What kind of thing this approval gates** ([[D-0080]]) — the property three call
+    #: sites previously inferred by naming one `kind`:
+    #:
+    #:   * `tool`     — gates a tool call inside a live run or turn. Its waiter is an
+    #:                  in-process Future, so it dies on restart unless a checkpoint was
+    #:                  stored ([[P-0106]]).
+    #:   * `proposal` — a durable proposal about content or configuration. It carries no
+    #:                  Future and stays decidable across restarts, indefinitely.
+    #:
+    #: Separate from `kind` because they answer different questions and were conflated:
+    #: `kind == "code_exec"` was standing in for "is this an unattended run's tool
+    #: request", which stopped being true the moment a second tool (`browser_open`) rode
+    #: the same lane.
+    lane: Mapped[str] = mapped_column(String(16), nullable=False, default="tool",
+                                      server_default="tool", index=True)
     # pending | approved | denied | expired
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending",
                                         index=True)

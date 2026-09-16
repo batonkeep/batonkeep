@@ -514,7 +514,13 @@ class ApprovalOut(BaseModel):
     id: int
     owner_id: str
     request_id: str
+    #: What was asked for: code_exec | browser_open | canonical_write | schedule_proposal.
     kind: str
+    #: What kind of thing it gates ([[D-0080]]): `tool` (a live run/turn's tool call,
+    #: whose waiter dies on restart unless checkpointed) or `proposal` (durable, stays
+    #: decidable). Clients discriminate on this rather than on a hardcoded kind — which
+    #: is how a second gated tool broke the previous rule.
+    lane: str = "tool"
     status: str
     project_id: str | None
     work_item_id: int | None
@@ -534,6 +540,16 @@ class ApprovalOut(BaseModel):
     # was working on, which has no business in a list endpoint. The queue needs to know
     # *that* a row survives, not what it contains.
     resumable: bool = False
+    # ── The D-0059 D3 attribution envelope, now actually reaching a reader ────────
+    # [[P-0103]] added these columns so "what has this agent done" would be answerable
+    # from the audit record rather than inferred — and then nothing exposed them, so the
+    # inference stayed. `principal_id` is the **same string the agents view uses**
+    # (`agent:task/<id>`), which is what makes the join possible at all.
+    principal_id: str | None = None
+    principal_kind: str | None = None
+    initiated_by: str | None = None
+    executed_by: str | None = None
+    delegated_by: str | None = None
     # Computed on listing, not stored: the canonical root's current revision no
     # longer matches the `base_revision` this proposal was written against, so
     # its content was authored from a different version of the file. Advisory —

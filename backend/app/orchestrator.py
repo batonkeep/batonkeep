@@ -334,7 +334,7 @@ async def _do_execute(run_id: int, task: Task) -> None:
                                 # on a durable approval instead of being denied the tool.
                                 "human_in_loop": False,
                                 "approve": _make_run_approver(
-                                    run_id, run.owner_id, provider_name
+                                    run_id, run.owner_id, provider_name, task.id
                                 ),
                                 **_resume_extra,
                                 # P-0046 slice 6: image-gen model override (None → default).
@@ -473,7 +473,7 @@ async def _do_execute(run_id: int, task: Task) -> None:
                                     "browser_policy": policy.browser_policy,
                                     "human_in_loop": False,
                                     "approve": _make_run_approver(
-                                        run_id, run.owner_id, provider_name
+                                        run_id, run.owner_id, provider_name, task.id
                                     ),
                                     **_resume_extra,
                                     "image_model_id": task.image_model_id,
@@ -779,8 +779,9 @@ async def _do_execute(run_id: int, task: Task) -> None:
         )
 
 
-def _make_run_approver(run_id: int, owner_id: str, provider_name: str):
-    """Build the approver an **unattended** run uses to park on a code-exec proposal.
+def _make_run_approver(run_id: int, owner_id: str, provider_name: str,
+                       task_id: int | None = None):
+    """Build the approver an **unattended** run uses to park on a tool request.
 
     This is Gate B's core move (P-0098). Before it, ``confirmation`` on a background run
     meant the tool was simply never offered, leaving only two options — withhold the
@@ -803,23 +804,23 @@ def _make_run_approver(run_id: int, owner_id: str, provider_name: str):
     Surviving a restart *mid-run* needs the agent loop itself to be checkpointable, which
     is a separate design (see P-0098 notes), not something to fake here.
     """
-    async def _approve(code: str, label: str | None, *, checkpoint=None) -> bool:
+    async def _approve(code: str, label: str | None, *,
+                       tool: str = "code_exec", checkpoint=None) -> bool:
         checkpoint_fn = checkpoint
         request_id, fut = approvals.request()
         try:
             async with AsyncSessionLocal() as adb:
                 await approvals.record_request(
-                    adb, owner_id=owner_id, request_id=request_id, kind="code_exec",
-                    # `tool` names what is actually being asked for. The row's `kind`
-                    # stays "code_exec" because it identifies the *approval lane* — the
-                    # one the cancel-settle path and the unattended-run branch key on —
-                    # and re-pointing that is Gate B machinery, out of D1b's scope. But
-                    # without this the operator's inbox renders a page navigation as
-                    # "Run code" with a URL in the code block, which is not what the
-                    # agent asked to do ([[D-0073]] D1b).
+                    # `kind` now names the **act** — the same thing it already named for
+                    # `canonical_write` and `schedule_proposal` ([[D-0080]]). The
+                    # "is this an unattended run's tool request" question that used to be
+                    # spelled `kind == "code_exec"` is answered by `lane`, derived from
+                    # the kind in one place.
+                    adb, owner_id=owner_id, request_id=request_id,
+                    kind=tool,
                     payload={"v": 1, "code": redact_text(code), "label": label,
                              "tool": label or "code_exec", "unattended": True},
-                    producer=provider_name, run_id=run_id,
+                    producer=provider_name, run_id=run_id, task_id=task_id,
                 )
                 await adb.commit()
         except Exception:
@@ -933,7 +934,10 @@ async def resume_parked_run(run_id: int, *, approved: bool) -> str | None:
             return f"run is {run.status}, not parked"
         row = (await db.execute(
             select(Approval)
-            .where(Approval.run_id == run_id, Approval.kind == "code_exec")
+            # The lane, not one kind by name ([[D-0080]]): `browser_open` rides this
+            # lane too, and keying on "code_exec" would have looked past a parked
+            # browser navigation and reported the run unresumable.
+            .where(Approval.run_id == run_id, Approval.lane == approvals.LANE_TOOL)
             .order_by(Approval.id.desc())
         )).scalars().first()
         cp = row.checkpoint if row is not None else None

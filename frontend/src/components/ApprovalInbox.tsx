@@ -23,23 +23,23 @@ import Button from "../ui/Button";
 function isActionable(a: Approval): boolean {
   if (a.status !== "pending") return false;
   if (a.kind === "canonical_write") return true;
-  return a.kind === "code_exec" && a.run_id !== null;
+  // The lane, not a kind by name (D-0080): `browser_open` is an unattended run's tool
+  // request too, and enumerating kinds here is what made the previous rule go stale.
+  return a.lane === "tool" && a.run_id !== null;
 }
 
 function describe(a: Approval): { title: string; where: string; body?: string } {
-  if (a.kind === "code_exec") {
+  if (a.lane === "tool") {
     const code = typeof a.payload?.code === "string" ? (a.payload.code as string) : undefined;
     const label = typeof a.payload?.label === "string" ? (a.payload.label as string) : undefined;
     const where = a.run_id !== null ? `run #${a.run_id}` : `session ${a.session_id ?? "?"}`;
-    // A browser navigation rides the same approval lane as code execution (the row's
-    // `kind` identifies the lane, not the tool), so without this branch the operator is
-    // shown "Run code" with a URL in the code block — a description of the wrong act.
-    // D1b's entire case rests on the operator being able to read what they are
-    // authorising, so rendering it as something else would undo the argument.
-    if (a.payload?.tool === "browser_open" || label === "browser_open") {
-      return { title: "Open a page", where, body: code };
-    }
-    return { title: label || "Run code", where, body: code };
+    // `kind` now names the act, so the title follows from it rather than from a label
+    // the tool happened to pass. `label` is the human description on top.
+    const TITLES: Record<string, string> = {
+      code_exec: "Run code",
+      browser_open: "Open a page",
+    };
+    return { title: label || TITLES[a.kind] || a.kind, where, body: code };
   }
   if (a.kind === "canonical_write") {
     const rel = typeof a.payload?.rel_path === "string" ? (a.payload.rel_path as string) : undefined;
@@ -160,7 +160,7 @@ export default function ApprovalInbox({ onCountChange }: Props) {
                   {/* P-0106: a checkpointed run survives a restart, so its decision can
                       wait. One holding an in-process wait cannot — say which, because the
                       operator's choice of "later" depends on it. */}
-                  {a.kind === "code_exec" && a.run_id !== null && !a.resumable && (
+                  {a.lane === "tool" && a.run_id !== null && !a.resumable && (
                     <span className="ml-1.5 text-amber-500" title="This run is waiting in memory — a restart ends it.">
                       · decide before restart
                     </span>

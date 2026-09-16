@@ -88,7 +88,7 @@ class TestRefusals:
         refuse, not a thing to put to a human."""
         asked = []
 
-        async def _approve(url, label, *, checkpoint=None):
+        async def _approve(url, label, *, tool=None, checkpoint=None):
             asked.append(url)
             return True
 
@@ -110,7 +110,7 @@ class TestRefusals:
 
         monkeypatch.setattr(browser, "_render", _render)
 
-        async def _deny(url, label, *, checkpoint=None):
+        async def _deny(url, label, *, tool=None, checkpoint=None):
             return False
 
         out = await browser.run("https://example.com", policy="confirmation", approve=_deny)
@@ -242,7 +242,7 @@ class TestResumeAndFraming:
         monkeypatch.setattr(browser, "_render", _render)
         asked = []
 
-        async def _approve(url, label, *, checkpoint=None):
+        async def _approve(url, label, *, tool=None, checkpoint=None):
             asked.append(url)
             return True
 
@@ -344,7 +344,7 @@ class TestLinkFollowing:
         monkeypatch.setattr(browser, "_render", _render)
         asked: list[str] = []
 
-        async def _approve(what, label, *, checkpoint=None):
+        async def _approve(what, label, *, tool=None, checkpoint=None):
             asked.append(what)
             return True
 

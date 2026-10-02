@@ -4,6 +4,115 @@ All notable changes to batonkeep are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (pre-1.0: minor versions may
 add features freely; patch versions are fixes).
 
+## [0.8.0] — UNRELEASED (draft)
+
+batonkeep can now be left running. A restart no longer fails everything that was in
+flight, an unattended run can stop and **wait for your approval** instead of either
+going without a capability or using it unsupervised, and there is one place to see
+what needs you and what happened while you were away. Alongside it: an optional
+headless browser, agents that can propose schedules and hand work to each other, and
+OpenAI reasoning models that can use tools again.
+
+Upgrading from 0.7.0 is a normal `make pull && make up`. **Back up your volumes
+first** — this release carries seven schema migrations, applied automatically at
+startup, and a 0.7.0 image cannot read the upgraded database. One of them changes
+existing rows: see *Stranded deferrals* under Fixed.
+
+### Added
+
+- **Runs survive a restart.** A backend restart used to mark every unfinished run
+  `failed`. It now reconciles them: a run that never started is requeued, and a run
+  that was mid-flight is settled according to what it had already done, so work with
+  side effects is not blindly repeated. Each task has a `recovery_policy` —
+  `next_occurrence` (default) or `catch_up` — for what to do about a run a restart
+  interrupted.
+- **Unattended runs can ask and wait.** With an execution policy of `confirmation`, a
+  scheduled or background run now parks on an approval rather than having code
+  execution withheld. The run stops, frees the process, and resumes from its stored
+  conversation when you decide — including after a restart. Where a run cannot be
+  parked it waits in-process instead, and an undecided request is treated as denied
+  after `UNATTENDED_APPROVAL_TIMEOUT_SECONDS` (default 900).
+- **Approval inbox.** A queue in the header lists everything waiting on you across
+  runs and projects, and only shows what it can actually decide. Set
+  `APPROVAL_WEBHOOK_URL` to be notified when something parks; batonkeep posts to the
+  URL you choose and picks no notification vendor for you.
+- **Activity timeline.** A new **Activity** tab on Tasks merges task runs, build
+  turns and planner runs into one newest-first feed, and says what each outcome
+  means — "reported success but produced nothing" rather than a status code.
+- **Agents view.** Scheduled tasks are grouped as agents, each showing its last
+  outcome, recent failures and when it last delivered.
+- **Headless browser (optional, off by default).** Agents can render a page in
+  headless Chromium, read the text a person would see, and follow same-origin links
+  by navigating to them — never by clicking, so the destination is known before the
+  act. It uses a fresh, empty profile each time: no logins, no saved state. The
+  browser is a separate image, started with `docker compose --profile browser up -d`
+  plus `BROWSER_URL` in `.env`; installs that don't opt in download nothing. Gated by
+  `BROWSER_POLICY` (`off` / `confirmation` / `auto`), which a task can override.
+- **Agents propose schedules; you grant them.** A project planner can propose
+  recurring work in plain words. Nothing is created until you approve it and supply
+  the schedule yourself, and a denial leaves no task behind.
+- **Agent-to-agent hand-off.** A project's planner can ask another of your projects
+  for work by proposing a work item there. Nothing else crosses — not the workspace,
+  credentials or history — and the receiving project accepts it like any proposal.
+- **Attribution on approvals and evidence.** Each records who initiated it, who
+  executed it, and on whose behalf.
+
+### Changed
+
+- **OpenAI reasoning models can use tools.** Tool calls on the built-in OpenAI
+  provider now go through `/v1/responses`, which the newer reasoning models require.
+  OpenAI-compatible providers (Ollama, LM Studio, vLLM, OpenRouter, custom) and any
+  provider behind `OPENAI_BASE_URL` stay on chat completions.
+- **Build turns are scored by whether the work arrived.** The cockpit shows a build
+  success rate derived from what reached the workspace, next to the existing run
+  success rate; 0.7.0 counted a turn that delivered nothing as a success.
+- **`deferred` now always names a time.** A run that cannot be routed for a reason
+  time will not fix — a missing or disabled provider, no provider matching the
+  required capability — fails with that reason instead of waiting forever.
+- **Node 24.** Both images move from Node 20 (end-of-life) to Node 24 LTS.
+- **Plan CLIs are current as of the release build.** The image installs `claude`,
+  `grok`, `codex` and `agy` at their latest versions when it is built; release builds
+  no longer reuse cached copies. *(Fill in the shipped versions from the release
+  job summary.)*
+
+### Fixed
+
+- **Guided plan-CLI login.** `claude` and `agy` sign-in through `make auth` and the
+  in-app console ran commands those CLIs no longer have; the `claude` one reported
+  success while doing nothing. Both now start a real sign-in.
+- **Stranded deferrals.** Runs deferred with no retry time were never picked up
+  again. On upgrade a migration marks any such run `failed`, with an error saying a
+  migration did it and that the run was never schedulable. If you see a batch of
+  newly failed runs after upgrading, this is why; nothing broke overnight.
+- **Cancel now cancels.** Cancelling a parked run returned success and left it
+  parked; cancelling a run waiting on a decision left that decision pending forever.
+  Both are settled, and a run that cannot be cancelled now says so.
+- **Version-control internals no longer leak into packages.** Displaced `.git`
+  directories (`.git.old`, `.git.bak`, …) and nested repositories at any depth are
+  excluded from published workspaces and evidence packages.
+- **The context ledger could be returned as a run's result.** A run with a short
+  final answer could hand back the project context it was given instead.
+- **Failover history records how each attempt ended.** Every attempt was stored as
+  `pending`, including on runs that succeeded.
+- **Work-item binding.** Creating a build session while its work items were still
+  loading silently created it unbound. Creation now waits, and the session header
+  shows what it is bound to.
+- Security updates for `dompurify`, `postcss` and `pyasn1`, and routine dependency
+  bumps.
+
+### Known issues
+
+- **Interval schedules restart their clock when the backend restarts.** A task set
+  to run every N hours next fires N hours after the restart, not on its previous
+  grid. Cron-style schedules are unaffected.
+- **A skipped occurrence leaves no record.** If a scheduled run does not fire,
+  nothing in the UI says it was due.
+- **The Agents view lists only tasks with a schedule**, and its recent-failure count
+  is not limited to a time window.
+- **`agy` workspace binding is verified through 1.1.7.** Newer `agy` versions log a
+  drift advisory on each run; the check that catches work written outside the
+  workspace still applies.
+
 ## [0.7.0] — 2026-07-26
 
 The largest release so far. batonkeep gains **Projects** — durable containers for

@@ -99,19 +99,6 @@ existing rows: see *Stranded deferrals* under Fixed.
 - Security updates for `dompurify`, `postcss` and `pyasn1`, and routine dependency
   bumps.
 
-### Known issues
-
-- **Interval schedules restart their clock when the backend restarts.** A task set
-  to run every N hours next fires N hours after the restart, not on its previous
-  grid. Cron-style schedules are unaffected.
-- **A skipped occurrence leaves no record.** If a scheduled run does not fire,
-  nothing in the UI says it was due.
-- **The Agents view lists only tasks with a schedule**, and its recent-failure count
-  is not limited to a time window.
-- **`agy` workspace binding is verified through 1.1.7.** Newer `agy` versions log a
-  drift advisory on each run; the check that catches work written outside the
-  workspace still applies.
-
 ## [0.7.0] — 2026-07-26
 
 The largest release so far. batonkeep gains **Projects** — durable containers for

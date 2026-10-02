@@ -76,5 +76,31 @@ jobs:
           # frontend Dockerfile ignores the unused arg.
           build-args: |
             BATONKEEP_VERSION=${{ github.ref_name }}
-          cache-from: type=gha,scope=${{ matrix.component }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.component }}
+          # No layer cache, and re-pull the base images. The backend installs the
+          # plan CLIs (claude / grok / agy / codex) unversioned, and those RUN lines
+          # never change — so a cached layer would ship whatever was latest when the
+          # cache was written, under a new version tag. A release is the only way a
+          # self-hoster gets newer CLIs; it must actually fetch them.
+          no-cache: true
+          pull: true
+
+      # What the release actually shipped. The installers are best-effort
+      # (`|| true`), so a lane can be missing without failing the build — this
+      # puts the versions (or MISSING) in the job summary, for the release notes.
+      # Reporting only: the image is already pushed, so it never fails the job.
+      - name: Report plan-CLI versions in the published backend image
+        if: matrix.component == 'backend'
+        continue-on-error: true
+        run: |
+          image="${IMAGE_PREFIX}-backend:${GITHUB_REF_NAME}"
+          {
+            echo "### Plan CLIs in \`${image}\`"
+            echo '```'
+            docker run --rm --entrypoint bash "$image" -c '
+              for c in claude grok codex agy; do
+                printf "%s: " "$c"
+                if command -v "$c" >/dev/null 2>&1; then "$c" --version 2>&1 | head -1; else echo MISSING; fi
+              done
+              printf "node: "; node --version'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

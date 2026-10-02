@@ -4,7 +4,7 @@ All notable changes to batonkeep are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (pre-1.0: minor versions may
 add features freely; patch versions are fixes).
 
-## [0.8.0] — UNRELEASED (draft)
+## [0.8.0] — 2026-10-02
 
 batonkeep can now be left running. A restart no longer fails everything that was in
 flight, an unattended run can stop and **wait for your approval** instead of either
@@ -71,9 +71,8 @@ existing rows: see *Stranded deferrals* under Fixed.
   required capability — fails with that reason instead of waiting forever.
 - **Node 24.** Both images move from Node 20 (end-of-life) to Node 24 LTS.
 - **Plan CLIs are current as of the release build.** The image installs `claude`,
-  `grok`, `codex` and `agy` at their latest versions when it is built; release builds
-  no longer reuse cached copies. *(Fill in the shipped versions from the release
-  job summary.)*
+  `grok`, `codex` and `agy` at their latest versions when it is built, and release
+  builds no longer reuse cached copies — so upgrading is how you get newer CLIs.
 
 ### Fixed
 

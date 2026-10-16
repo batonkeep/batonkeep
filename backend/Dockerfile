@@ -10,7 +10,7 @@
 #   final stage   : the above + Node 20 + claude / grok / agy / codex + app code
 
 # ── Stage 1: python env + privilege model + frozen venv ───────────────────────
-FROM python:3.12-slim AS pyenv
+FROM python:3.14-slim AS pyenv
 
 # ── uv ────────────────────────────────────────────────────────────────────────
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv

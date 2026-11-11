@@ -20,7 +20,7 @@ dependencies = [
     "cryptography==49.0.0",
     "python-multipart==0.0.32",
     "websockets==16.1.1",
-    "aiofiles==24.1.0",
+    "aiofiles==25.1.0",
     "greenlet==3.5.4",
     "pyte>=0.8.2",
     # S0 substrate: the project context manifest (batonkeep.yaml) parser.
